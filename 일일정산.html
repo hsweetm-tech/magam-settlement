@@ -1688,7 +1688,8 @@ main {
         <div class="stat-row"><span class="stat-row-label">카드</span><span class="stat-row-value" id="cardTotalSum">₩0</span></div>
         <div class="stat-row"><span class="stat-row-label">현금</span><span class="stat-row-value" id="cashTotalSum">₩0</span></div>
         <div class="stat-row"><span class="stat-row-label">간편결제</span><span class="stat-row-value" id="etcTotalSum">₩0</span></div>
-        <div class="stat-row"><span class="stat-row-label">부가세 (추정)</span><span class="stat-row-value" id="vatAmt">₩0</span></div>
+        <div class="stat-row"><span class="stat-row-label">└ 공급가액</span><span class="stat-row-value" id="supplyAmt">₩0</span></div>
+        <div class="stat-row"><span class="stat-row-label" id="vatLbl">└ 매출세액</span><span class="stat-row-value" id="vatAmt">₩0</span></div>
       </div>
     </div>
 
@@ -2494,16 +2495,20 @@ function computePL() {
   const t = salesTotals();
   const p = computePurchaseTotals();
   const extraExpense = num(state.extras.expenses);
-  const costTotal = p.purchaseTotal + extraExpense;
+  // 분배 기준 = 공급가액(부가세 제외). 부가세는 손익이 아니라 예수금/납부 대상으로 별도.
+  const costSupply = p.purchaseSupply + extraExpense;   // ex-VAT 비용
   const r = (n) => Math.round(n) + 0; // 부동소수점 잡음 제거 + -0 → 0
   return {
-    sales: r(t.posTotal),
-    purchaseTotal: r(p.purchaseTotal),
-    extraExpense: r(extraExpense), costTotal: r(costTotal),
-    pl: r(t.posTotal - costTotal),
+    sales: r(t.posTotal),               // 부가세 포함 실매출(참고·현금흐름)
+    salesSupply: r(t.supply),           // 매출 공급가액(분배 기준)
+    purchaseTotal: r(p.purchaseTotal),  // 부가세 포함 매입(참고)
+    purchaseSupply: r(p.purchaseSupply),// 매입 공급가액
+    extraExpense: r(extraExpense),
+    costTotal: r(costSupply),           // ex-VAT 비용(매입공급가액+기타지출)
+    pl: r(t.supply - costSupply),       // 일 손익 = 매출공급가액 − ex-VAT비용 (정률분배 기준)
     salesVat: r(t.vat),
     purchaseVat: r(p.purchaseVat),
-    payableVat: r(t.vat - p.purchaseVat),
+    payableVat: r(t.vat - p.purchaseVat),  // 별도: 국세청 납부 대상
     byCategory: p.byCategory
   };
 }
