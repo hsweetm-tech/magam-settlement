@@ -1388,6 +1388,7 @@ main {
       <button class="tab" data-tab="validate">검증 결과<span class="tab-badge" id="issueBadge">0</span></button>
       <button class="tab" data-tab="history">마감 내역</button>
       <button class="tab" data-tab="report">리포트 분석</button>
+      <button class="tab" data-tab="monthly">월정산</button>
     </div>
 
     <div class="tab-panel active" id="tab-input">
@@ -1676,6 +1677,20 @@ main {
         </div>
         <div id="goalCard"></div>
         <div id="reportContent"></div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="tab-monthly">
+      <div class="section">
+        <div class="section-head">
+          <div class="section-title">월정산</div>
+          <div class="section-note">
+            <input type="month" id="monthlyMonth" style="padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-family: inherit; background: var(--bg); color: var(--text);">
+          </div>
+        </div>
+        <div id="monthlyContent" style="padding: 40px 20px; text-align: center; color: var(--text-3); font-size: 13px;">
+          월을 선택하면 손익계산서가 여기에 표시됩니다.
+        </div>
       </div>
     </div>
   </div>
@@ -2001,6 +2016,10 @@ function switchTab(name) {
   if (name === 'history') renderHistory();
   if (name === 'validate') { runValidation(); renderHourly(); renderMenuTop(); }
   if (name === 'report') renderReport();
+  if (name === 'monthly') {
+    const mm = document.getElementById('monthlyMonth');
+    if (mm && !mm.value) mm.value = new Date().toISOString().slice(0, 7);
+  }
 }
 
 function setupUpload(inputId, zoneId, type) {
