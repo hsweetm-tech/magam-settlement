@@ -1923,7 +1923,7 @@ main {
   </div>
 </div>
 
-<input type="file" id="loadFileInput" accept=".json" style="display:none">
+<input type="file" id="loadFileInput" accept=".json" multiple style="display:none">
 <div class="toast" id="toast"></div>
 
 <button class="scroll-top" id="scrollTop" onclick="window.scrollTo({top: 0, behavior: 'smooth'})" title="맨 위로">
@@ -3938,8 +3938,17 @@ function exportAllData() {
 function loadFromFile() { document.getElementById('loadFileInput').click(); }
 
 async function handleLoadFile(e) {
-  const file = e.target.files[0];
-  if (!file) return;
+  const files = Array.from(e.target.files || []);
+  if (!files.length) return;
+  if (files.length === 1) {
+    await handleSingleLoad(files[0]);
+  } else {
+    await handleBatchLoad(files);
+  }
+  e.target.value = '';
+}
+
+async function handleSingleLoad(file) {
   try {
     const text = await file.text();
     const data = JSON.parse(text);
@@ -3959,7 +3968,35 @@ async function handleLoadFile(e) {
       toast(`${data.date} 복원됨`, 'ok');
     }
   } catch (err) { toast('파일을 읽을 수 없습니다', 'danger'); }
-  e.target.value = '';
+}
+
+async function handleBatchLoad(files) {
+  const all = getAllRecords();
+  let added = 0, replaced = 0, failed = 0;
+  const failedNames = [];
+  for (const file of files) {
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (data.date) {
+        if (all[data.date]) replaced++; else added++;
+        all[data.date] = data;
+      } else {
+        failed++; failedNames.push(file.name);
+      }
+    } catch (err) {
+      failed++; failedNames.push(file.name);
+    }
+  }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+  renderHistory();
+  let msg = `일괄 import: ${added}개 추가, ${replaced}개 덮어씀`;
+  if (failed > 0) msg += ` · ${failed}개 실패(${failedNames.join(', ')})`;
+  toast('✓ ' + msg, failed > 0 ? 'danger' : 'ok');
+  const cs = getCloudSettings();
+  if (cs.url) {
+    uploadToCloud('전체백업_최신.json', { exportedAt: new Date().toISOString(), records: all }, true);
+  }
 }
 
 function toast(msg, type = '') {
