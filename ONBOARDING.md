@@ -3,7 +3,7 @@
 > **다른 PC에서 이어서 개발할 때:** 이 저장소를 `git clone` → Claude Code 실행 →
 > "마감 폴더의 ONBOARDING.md 읽고 이어서 작업하자" 라고 말하면 진행 상황이 그대로 이어집니다.
 >
-> 최종 업데이트: 2026-05-17
+> 최종 업데이트: 2026-05-18
 
 ## 1. 한 줄 요약
 식당(매장) **일일/월 정산** 단일 파일 정적 HTML 앱. 백엔드 없음. 동업자 간 공유.
@@ -42,9 +42,18 @@
 일 손익(매출−매입·비용, 매출세액−매입세액=납부세액), record/draft 스키마 마이그레이션.
 (검증: headless Chrome — SYNTAX_OK + 런타임 + A/B 무회귀)
 
-### Phase 2 = 대기 ⏳
-월정산 탭 + 손익계산서 → 정률 분배(동업자 설정 UI) → PDF/엑셀 리포트 export + 클라우드 동기화.
-월정산 시 홈택스 적격증빙과 대사하는 흐름 설계 포함.
+### Phase 2 = 진행 중 🚧
+- **1-A 월정산 탭 골격** ✅ (2026-05-18, commit `9bf4301`): 5번째 탭 "월정산" + 월 선택 input, 손익계산서 자리표시자
+- **1-B 손익계산서** ⏳: 선택한 월의 일자별 record 집계 (매출−매입·비용, 매출세액−매입세액=납부세액)
+- **2 정률 분배** ⏳: 동업자 설정 UI(비율 합 100%), 컴프 공동비용 처리 후 잔여 분배
+- **3 PDF/엑셀 export** ⏳: 월말 리포트
+- **+ 홈택스 적격증빙 대사** ⏳: 월정산 시 카드전표/세금계산서/현금영수증과 대사
+
+### 인프라 — 클라우드 동기화 (코드 구현됨, 사용자 GAS 셋업 필요)
+헤더 "클라우드" 버튼 → 모달의 10단계 가이드 따라 GAS 웹앱 만들고 URL/토큰을 양쪽 PC에 동일 입력.
+- 자동 옵션 3가지: 마감 시 자동 업로드 / 마감 시 전체 백업 / 앱 시작 시 자동 풀
+- 셋업 안 된 PC에서 처음 켜면 데이터 없음 — **헤더 "백업"/"불러오기"로 JSON 수동 옮김**도 가능
+- ⚠️ SECRET_TOKEN은 GAS 코드와 모달 입력란이 **정확히 같아야** 함
 
 ## 6. ⚠️ 테스트 시 주의 (중요)
 이 파일의 인라인 `<script>` 안에 GAS 가이드 문자열로 `<!--` / `<script` 시퀀스가 있어,
@@ -57,9 +66,11 @@
 - 스크립트 추출은 **UTF-8**로: `[System.IO.File]::ReadAllText(...)` — PS5.1 `Get-Content` ✗
 
 ## 7. 다른 PC에서 시작하는 순서
-1. `git clone <저장소 URL>`
-2. 작업 폴더 = 방금 클론된 폴더
-3. Claude Code 실행 → "마감 폴더의 ONBOARDING.md 읽고 이어서 작업하자"
-4. 실제 영수증/정산 데이터는 이 저장소에 **없음** — 그 PC에서 새로 넣거나 별도 동기화
-5. 작업 끝나면 `git add -A && git commit -m "..." && git push`
-6. 원래 PC로 돌아오면 작업 전에 `git pull` 먼저
+1. Git + GitHub CLI 설치 (없으면): `winget install Git.Git` + `winget install GitHub.cli`
+2. `gh auth login` (브라우저 로그인) → `git config --global user.name "hsweetm"` + `user.email "hsweetm@gmail.com"`
+3. `git clone https://github.com/hsweetm-tech/magam-settlement.git`
+4. Claude Code 실행 → "마감 폴더의 ONBOARDING.md 읽고 이어서 작업하자"
+5. **데이터 가져오기** — 이 저장소엔 코드만 있고 정산 데이터는 없음. 두 가지 방법:
+   - **임시(빠름)**: 다른 PC에서 헤더 "백업" → JSON 다운 → 이 PC로 옮긴 뒤 헤더 "불러오기"
+   - **자동(권장)**: 헤더 "클라우드" → 모달 가이드 따라 GAS URL/토큰 입력 (양쪽 PC 동일하게)
+6. 작업 흐름: 시작 전 `git pull`, 작업·수정 후 `git add -A && git commit -m "..." && git push`
