@@ -3446,7 +3446,10 @@ function getAllRecords() {
     if (!r || typeof r !== 'object') return;
     if (!r.posRows) r.posRows = [];
     if (!r.cardRows) r.cardRows = [];
-    if (!r.totals) r.totals = computeTotalsFor(r);
+    // totals가 없거나 빈 객체({})거나 posTotal이 없으면 재계산. JSON import한
+    // 매입-only record는 totals: {}로 들어와서 r.totals가 truthy지만 posTotal undefined →
+    // 리포트 reduce에서 NaN 전파를 막기 위해 명시적으로 posTotal 존재 여부로 판단.
+    if (!r.totals || r.totals.posTotal == null) r.totals = computeTotalsFor(r);
   });
   return all;
 }
