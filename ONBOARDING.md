@@ -68,7 +68,7 @@
 ## 7. 다른 PC에서 시작하는 순서
 1. Git + GitHub CLI 설치 (없으면): `winget install Git.Git` + `winget install GitHub.cli`
 2. `gh auth login` (브라우저 로그인) → `git config --global user.name "hsweetm"` + `user.email "hsweetm@gmail.com"`
-3. `git clone https://github.com/hsweetm-tech/magam-settlement.git`
+3. `git clone https://github.com/hsweetm-tech/magam-settlement.git` (D 드라이브 등 non-NTFS/외장 경로에 받으면 첫 git 명령 시 `safe.directory` 에러 → `git config --global --add safe.directory <클론한 절대경로>` 한 번 실행)
 4. Claude Code 실행 → "마감 폴더의 ONBOARDING.md 읽고 이어서 작업하자"
 5. **데이터 가져오기** — 이 저장소엔 코드만 있고 정산 데이터는 없음. 두 가지 방법:
    - **임시(빠름)**: 다른 PC에서 헤더 "백업" → JSON 다운 → 이 PC로 옮긴 뒤 헤더 "불러오기"
