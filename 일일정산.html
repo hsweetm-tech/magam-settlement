@@ -1561,6 +1561,50 @@ main {
 
       <div class="section">
         <div class="section-head">
+          <div class="section-title">급여 (인건비)</div>
+          <div class="section-note" id="payrollCount">0건</div>
+        </div>
+
+        <div class="upload-grid">
+          <div class="upload-zone" onclick="addPayrollRow()">
+            <svg class="icon icon-lg" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <div class="upload-label">직원 1명 추가</div>
+            <div class="upload-hint">한 명씩 수동으로</div>
+          </div>
+          <div class="upload-zone" style="opacity:0.5;cursor:not-allowed;" title="통장 출금과 자동 매칭 (다음 단계)">
+            <svg class="icon icon-lg" viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>
+            <div class="upload-label">통장 자동 대사</div>
+            <div class="upload-hint">출시 예정</div>
+          </div>
+        </div>
+
+        <div class="table-wrap" id="payrollTableWrap" style="display:none;">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>지급일자</th>
+                <th>직원명</th>
+                <th class="num-cell">금액</th>
+                <th>결제수단</th>
+                <th>메모</th>
+                <th class="action-cell"></th>
+              </tr>
+            </thead>
+            <tbody id="payrollTableBody"></tbody>
+          </table>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-small" onclick="addPayrollRow()">
+            <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            직원 추가
+          </button>
+          <button class="btn btn-small btn-ghost" onclick="clearPayroll()">초기화</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-head">
           <div class="section-title">통장 내역</div>
           <div class="section-note" id="bankCount">0건</div>
         </div>
@@ -1947,6 +1991,7 @@ const state = {
   posRows: [],
   cardRows: [],
   purchaseRows: [],
+  payrollRows: [],
   bankRows: [],
   extras: { actualCash: 0, openingCash: 0, expenses: 0, deposits: 0, discounts: 0, vatRate: 10, serviceRate: 0, memo: '' },
   issues: [],
@@ -2060,6 +2105,7 @@ function renderMonthlyReport(month) {
   }
   let sumSales = 0, sumSalesSupply = 0, sumSalesVat = 0;
   let sumPTotal = 0, sumPSupply = 0, sumPVat = 0, sumExtra = 0;
+  let sumPayroll = 0;
   const byCategory = {};
   const dailyRows = [];
   for (const d of dates) {
@@ -2068,21 +2114,24 @@ function renderMonthlyReport(month) {
     const p = computePurchaseFromRec(rec);
     const extras = rec.extras || {};
     const extraExp = num(extras.expenses);
-    const dayPL = (t.supply || 0) - (p.purchaseSupply + extraExp);
+    const payroll = (rec.payrollRows || []).reduce((s, r) => s + num(r.amount), 0);
+    const dayPL = (t.supply || 0) - (p.purchaseSupply + extraExp + payroll);
     sumSales += t.posTotal; sumSalesSupply += t.supply; sumSalesVat += t.vat;
     sumPTotal += p.purchaseTotal; sumPSupply += p.purchaseSupply; sumPVat += p.purchaseVat;
     sumExtra += extraExp;
+    sumPayroll += payroll;
     Object.entries(p.byCategory).forEach(([k, v]) => { byCategory[k] = (byCategory[k] || 0) + v; });
     dailyRows.push({
       date: d,
       sales: Math.round(t.posTotal),
       purchase: Math.round(p.purchaseTotal),
+      payroll: Math.round(payroll),
       extraExp: Math.round(extraExp),
       pl: Math.round(dayPL),
       status: rec.status === 'closed' ? '마감' : '작성중'
     });
   }
-  const monthPL = sumSalesSupply - (sumPSupply + sumExtra);
+  const monthPL = sumSalesSupply - (sumPSupply + sumExtra + sumPayroll);
   const payableVat = sumSalesVat - sumPVat;
   const plColor = monthPL < 0 ? 'var(--red)' : 'var(--green)';
 
@@ -2100,9 +2149,14 @@ function renderMonthlyReport(month) {
           <div class="m-card-sub">공급가 ${fmt(Math.round(sumPSupply + sumExtra))}</div>
         </div>
         <div class="m-card">
+          <div class="m-card-label">인건비</div>
+          <div class="m-card-value">${fmt(Math.round(sumPayroll))}</div>
+          <div class="m-card-sub">면세 · 손익에 차감</div>
+        </div>
+        <div class="m-card">
           <div class="m-card-label">월 손익 (공급가 기준)</div>
           <div class="m-card-value" style="color: ${plColor};">${fmt(Math.round(monthPL))}</div>
-          <div class="m-card-sub">매출공급가 − 매입공급가 − 기타비용</div>
+          <div class="m-card-sub">매출공급가 − 매입공급가 − 기타비용 − 인건비</div>
         </div>
         <div class="m-card">
           <div class="m-card-label">납부세액 (추정)</div>
@@ -2119,6 +2173,7 @@ function renderMonthlyReport(month) {
               <th>날짜</th>
               <th style="text-align:right;">매출</th>
               <th style="text-align:right;">매입</th>
+              <th style="text-align:right;">인건비</th>
               <th style="text-align:right;">기타비용</th>
               <th style="text-align:right;">일 손익</th>
               <th>상태</th>
@@ -2130,6 +2185,7 @@ function renderMonthlyReport(month) {
                 <td>${r.date}</td>
                 <td style="text-align:right;">${fmt(r.sales)}</td>
                 <td style="text-align:right;">${fmt(r.purchase)}</td>
+                <td style="text-align:right;">${fmt(r.payroll)}</td>
                 <td style="text-align:right;">${fmt(r.extraExp)}</td>
                 <td style="text-align:right; color: ${r.pl < 0 ? 'var(--red)' : 'var(--green)'};">${fmt(r.pl)}</td>
                 <td>${r.status}</td>
@@ -2556,6 +2612,45 @@ function purchaseField(i, key, isNum) {
   return `state.purchaseRows[${i}].${key}=this.value;saveDraft();updateAll()`;
 }
 
+/* ========================================================================
+   급여 (인건비) - 직원 한 명 = 1행
+   ======================================================================== */
+function newPayrollRow(o = {}) {
+  return {
+    date: o.date || state.businessDate,
+    employee: o.employee || '',
+    amount: num(o.amount),
+    method: o.method || '계좌이체',
+    memo: o.memo || ''
+  };
+}
+function addPayrollRow() { state.payrollRows.push(newPayrollRow()); updateAll(); saveDraft(); }
+function deletePayrollRow(i) { state.payrollRows.splice(i, 1); updateAll(); saveDraft(); }
+function clearPayroll() {
+  if (!confirm('급여 데이터를 모두 지울까요?')) return;
+  state.payrollRows = [];
+  updateAll(); saveDraft();
+}
+function renderPayrollTable() {
+  const tbody = document.getElementById('payrollTableBody');
+  if (!tbody) return;
+  document.getElementById('payrollTableWrap').style.display = state.payrollRows.length ? 'block' : 'none';
+  const countEl = document.getElementById('payrollCount');
+  if (countEl) countEl.textContent = state.payrollRows.length + '건';
+  tbody.innerHTML = state.payrollRows.map((r, i) => `
+    <tr>
+      <td><input value="${escapeHtml(r.date || '')}" placeholder="YYYY-MM-DD" style="width:120px" onchange="state.payrollRows[${i}].date=this.value;saveDraft();updateAll()"></td>
+      <td><input value="${escapeHtml(r.employee || '')}" placeholder="직원명" onchange="state.payrollRows[${i}].employee=this.value;saveDraft();updateAll()"></td>
+      <td class="num-cell"><input type="number" class="num-cell" value="${r.amount||0}" onchange="state.payrollRows[${i}].amount=num(this.value);saveDraft();updateAll()"></td>
+      <td><select onchange="state.payrollRows[${i}].method=this.value;saveDraft();updateAll()">
+        ${['계좌이체','현금','카드','기타'].map(m => `<option ${r.method===m?'selected':''}>${m}</option>`).join('')}
+      </select></td>
+      <td><input value="${escapeHtml(r.memo || '')}" placeholder="(예: 5월 정상급여)" onchange="state.payrollRows[${i}].memo=this.value;saveDraft();updateAll()"></td>
+      <td class="action-cell"><button class="delete-row" onclick="deletePayrollRow(${i})">×</button></td>
+    </tr>
+  `).join('');
+}
+
 function renderPurchaseTable() {
   const tbody = document.getElementById('purchaseTableBody');
   if (!tbody) return;
@@ -2646,8 +2741,10 @@ function computePL() {
   const t = salesTotals();
   const p = computePurchaseTotals();
   const extraExpense = num(state.extras.expenses);
+  const payroll = (state.payrollRows || []).reduce((s, r) => s + num(r.amount), 0);  // 인건비 합계 (면세 가정)
   // 분배 기준 = 공급가액(부가세 제외). 부가세는 손익이 아니라 예수금/납부 대상으로 별도.
-  const costSupply = p.purchaseSupply + extraExpense;   // ex-VAT 비용
+  // 인건비는 면세라 supply 그대로 비용 처리.
+  const costSupply = p.purchaseSupply + extraExpense + payroll;
   const r = (n) => Math.round(n) + 0; // 부동소수점 잡음 제거 + -0 → 0
   return {
     sales: r(t.posTotal),               // 부가세 포함 실매출(참고·현금흐름)
@@ -2655,7 +2752,8 @@ function computePL() {
     purchaseTotal: r(p.purchaseTotal),  // 부가세 포함 매입(참고)
     purchaseSupply: r(p.purchaseSupply),// 매입 공급가액
     extraExpense: r(extraExpense),
-    costTotal: r(costSupply),           // ex-VAT 비용(매입공급가액+기타지출)
+    payroll: r(payroll),                // 인건비 합계
+    costTotal: r(costSupply),           // ex-VAT 비용(매입공급가액+기타지출+인건비)
     pl: r(t.supply - costSupply),       // 일 손익 = 매출공급가액 − ex-VAT비용 (정률분배 기준)
     salesVat: r(t.vat),
     purchaseVat: r(p.purchaseVat),
@@ -2801,6 +2899,7 @@ function updateAll() {
   renderPosTable();
   renderCardTable();
   renderPurchaseTable();
+  renderPayrollTable();
   renderBankTable();
   document.getElementById('posCount').textContent = state.posRows.length + '건';
   document.getElementById('cardCount').textContent = state.cardRows.length + '건';
@@ -3389,7 +3488,9 @@ function closeDayModal() {
   const pl = computePL();
   let text = `<strong>${state.businessDate}</strong> 영업일을 마감합니다.<br><br>`;
   text += `총 매출 <strong>${fmt(t.posTotal)}</strong> · POS ${state.posRows.length}건 · 전표 ${state.cardRows.length}건<br>`;
-  text += `매입·비용 <strong>${fmt(pl.costTotal)}</strong> (${state.purchaseRows.length}건) · 통장 ${state.bankRows.length}건<br>`;
+  text += `매입·비용 <strong>${fmt(pl.purchaseTotal)}</strong> (${state.purchaseRows.length}건)`;
+  if (pl.payroll > 0) text += ` · 인건비 <strong>${fmt(pl.payroll)}</strong> (${state.payrollRows.length}명)`;
+  text += ` · 통장 ${state.bankRows.length}건<br>`;
   text += `일 손익 <strong style="color:${pl.pl<0?'var(--red)':'var(--green)'}">${fmt(pl.pl)}</strong> · 납부세액(추정) ${fmt(pl.payableVat)}<br><br>`;
   if (dangers) text += `<span style="color: var(--red); font-weight: 600;">위험 이슈 ${dangers}건</span>이 있습니다. 그래도 마감하시겠어요?`;
   else if (warns) text += `확인 필요 ${warns}건이 있지만 마감 가능합니다.`;
@@ -3403,7 +3504,7 @@ function confirmCloseDay() {
   const record = {
     date: state.businessDate, closedAt: new Date().toISOString(), totals: t,
     posRows: state.posRows, cardRows: state.cardRows,
-    purchaseRows: state.purchaseRows, bankRows: state.bankRows,
+    purchaseRows: state.purchaseRows, payrollRows: state.payrollRows, bankRows: state.bankRows,
     pl: computePL(),
     extras: { ...state.extras }, issues: state.issues, status: 'closed'
   };
@@ -3446,6 +3547,9 @@ function getAllRecords() {
     if (!r || typeof r !== 'object') return;
     if (!r.posRows) r.posRows = [];
     if (!r.cardRows) r.cardRows = [];
+    if (!r.purchaseRows) r.purchaseRows = [];
+    if (!r.payrollRows) r.payrollRows = [];
+    if (!r.bankRows) r.bankRows = [];
     // totals가 없거나 빈 객체({})거나 posTotal이 없으면 재계산. JSON import한
     // 매입-only record는 totals: {}로 들어와서 r.totals가 truthy지만 posTotal undefined →
     // 리포트 reduce에서 NaN 전파를 막기 위해 명시적으로 posTotal 존재 여부로 판단.
@@ -3901,6 +4005,7 @@ function reopenRecord(date) {
   state.posRows = r.posRows || [];
   state.cardRows = r.cardRows || [];
   state.purchaseRows = r.purchaseRows || [];
+  state.payrollRows = r.payrollRows || [];
   state.bankRows = r.bankRows || [];
   state.extras = r.extras || state.extras;
   document.getElementById('businessDate').value = date;
@@ -3943,7 +4048,7 @@ function deleteRecord(date) {
 }
 
 function saveDraft() {
-  const draft = { date: state.businessDate, posRows: state.posRows, cardRows: state.cardRows, purchaseRows: state.purchaseRows, bankRows: state.bankRows, extras: state.extras };
+  const draft = { date: state.businessDate, posRows: state.posRows, cardRows: state.cardRows, purchaseRows: state.purchaseRows, payrollRows: state.payrollRows, bankRows: state.bankRows, extras: state.extras };
   localStorage.setItem('draft_' + state.businessDate, JSON.stringify(draft));
 }
 
@@ -3955,6 +4060,7 @@ function loadDraft() {
     state.posRows = [];
     state.cardRows = [];
     state.purchaseRows = [];
+    state.payrollRows = [];
     state.bankRows = [];
     state.extras = { actualCash: 0, openingCash: 0, expenses: 0, deposits: 0, discounts: 0, vatRate: 10, serviceRate: 0, memo: '' };
   } else {
@@ -3963,6 +4069,7 @@ function loadDraft() {
       state.posRows = d.posRows || [];
       state.cardRows = d.cardRows || [];
       state.purchaseRows = d.purchaseRows || [];
+      state.payrollRows = d.payrollRows || [];
       state.bankRows = d.bankRows || [];
       state.extras = d.extras || state.extras;
       // Sanitize: fix corrupted method values from older versions
