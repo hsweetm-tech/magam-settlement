@@ -11,21 +11,30 @@ const grab = (re, name) => {
 const numFn = grab(/function num\(v\)[\s\S]*?return isFinite\(n\) \? n : 0;[\s\S]*?\}/, 'num');
 const distFn = grab(/function computeMonthlyDistribution[\s\S]*?return \{ partners: rows, distributable, ratioSum, ratioOk, subtractDiscounts \};[\s\S]*?\}/, 'computeMonthlyDistribution');
 const purchaseFn = grab(/function computePurchaseFromRec[\s\S]*?return \{ purchaseSupply: supply, purchaseVat: vat, purchaseTotal: total, byCategory \};[\s\S]*?\}/, 'computePurchaseFromRec');
-const computeMD = grab(/function computeMonthlyData[\s\S]*?dist: computeMonthlyDistribution\(monthPL, sumDiscounts\)[\s\S]*?\};[\s\S]*?\}/, 'computeMonthlyData');
+const computeMD = grab(/function computeMonthlyData[\s\S]*?\n\}/, 'computeMonthlyData');
+const resolveFx = grab(/function resolveFixedExpensesForMonth[\s\S]*?\n\}/, 'resolveFixedExpensesForMonth');
+const ratFn = grab(/function computeCostRatios[\s\S]*?\n\}/, 'computeCostRatios');
+const ratLvl = grab(/function _ratioLevel[\s\S]*?\n\}/, '_ratioLevel');
+const thresh = grab(/const COST_RATIO_THRESHOLDS = \{[\s\S]*?\};/, 'thresholds');
 
 const src = `
   let _records = {};
   let _partners = [];
   let _subtract = false;
+  let _fixed = [];
   function getAllRecords() { return _records; }
   function getPartners() { return _partners; }
   function getDistSubtractDiscounts() { return _subtract; }
-  // computeTotalsFor 단순 구현: rec.totals 그대로 (테스트에서 미리 채움)
+  function getFixedExpenses() { return _fixed; }
   function computeTotalsFor(rec) {
     return rec.totals || { posTotal: 0, supply: 0, vat: 0, posCard: 0, posCash: 0, posEtc: 0, cardTotal: 0 };
   }
+  ${thresh}
   ${numFn}
+  ${ratLvl}
+  ${ratFn}
   ${purchaseFn}
+  ${resolveFx}
   ${distFn}
   ${computeMD}
   return {

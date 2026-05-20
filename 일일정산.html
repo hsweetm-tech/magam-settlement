@@ -1802,6 +1802,37 @@ main {
 
       <div class="section">
         <div class="section-head">
+          <div class="section-title">고정비 설정 (월 자동 반영)</div>
+          <div class="section-note" id="fixedExpenseTotal">월 합계 ₩0</div>
+        </div>
+        <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
+          매월 정기 발생 비용(임대료·관리비·통신비·보험료 등) 1회 설정 → 모든 월 손익계산서에 자동 반영. 단, 해당 월에 같은 분류의 매입행이 1건이라도 있으면 <strong>매입행이 우선</strong>(설정값 무시) — 변동 시 매입·비용 섹션에서 그대로 입력하면 됨.
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>항목명</th>
+                <th>분류</th>
+                <th class="num-cell">월 금액 (원)</th>
+                <th>메모</th>
+                <th class="action-cell"></th>
+              </tr>
+            </thead>
+            <tbody id="fixedExpenseTableBody"></tbody>
+          </table>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-small" onclick="addFixedExpense()">
+            <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            고정비 추가
+          </button>
+          <div style="margin-left:auto;font-size:11px;color:var(--text-3);">예: 임대료 ₩3,000,000 · 관리비 ₩200,000 · 보험료 ₩150,000</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-head">
           <div class="section-title">정률 분배 설정</div>
           <div class="section-note" id="partnerSumNote">합계 0%</div>
         </div>
@@ -2104,8 +2135,9 @@ function init() {
   document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
   const monthlyMonthEl = document.getElementById('monthlyMonth');
   if (monthlyMonthEl) monthlyMonthEl.addEventListener('change', (e) => { renderMonthlyReport(e.target.value); updateHometaxStatus(); });
-  // 정률 분배 설정 init
+  // 정률 분배 + 고정비 설정 init
   renderPartners();
+  renderFixedExpenses();
   const distChk = document.getElementById('distSubtractDiscounts');
   if (distChk) {
     distChk.checked = getDistSubtractDiscounts();
@@ -2400,10 +2432,12 @@ function collectAppSettings() {
       try { hometax[k.slice('hometax_'.length)] = JSON.parse(localStorage.getItem(k) || '[]'); } catch {}
     }
   }
-  let partners = null;
+  let partners = null, fixedExpenses = null;
   try { const raw = localStorage.getItem(PARTNERS_KEY); if (raw) partners = JSON.parse(raw); } catch {}
+  try { const raw = localStorage.getItem(FIXED_EXPENSES_KEY); if (raw) fixedExpenses = JSON.parse(raw); } catch {}
   return {
     partners,
+    fixedExpenses,
     distSubtractDiscounts: localStorage.getItem(DIST_DISCOUNT_KEY) === 'true',
     hometax
   };
@@ -2412,6 +2446,7 @@ function collectAppSettings() {
 function applyAppSettings(s) {
   if (!s || typeof s !== 'object') return;
   if (Array.isArray(s.partners)) localStorage.setItem(PARTNERS_KEY, JSON.stringify(s.partners));
+  if (Array.isArray(s.fixedExpenses)) localStorage.setItem(FIXED_EXPENSES_KEY, JSON.stringify(s.fixedExpenses));
   if (s.distSubtractDiscounts != null) localStorage.setItem(DIST_DISCOUNT_KEY, s.distSubtractDiscounts ? 'true' : 'false');
   if (s.hometax && typeof s.hometax === 'object') {
     Object.entries(s.hometax).forEach(([month, arr]) => {
@@ -2420,6 +2455,7 @@ function applyAppSettings(s) {
   }
   // UI 즉시 반영
   if (typeof renderPartners === 'function') renderPartners();
+  if (typeof renderFixedExpenses === 'function') renderFixedExpenses();
   const distChk = document.getElementById('distSubtractDiscounts');
   if (distChk) distChk.checked = s.distSubtractDiscounts === true;
   if (typeof updateHometaxStatus === 'function') updateHometaxStatus();
@@ -2629,6 +2665,104 @@ function computeCostRatios(recordsLike) {
 }
 
 /* ========================================================================
+   Phase 3-3: 고정비 설정 + 손익계산서 (간단 수직 PnL)
+   - localStorage 'fixed_monthly_expenses' = [{id, name, amount, category, memo}]
+   - 매월 자동 반영. 단, 해당 월에 그 카테고리의 매입행이 1건이라도 있으면
+     설정값 무시(매입행이 우선). → 임대료/관리비를 까먹지 않으면서, 변동 시
+     매입행으로 덮어쓸 수 있음.
+   - 손익계산서: 매출 → (−)매출원가 → 매출총이익 → (−)판관비 → 영업이익
+                → (−)부가세 납부 → 순이익
+   ======================================================================== */
+const FIXED_EXPENSES_KEY = 'fixed_monthly_expenses';
+const COGS_CATEGORIES = ['식자재', '주류/음료'];  // 매출원가 = COGS
+const FIXED_EXPENSE_CATEGORY_PRESETS = ['임대료', '관리비', '공과금', '통신비', '보험료', '리스/임차료'];
+
+function getFixedExpenses() {
+  try {
+    const raw = localStorage.getItem(FIXED_EXPENSES_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr.map(e => ({
+      id: e.id || ('fx-' + Math.random().toString(36).slice(2, 8)),
+      name: String(e.name || ''),
+      amount: num(e.amount),
+      category: EXPENSE_CATEGORIES.includes(e.category) ? e.category : '임대료',
+      memo: String(e.memo || '')
+    }));
+  } catch { return []; }
+}
+function saveFixedExpenses(arr) { localStorage.setItem(FIXED_EXPENSES_KEY, JSON.stringify(arr)); }
+function addFixedExpense() {
+  const list = getFixedExpenses();
+  list.push({ id: 'fx-' + Math.random().toString(36).slice(2, 8), name: '', amount: 0, category: '임대료', memo: '' });
+  saveFixedExpenses(list);
+  renderFixedExpenses();
+  refreshMonthlyDistribution();
+}
+function deleteFixedExpense(i) {
+  const list = getFixedExpenses();
+  list.splice(i, 1);
+  saveFixedExpenses(list);
+  renderFixedExpenses();
+  refreshMonthlyDistribution();
+}
+function updateFixedExpense(i, key, value) {
+  const list = getFixedExpenses();
+  if (!list[i]) return;
+  if (key === 'amount') list[i][key] = num(value);
+  else list[i][key] = String(value || '');
+  saveFixedExpenses(list);
+  if (key === 'amount' || key === 'category') refreshMonthlyDistribution();
+}
+function renderFixedExpenses() {
+  const tbody = document.getElementById('fixedExpenseTableBody');
+  if (!tbody) return;
+  const list = getFixedExpenses();
+  const totalEl = document.getElementById('fixedExpenseTotal');
+  const total = list.reduce((s, e) => s + num(e.amount), 0);
+  if (totalEl) totalEl.textContent = '월 합계 ' + fmt(total);
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="5" style="padding:16px;text-align:center;color:var(--text-3);font-size:12px;">고정비를 추가하세요. 예: 임대료 ₩3,000,000 · 관리비 ₩200,000</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = list.map((e, i) => `
+    <tr>
+      <td><input value="${escapeHtml(e.name)}" placeholder="항목명 (예: 1층 임대료)" onchange="updateFixedExpense(${i},'name',this.value)"></td>
+      <td><select onchange="updateFixedExpense(${i},'category',this.value)">${EXPENSE_CATEGORIES.map(c => `<option ${e.category===c?'selected':''}>${c}</option>`).join('')}</select></td>
+      <td class="num-cell"><input type="number" class="num-cell" value="${e.amount||0}" onchange="updateFixedExpense(${i},'amount',this.value)"></td>
+      <td><input value="${escapeHtml(e.memo)}" placeholder="(메모)" onchange="updateFixedExpense(${i},'memo',this.value)"></td>
+      <td class="action-cell"><button class="delete-row" onclick="deleteFixedExpense(${i})">×</button></td>
+    </tr>
+  `).join('');
+}
+
+/**
+ * 월 단위로 적용될 고정비 산출.
+ * 규칙: 해당 월에 그 카테고리의 매입공급가 합계가 0이면 설정값 적용. 0보다 크면 무시.
+ * @returns {{ items: [{name, amount, category, applied: boolean, reason: string}], appliedByCategory: {cat: amount} }}
+ */
+function resolveFixedExpensesForMonth(monthCategoryActuals) {
+  const list = getFixedExpenses();
+  const appliedByCategory = {};
+  const items = list.map(e => {
+    const actual = num(monthCategoryActuals[e.category]);
+    const applied = num(e.amount) > 0 && actual === 0;
+    if (applied) {
+      appliedByCategory[e.category] = (appliedByCategory[e.category] || 0) + num(e.amount);
+    }
+    return {
+      name: e.name || '(이름없음)',
+      category: e.category,
+      amount: num(e.amount),
+      applied,
+      reason: !e.amount ? '금액 0' : actual > 0 ? `해당 월에 ${e.category} 매입행 있음 (₩${Math.round(actual).toLocaleString()})` : '월 매입행 없음 — 설정값 적용'
+    };
+  });
+  return { items, appliedByCategory };
+}
+
+/* ========================================================================
    Phase 3-2: 메뉴믹스 ABC · 객단가 추세 · 시간×요일 히트맵 (분석 헬퍼)
    ======================================================================== */
 
@@ -2766,7 +2900,8 @@ function computeMonthlyData(month) {
   let sumSales = 0, sumSalesSupply = 0, sumSalesVat = 0;
   let sumPTotal = 0, sumPSupply = 0, sumPVat = 0, sumExtra = 0;
   let sumPayroll = 0, sumDiscounts = 0;
-  const byCategory = {};
+  const byCategory = {};        // 부가세 포함 합계 (기존)
+  const bySupplyCategory = {};  // 공급가 기준 (신규 — 손익계산서·고정비 비교용)
   const dailyRows = [];
   for (const d of dates) {
     const rec = all[d];
@@ -2783,6 +2918,9 @@ function computeMonthlyData(month) {
     sumPayroll += payroll;
     sumDiscounts += discounts;
     Object.entries(p.byCategory).forEach(([k, v]) => { byCategory[k] = (byCategory[k] || 0) + v; });
+    (rec.purchaseRows || []).forEach(r => {
+      if (r.category) bySupplyCategory[r.category] = (bySupplyCategory[r.category] || 0) + num(r.supply);
+    });
     dailyRows.push({
       date: d,
       sales: Math.round(t.posTotal),
@@ -2794,15 +2932,25 @@ function computeMonthlyData(month) {
       status: rec.status === 'closed' ? '마감' : '작성중'
     });
   }
-  const monthPL = sumSalesSupply - (sumPSupply + sumExtra + sumPayroll);
+  // 고정비 자동 반영: 해당 월에 그 카테고리 매입행이 없을 때만
+  const fixedResolved = resolveFixedExpensesForMonth(bySupplyCategory);
+  const sumFixedApplied = Object.values(fixedResolved.appliedByCategory).reduce((s, v) => s + v, 0);
+  // 적용된 고정비를 카테고리별로 합산에 반영 (display·계산용)
+  Object.entries(fixedResolved.appliedByCategory).forEach(([k, v]) => {
+    bySupplyCategory[k] = (bySupplyCategory[k] || 0) + v;
+    byCategory[k] = (byCategory[k] || 0) + v; // 부가세 포함 표시도 같은 금액으로 (간이 — 임대료는 면세)
+  });
+  const monthPL = sumSalesSupply - (sumPSupply + sumExtra + sumPayroll + sumFixedApplied);
   const payableVat = sumSalesVat - sumPVat;
   const costRatios = computeCostRatios(dates.map(d => all[d]));
   return {
     month, dates, sumSales, sumSalesSupply, sumSalesVat,
     sumPTotal, sumPSupply, sumPVat, sumExtra, sumPayroll, sumDiscounts,
-    monthPL, payableVat, byCategory, dailyRows,
+    sumFixedApplied,
+    monthPL, payableVat, byCategory, bySupplyCategory, dailyRows,
     dist: computeMonthlyDistribution(monthPL, sumDiscounts),
-    costRatios
+    costRatios,
+    fixedExpensesResolved: fixedResolved
   };
 }
 
@@ -2879,6 +3027,8 @@ function renderMonthlyReport(month) {
 
       ${renderCostRatioCards(data.costRatios, '월 평균 (영업일 ' + dates.length + '일)')}
 
+      ${renderIncomeStatement(data)}
+
       ${Object.keys(byCategory).length ? `
         <div style="margin-bottom: 24px;">
           <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">매입 분류별 합계 (부가세 포함)</div>
@@ -2942,6 +3092,98 @@ function renderMonthlyReport(month) {
       </div>
 
       ${renderHometaxReconciliation(month)}
+    </div>`;
+}
+
+/**
+ * 손익계산서 (간단 수직 PnL) — 식당용
+ * 매출 → (−)매출원가(식자재+주류) → 매출총이익 → (−)판관비(분류별)
+ * → 영업이익 → (−)부가세 납부 → 순이익
+ */
+function renderIncomeStatement(data) {
+  if (!data || data.sumSalesSupply === 0 && data.sumSales === 0) return '';
+  const salesSupply = Math.round(data.sumSalesSupply);
+  const salesTotal = Math.round(data.sumSales);
+  const salesVat = Math.round(data.sumSalesVat);
+
+  // 매출원가 = 식자재 + 주류 (공급가)
+  const cogsByCategory = {};
+  let cogsSupply = 0;
+  COGS_CATEGORIES.forEach(c => {
+    const v = num(data.bySupplyCategory[c]);
+    if (v > 0) { cogsByCategory[c] = v; cogsSupply += v; }
+  });
+
+  const grossProfit = salesSupply - cogsSupply;
+  const grossMargin = salesSupply > 0 ? (grossProfit / salesSupply * 100) : 0;
+
+  // 판관비: 인건비 + 매입카테고리(COGS 제외) + 기타비용
+  const sgnaByCategory = {};
+  Object.entries(data.bySupplyCategory).forEach(([k, v]) => {
+    if (COGS_CATEGORIES.includes(k)) return;
+    if (v > 0) sgnaByCategory[k] = v;
+  });
+  // 인건비는 매입카테고리 '인건비' + payrollRows. payrollRows를 추가 합산.
+  sgnaByCategory['인건비'] = (sgnaByCategory['인건비'] || 0) + num(data.sumPayroll);
+  // 기타비용은 별도 라인
+  const otherExp = num(data.sumExtra);
+  const sgnaTotal = Object.values(sgnaByCategory).reduce((s, v) => s + v, 0) + otherExp;
+
+  const operatingIncome = grossProfit - sgnaTotal;
+  const operatingMargin = salesSupply > 0 ? (operatingIncome / salesSupply * 100) : 0;
+
+  const payableVat = num(data.payableVat);
+  const netIncome = operatingIncome - payableVat;  // 간이 — 영업외 미반영, 법인세 미반영
+
+  const sortedSgna = Object.entries(sgnaByCategory).sort((a, b) => b[1] - a[1]);
+  const appliedFixed = data.fixedExpensesResolved && data.fixedExpensesResolved.items
+    ? data.fixedExpensesResolved.items.filter(it => it.applied) : [];
+
+  const num0 = (n) => n === 0 ? '-' : fmt(n);
+  const signedColor = (n) => n < 0 ? 'var(--red)' : 'var(--text)';
+
+  const row = (label, value, opts = {}) => `
+    <tr style="${opts.bold ? 'font-weight:600;' : ''}${opts.bg ? 'background:var(--hover);' : ''}${opts.indent ? '' : ''}">
+      <td style="padding:${opts.bold ? '10px' : '6px'} 10px;${opts.indent ? 'padding-left:32px;color:var(--text-2);' : ''}${opts.border ? 'border-top:1px solid var(--border);' : ''}">${label}</td>
+      <td style="padding:${opts.bold ? '10px' : '6px'} 10px;text-align:right;font-family:JetBrains Mono, monospace;color:${opts.color || (opts.bold ? 'var(--text)' : signedColor(value))};${opts.border ? 'border-top:1px solid var(--border);' : ''}">${opts.bold ? '<strong>' : ''}${opts.signed && value > 0 ? '+' : ''}${num0(Math.round(value))}${opts.bold ? '</strong>' : ''}</td>
+      <td style="padding:${opts.bold ? '10px' : '6px'} 10px;text-align:right;font-size:11px;color:var(--text-3);${opts.border ? 'border-top:1px solid var(--border);' : ''}">${opts.pct != null ? opts.pct.toFixed(1) + '%' : ''}</td>
+    </tr>`;
+
+  return `
+    <div style="margin-bottom: 24px;">
+      <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">손익계산서 <span style="color:var(--text-3);font-weight:400;font-size:11px;margin-left:6px;">공급가 기준 · ${data.month}</span></div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+        <thead>
+          <tr style="background:var(--subtle);">
+            <th style="text-align:left;padding:8px 10px;font-weight:500;color:var(--text-2);">항목</th>
+            <th style="text-align:right;padding:8px 10px;font-weight:500;color:var(--text-2);">금액</th>
+            <th style="text-align:right;padding:8px 10px;font-weight:500;color:var(--text-2);width:70px;">매출비</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${row('매출액 (공급가)', salesSupply, { bold: true, color: 'var(--text)' })}
+          ${row(`└ 부가세 별도`, salesVat, { indent: true })}
+          ${row('(−) 매출원가', -cogsSupply, { color: 'var(--red)', pct: salesSupply > 0 ? cogsSupply/salesSupply*100 : 0 })}
+          ${Object.entries(cogsByCategory).map(([k, v]) => row(`  ${k}`, -v, { indent: true, color: 'var(--text-2)', pct: salesSupply > 0 ? v/salesSupply*100 : 0 })).join('')}
+          ${row('매출총이익', grossProfit, { bold: true, bg: true, color: signedColor(grossProfit), pct: grossMargin, border: true })}
+          ${row('(−) 판매비와 관리비', -sgnaTotal, { color: 'var(--red)', pct: salesSupply > 0 ? sgnaTotal/salesSupply*100 : 0, border: true })}
+          ${sortedSgna.map(([k, v]) => row(`  ${k}`, -v, { indent: true, color: 'var(--text-2)', pct: salesSupply > 0 ? v/salesSupply*100 : 0 })).join('')}
+          ${otherExp > 0 ? row(`  기타비용 (일일 현금지출)`, -otherExp, { indent: true, color: 'var(--text-2)', pct: salesSupply > 0 ? otherExp/salesSupply*100 : 0 }) : ''}
+          ${row('영업이익', operatingIncome, { bold: true, bg: true, color: signedColor(operatingIncome), pct: operatingMargin, border: true })}
+          ${row('(−) 부가가치세 납부 (추정)', -payableVat, { color: 'var(--text-2)', pct: salesSupply > 0 ? payableVat/salesSupply*100 : 0, border: true })}
+          ${row('└ 매출세액', salesVat, { indent: true })}
+          ${row('└ 매입세액', -num(data.sumPVat), { indent: true })}
+          ${row('당기순이익 (간이)', netIncome, { bold: true, bg: true, color: signedColor(netIncome), pct: salesSupply > 0 ? netIncome/salesSupply*100 : 0, border: true })}
+        </tbody>
+      </table>
+      ${appliedFixed.length ? `
+        <div style="font-size:11px;color:var(--text-3);margin-top:6px;">
+          ※ 고정비 자동 반영: ${appliedFixed.map(f => `${escapeHtml(f.name)}(${f.category}) ${fmt(Math.round(f.amount))}`).join(' · ')}
+        </div>
+      ` : ''}
+      <div style="font-size:11px;color:var(--text-3);margin-top:4px;">
+        ※ 간이 PnL — 영업외손익·법인세 미반영. 부가세는 일반과세 가정(매출세액 − 매입세액).
+      </div>
     </div>`;
 }
 
@@ -3051,12 +3293,47 @@ function exportMonthlyExcel() {
     ['매출 (총액)', data.sumSales, `공급가 ${Math.round(data.sumSalesSupply).toLocaleString()} + 매출세액 ${Math.round(data.sumSalesVat).toLocaleString()}`],
     ['매입·비용 (총액)', Math.round(data.sumPTotal + data.sumExtra), `공급가 ${Math.round(data.sumPSupply + data.sumExtra).toLocaleString()} + 매입세액 ${Math.round(data.sumPVat).toLocaleString()}`],
     ['인건비', Math.round(data.sumPayroll), '면세 · 손익에 차감'],
+    ['고정비 자동반영', Math.round(data.sumFixedApplied || 0), '월 매입행 없는 카테고리만'],
     ['할인·쿠폰(컴프)', Math.round(data.sumDiscounts), '추적용 · 정률 분배 토글에 따라 공동비용 차감'],
     [],
-    ['월 손익 (공급가 기준)', Math.round(data.monthPL), '매출공급가 − 매입공급가 − 기타비용 − 인건비'],
+    ['월 손익 (공급가 기준)', Math.round(data.monthPL), '매출공급가 − 매입공급가 − 기타비용 − 인건비 − 고정비'],
     ['납부세액 (추정)', Math.round(data.payableVat), '매출세액 − 매입세액']
   ];
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), '요약');
+
+  // Sheet 1-B: 손익계산서 (수직 PnL)
+  const salesSupply = Math.round(data.sumSalesSupply);
+  const cogsByCategory = {};
+  let cogsSupply = 0;
+  COGS_CATEGORIES.forEach(c => { const v = num(data.bySupplyCategory[c]); if (v > 0) { cogsByCategory[c] = v; cogsSupply += v; } });
+  const grossProfit = salesSupply - cogsSupply;
+  const sgnaByCategory = {};
+  Object.entries(data.bySupplyCategory).forEach(([k, v]) => { if (!COGS_CATEGORIES.includes(k) && v > 0) sgnaByCategory[k] = v; });
+  sgnaByCategory['인건비'] = (sgnaByCategory['인건비'] || 0) + num(data.sumPayroll);
+  const otherExp = num(data.sumExtra);
+  const sgnaTotal = Object.values(sgnaByCategory).reduce((s, v) => s + v, 0) + otherExp;
+  const opIncome = grossProfit - sgnaTotal;
+  const payableVat = num(data.payableVat);
+  const netIncome = opIncome - payableVat;
+  const pct = (v) => salesSupply > 0 ? (v / salesSupply * 100).toFixed(1) + '%' : '';
+
+  const isSheet = [
+    ['손익계산서', data.month, '공급가 기준'],
+    [],
+    ['항목', '금액(원)', '매출비'],
+    ['매출액', salesSupply, ''],
+    ['└ 부가세 별도', Math.round(data.sumSalesVat), ''],
+    ['(-) 매출원가', -cogsSupply, pct(cogsSupply)]
+  ];
+  Object.entries(cogsByCategory).forEach(([k, v]) => isSheet.push(['  ' + k, -Math.round(v), pct(v)]));
+  isSheet.push(['매출총이익', grossProfit, pct(grossProfit)]);
+  isSheet.push(['(-) 판매비와관리비', -sgnaTotal, pct(sgnaTotal)]);
+  Object.entries(sgnaByCategory).sort((a,b)=>b[1]-a[1]).forEach(([k, v]) => isSheet.push(['  ' + k, -Math.round(v), pct(v)]));
+  if (otherExp > 0) isSheet.push(['  기타비용', -otherExp, pct(otherExp)]);
+  isSheet.push(['영업이익', opIncome, pct(opIncome)]);
+  isSheet.push(['(-) 부가가치세 납부(추정)', -payableVat, pct(payableVat)]);
+  isSheet.push(['당기순이익(간이)', netIncome, pct(netIncome)]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(isSheet), '손익계산서');
 
   // Sheet 2: 일자별
   const daily = [['날짜', '매출', '매입', '인건비', '할인·쿠폰', '기타비용', '일 손익', '상태']];
