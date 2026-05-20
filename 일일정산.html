@@ -1352,6 +1352,20 @@ main {
 .m-table th { text-align: left; padding: 8px 10px; background: var(--subtle); border-bottom: 1px solid var(--border); font-weight: 500; color: var(--text-2); }
 .m-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
 .m-table tbody tr:hover { background: var(--hover); }
+
+/* 월정산 인쇄(PDF 저장) — 헤더·사이드바·다른 탭 숨기고 월정산만 인쇄 */
+@media print {
+  @page { size: A4; margin: 12mm; }
+  body { background: #fff !important; color: #000 !important; }
+  header, aside.sidebar, .tabs, .tab-panel:not(#tab-monthly), .btn, .seg-btn, .section-note button { display: none !important; }
+  .layout, main, .main, .container { display: block !important; }
+  #tab-monthly { display: block !important; }
+  #tab-monthly .section { border: none !important; box-shadow: none !important; page-break-inside: avoid; }
+  #tab-monthly .m-card { border: 1px solid #ccc !important; background: #fff !important; }
+  #tab-monthly .m-table th { background: #f3f3f3 !important; color: #000 !important; }
+  #tab-monthly input[type="month"] { border: none !important; background: transparent !important; font-weight: 600; }
+  body.printing-monthly > *:not(main):not(.layout):not(.container) { display: none !important; }
+}
 </style>
 </head>
 <body>
@@ -1742,12 +1756,53 @@ main {
       <div class="section">
         <div class="section-head">
           <div class="section-title">월정산</div>
-          <div class="section-note">
+          <div class="section-note" style="display:flex;gap:8px;align-items:center;">
             <input type="month" id="monthlyMonth" style="padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-family: inherit; background: var(--bg); color: var(--text);">
+            <button class="btn btn-small" onclick="exportMonthlyExcel()" title="현재 선택된 월의 손익·일자별·매입 분류·정률 분배를 엑셀(.xlsx)로 저장">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              엑셀
+            </button>
+            <button class="btn btn-small" onclick="printMonthlyReport()" title="브라우저 인쇄 → 'PDF로 저장' 선택">
+              <svg class="icon" viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+              PDF
+            </button>
           </div>
         </div>
         <div id="monthlyContent" style="padding: 40px 20px; text-align: center; color: var(--text-3); font-size: 13px;">
           월을 선택하면 손익계산서가 여기에 표시됩니다.
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-head">
+          <div class="section-title">정률 분배 설정</div>
+          <div class="section-note" id="partnerSumNote">합계 0%</div>
+        </div>
+        <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
+          동업자별 고정 비율(%). 합이 100% 일 때만 분배가 적용됩니다. 설정은 모든 월에 동일 적용 · 로컬 저장됩니다.
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>동업자명</th>
+                <th class="num-cell">분배 비율 (%)</th>
+                <th>메모</th>
+                <th class="action-cell"></th>
+              </tr>
+            </thead>
+            <tbody id="partnerTableBody"></tbody>
+          </table>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-small" onclick="addPartner()">
+            <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            동업자 추가
+          </button>
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2);margin-left:auto;">
+            <input type="checkbox" id="distSubtractDiscounts">
+            할인·쿠폰(컴프)을 분배 전 공동비용으로 차감
+          </label>
         </div>
       </div>
     </div>
@@ -2022,6 +2077,13 @@ function init() {
   document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
   const monthlyMonthEl = document.getElementById('monthlyMonth');
   if (monthlyMonthEl) monthlyMonthEl.addEventListener('change', (e) => renderMonthlyReport(e.target.value));
+  // 정률 분배 설정 init
+  renderPartners();
+  const distChk = document.getElementById('distSubtractDiscounts');
+  if (distChk) {
+    distChk.checked = getDistSubtractDiscounts();
+    distChk.addEventListener('change', (e) => { setDistSubtractDiscounts(e.target.checked); refreshMonthlyDistribution(); });
+  }
   setupUpload('posFile', 'posUpload', 'pos');
   setupUpload('cardFile', 'cardUpload', 'card');
   setupUpload('bankFile', 'bankUpload', 'bank');
@@ -2095,18 +2157,116 @@ function computePurchaseFromRec(rec) {
   return { purchaseSupply: supply, purchaseVat: vat, purchaseTotal: total, byCategory };
 }
 
-function renderMonthlyReport(month) {
-  const container = document.getElementById('monthlyContent');
-  if (!container || !month) return;
+/* ========================================================================
+   정률 분배 설정 (Phase 2-2)
+   - localStorage 'partner_ratios': [{name, ratio, memo}]
+   - localStorage 'dist_subtract_discounts': 'true' | 'false' (컴프 공동비용 처리 토글)
+   - 합계가 100%일 때만 분배 표시
+   ======================================================================== */
+const PARTNERS_KEY = 'partner_ratios';
+const DIST_DISCOUNT_KEY = 'dist_subtract_discounts';
+
+function getPartners() {
+  try {
+    const raw = localStorage.getItem(PARTNERS_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr.map(p => ({ name: String(p.name || ''), ratio: num(p.ratio), memo: String(p.memo || '') }));
+  } catch { return []; }
+}
+function savePartners(arr) { localStorage.setItem(PARTNERS_KEY, JSON.stringify(arr)); }
+function getDistSubtractDiscounts() { return localStorage.getItem(DIST_DISCOUNT_KEY) === 'true'; }
+function setDistSubtractDiscounts(v) { localStorage.setItem(DIST_DISCOUNT_KEY, v ? 'true' : 'false'); }
+
+function addPartner() {
+  const list = getPartners();
+  list.push({ name: '', ratio: 0, memo: '' });
+  savePartners(list);
+  renderPartners();
+  refreshMonthlyDistribution();
+}
+function deletePartner(i) {
+  const list = getPartners();
+  list.splice(i, 1);
+  savePartners(list);
+  renderPartners();
+  refreshMonthlyDistribution();
+}
+function updatePartner(i, key, value) {
+  const list = getPartners();
+  if (!list[i]) return;
+  if (key === 'ratio') list[i][key] = num(value);
+  else list[i][key] = String(value || '');
+  savePartners(list);
+  // ratio 변경 시 합계 노트 + 분배 재계산
+  if (key === 'ratio') {
+    updatePartnerSumNote();
+    refreshMonthlyDistribution();
+  }
+}
+function updatePartnerSumNote() {
+  const note = document.getElementById('partnerSumNote');
+  if (!note) return;
+  const sum = getPartners().reduce((s, p) => s + num(p.ratio), 0);
+  const ok = Math.abs(sum - 100) < 0.001;
+  note.textContent = `합계 ${sum}%`;
+  note.style.color = ok ? 'var(--green)' : (sum === 0 ? 'var(--text-3)' : 'var(--orange)');
+}
+function renderPartners() {
+  const tbody = document.getElementById('partnerTableBody');
+  if (!tbody) return;
+  const list = getPartners();
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="4" style="padding:16px;text-align:center;color:var(--text-3);font-size:12px;">동업자를 추가하세요. 예: 사장A 50% · 사장B 50%</td></tr>`;
+  } else {
+    tbody.innerHTML = list.map((p, i) => `
+      <tr>
+        <td><input value="${escapeHtml(p.name)}" placeholder="동업자명" onchange="updatePartner(${i},'name',this.value)"></td>
+        <td class="num-cell"><input type="number" class="num-cell" step="0.1" value="${p.ratio}" onchange="updatePartner(${i},'ratio',this.value)"></td>
+        <td><input value="${escapeHtml(p.memo)}" placeholder="(메모)" onchange="updatePartner(${i},'memo',this.value)"></td>
+        <td class="action-cell"><button class="delete-row" onclick="deletePartner(${i})">×</button></td>
+      </tr>
+    `).join('');
+  }
+  updatePartnerSumNote();
+}
+
+function refreshMonthlyDistribution() {
+  const mm = document.getElementById('monthlyMonth');
+  if (mm && mm.value) renderMonthlyReport(mm.value);
+}
+
+/**
+ * 월 분배 계산
+ * @param {number} monthPL - 월 손익(공급가 기준)
+ * @param {number} sumDiscounts - 월 할인·쿠폰 합계
+ * @returns {{partners, distributable, ratioSum, ratioOk, subtractDiscounts}}
+ */
+function computeMonthlyDistribution(monthPL, sumDiscounts) {
+  const partners = getPartners();
+  const ratioSum = partners.reduce((s, p) => s + num(p.ratio), 0);
+  const ratioOk = Math.abs(ratioSum - 100) < 0.001 && partners.length > 0;
+  const subtractDiscounts = getDistSubtractDiscounts();
+  const distributable = subtractDiscounts ? (monthPL - num(sumDiscounts)) : monthPL;
+  const rows = partners.map(p => ({
+    name: p.name || '(이름 없음)',
+    ratio: num(p.ratio),
+    memo: p.memo || '',
+    amount: ratioOk ? Math.round(distributable * (num(p.ratio) / 100)) : 0
+  }));
+  return { partners: rows, distributable, ratioSum, ratioOk, subtractDiscounts };
+}
+
+/** 월정산 데이터 집계 — render/export 공용 */
+function computeMonthlyData(month) {
+  if (!month) return null;
   const all = getAllRecords();
   const dates = Object.keys(all).filter(d => d.startsWith(month)).sort();
-  if (!dates.length) {
-    container.innerHTML = `<div style="padding:40px 20px;text-align:center;color:var(--text-3);font-size:13px;">${month} 데이터 없음</div>`;
-    return;
-  }
+  if (!dates.length) return null;
   let sumSales = 0, sumSalesSupply = 0, sumSalesVat = 0;
   let sumPTotal = 0, sumPSupply = 0, sumPVat = 0, sumExtra = 0;
-  let sumPayroll = 0;
+  let sumPayroll = 0, sumDiscounts = 0;
   const byCategory = {};
   const dailyRows = [];
   for (const d of dates) {
@@ -2115,12 +2275,14 @@ function renderMonthlyReport(month) {
     const p = computePurchaseFromRec(rec);
     const extras = rec.extras || {};
     const extraExp = num(extras.expenses);
+    const discounts = num(extras.discounts);
     const payroll = (rec.payrollRows || []).reduce((s, r) => s + num(r.amount), 0);
     const dayPL = (t.supply || 0) - (p.purchaseSupply + extraExp + payroll);
     sumSales += t.posTotal; sumSalesSupply += t.supply; sumSalesVat += t.vat;
     sumPTotal += p.purchaseTotal; sumPSupply += p.purchaseSupply; sumPVat += p.purchaseVat;
     sumExtra += extraExp;
     sumPayroll += payroll;
+    sumDiscounts += discounts;
     Object.entries(p.byCategory).forEach(([k, v]) => { byCategory[k] = (byCategory[k] || 0) + v; });
     dailyRows.push({
       date: d,
@@ -2128,12 +2290,31 @@ function renderMonthlyReport(month) {
       purchase: Math.round(p.purchaseTotal),
       payroll: Math.round(payroll),
       extraExp: Math.round(extraExp),
+      discounts: Math.round(discounts),
       pl: Math.round(dayPL),
       status: rec.status === 'closed' ? '마감' : '작성중'
     });
   }
   const monthPL = sumSalesSupply - (sumPSupply + sumExtra + sumPayroll);
   const payableVat = sumSalesVat - sumPVat;
+  return {
+    month, dates, sumSales, sumSalesSupply, sumSalesVat,
+    sumPTotal, sumPSupply, sumPVat, sumExtra, sumPayroll, sumDiscounts,
+    monthPL, payableVat, byCategory, dailyRows,
+    dist: computeMonthlyDistribution(monthPL, sumDiscounts)
+  };
+}
+
+function renderMonthlyReport(month) {
+  const container = document.getElementById('monthlyContent');
+  if (!container || !month) return;
+  const data = computeMonthlyData(month);
+  if (!data) {
+    container.innerHTML = `<div style="padding:40px 20px;text-align:center;color:var(--text-3);font-size:13px;">${month} 데이터 없음</div>`;
+    return;
+  }
+  const { dates, sumSales, sumSalesSupply, sumSalesVat, sumPTotal, sumPSupply, sumPVat,
+          sumExtra, sumPayroll, sumDiscounts, monthPL, payableVat, byCategory, dailyRows, dist } = data;
   const plColor = monthPL < 0 ? 'var(--red)' : 'var(--green)';
 
   container.innerHTML = `
@@ -2196,7 +2377,7 @@ function renderMonthlyReport(month) {
       </div>
 
       ${Object.keys(byCategory).length ? `
-        <div>
+        <div style="margin-bottom: 24px;">
           <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">매입 분류별 합계 (부가세 포함)</div>
           <table class="m-table">
             <thead><tr><th>분류</th><th style="text-align:right;">합계</th></tr></thead>
@@ -2208,7 +2389,144 @@ function renderMonthlyReport(month) {
           </table>
         </div>
       ` : ''}
+
+      <div>
+        <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">동업자 정률 분배</div>
+        ${dist.partners.length === 0 ? `
+          <div style="padding: 14px; border: 1px dashed var(--border); border-radius: 8px; font-size: 12px; color: var(--text-3);">
+            아래 "정률 분배 설정" 카드에서 동업자와 비율을 입력하세요.
+          </div>
+        ` : !dist.ratioOk ? `
+          <div style="padding: 14px; border: 1px solid var(--orange); background: var(--orange-bg); border-radius: 8px; font-size: 12px; color: var(--orange);">
+            비율 합계가 <strong>${dist.ratioSum}%</strong>입니다. <strong>100%</strong>일 때만 분배가 계산됩니다.
+          </div>
+        ` : `
+          <div style="font-size: 12px; color: var(--text-3); margin-bottom: 6px;">
+            분배 대상 = 월 손익 ${fmt(Math.round(monthPL))}${dist.subtractDiscounts ? ` − 할인·쿠폰 ${fmt(Math.round(sumDiscounts))}(공동비용)` : ''} = <strong style="color:var(--text);">${fmt(Math.round(dist.distributable))}</strong>
+          </div>
+          <table class="m-table">
+            <thead>
+              <tr>
+                <th>동업자</th>
+                <th style="text-align:right;">비율</th>
+                <th style="text-align:right;">분배액</th>
+                <th>메모</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${dist.partners.map(p => `
+                <tr>
+                  <td>${escapeHtml(p.name)}</td>
+                  <td style="text-align:right;">${p.ratio}%</td>
+                  <td style="text-align:right; color: ${p.amount < 0 ? 'var(--red)' : 'var(--text)'};"><strong>${fmt(p.amount)}</strong></td>
+                  <td style="color:var(--text-3);">${escapeHtml(p.memo)}</td>
+                </tr>
+              `).join('')}
+              <tr style="background:var(--hover);">
+                <td><strong>합계</strong></td>
+                <td style="text-align:right;"><strong>${dist.ratioSum}%</strong></td>
+                <td style="text-align:right;"><strong>${fmt(dist.partners.reduce((s,p)=>s+p.amount,0))}</strong></td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
+          ${dist.subtractDiscounts && sumDiscounts > 0 ? `
+            <div style="font-size: 11px; color: var(--text-3); margin-top: 6px;">
+              ※ 할인·쿠폰(컴프) ${fmt(Math.round(sumDiscounts))}은 공동비용으로 차감 후 분배되었습니다.
+            </div>
+          ` : ''}
+        `}
+      </div>
     </div>`;
+}
+
+/* ========================================================================
+   월정산 Export (Phase 2-3)
+   - 엑셀: 요약/일자별/매입분류/정률분배 4개 시트
+   - PDF: 브라우저 인쇄 다이얼로그 → 'PDF로 저장' (별도 라이브러리 불필요)
+   ======================================================================== */
+function _getMonthlyOrToast() {
+  const mm = document.getElementById('monthlyMonth');
+  if (!mm || !mm.value) { toast('월을 먼저 선택하세요', 'warn'); return null; }
+  const data = computeMonthlyData(mm.value);
+  if (!data) { toast(`${mm.value} 데이터 없음`, 'warn'); return null; }
+  return data;
+}
+
+function exportMonthlyExcel() {
+  const data = _getMonthlyOrToast();
+  if (!data) return;
+  if (typeof XLSX === 'undefined') { toast('XLSX 라이브러리 로드 실패', 'danger'); return; }
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: 요약
+  const summary = [
+    ['월정산 요약', data.month],
+    ['영업일수', data.dates.length],
+    [],
+    ['항목', '금액(원)', '비고'],
+    ['매출 (총액)', data.sumSales, `공급가 ${Math.round(data.sumSalesSupply).toLocaleString()} + 매출세액 ${Math.round(data.sumSalesVat).toLocaleString()}`],
+    ['매입·비용 (총액)', Math.round(data.sumPTotal + data.sumExtra), `공급가 ${Math.round(data.sumPSupply + data.sumExtra).toLocaleString()} + 매입세액 ${Math.round(data.sumPVat).toLocaleString()}`],
+    ['인건비', Math.round(data.sumPayroll), '면세 · 손익에 차감'],
+    ['할인·쿠폰(컴프)', Math.round(data.sumDiscounts), '추적용 · 정률 분배 토글에 따라 공동비용 차감'],
+    [],
+    ['월 손익 (공급가 기준)', Math.round(data.monthPL), '매출공급가 − 매입공급가 − 기타비용 − 인건비'],
+    ['납부세액 (추정)', Math.round(data.payableVat), '매출세액 − 매입세액']
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), '요약');
+
+  // Sheet 2: 일자별
+  const daily = [['날짜', '매출', '매입', '인건비', '할인·쿠폰', '기타비용', '일 손익', '상태']];
+  data.dailyRows.forEach(r => daily.push([r.date, r.sales, r.purchase, r.payroll, r.discounts, r.extraExp, r.pl, r.status]));
+  daily.push([
+    '합계',
+    data.dailyRows.reduce((s,r)=>s+r.sales,0),
+    data.dailyRows.reduce((s,r)=>s+r.purchase,0),
+    data.dailyRows.reduce((s,r)=>s+r.payroll,0),
+    data.dailyRows.reduce((s,r)=>s+r.discounts,0),
+    data.dailyRows.reduce((s,r)=>s+r.extraExp,0),
+    data.dailyRows.reduce((s,r)=>s+r.pl,0),
+    ''
+  ]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(daily), '일자별');
+
+  // Sheet 3: 매입 분류별
+  const cats = Object.entries(data.byCategory).sort((a,b) => b[1] - a[1]);
+  if (cats.length) {
+    const catSheet = [['분류', '합계(부가세 포함)']];
+    cats.forEach(([k, v]) => catSheet.push([k, Math.round(v)]));
+    catSheet.push(['합계', Math.round(cats.reduce((s,[,v])=>s+v,0))]);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(catSheet), '매입분류');
+  }
+
+  // Sheet 4: 정률 분배
+  const distSheet = [
+    ['정률 분배', data.month],
+    ['분배 대상', Math.round(data.dist.distributable), data.dist.subtractDiscounts ? '월 손익 − 할인·쿠폰(공동비용)' : '월 손익'],
+    ['비율 합계', data.dist.ratioSum + '%', data.dist.ratioOk ? '정상 (100%)' : '※ 100%가 아니므로 분배 미계산'],
+    [],
+    ['동업자', '비율(%)', '분배액(원)', '메모']
+  ];
+  data.dist.partners.forEach(p => distSheet.push([p.name, p.ratio, p.amount, p.memo]));
+  if (data.dist.partners.length) {
+    distSheet.push([
+      '합계',
+      data.dist.ratioSum,
+      data.dist.partners.reduce((s,p)=>s+p.amount,0),
+      ''
+    ]);
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(distSheet), '정률분배');
+
+  XLSX.writeFile(wb, `월정산_${data.month}.xlsx`);
+  toast(`엑셀 저장: 월정산_${data.month}.xlsx`, 'ok');
+}
+
+function printMonthlyReport() {
+  const data = _getMonthlyOrToast();
+  if (!data) return;
+  // 인쇄 대화상자 → 'PDF로 저장' 선택. @media print CSS가 월정산만 노출.
+  window.print();
 }
 
 function setupUpload(inputId, zoneId, type) {
