@@ -2564,6 +2564,117 @@ function reconcileHometax(month) {
   return { matched, orphanHometax, orphanApp, appRows, hometaxRows: ht };
 }
 
+/* ========================================================================
+   운영 KPI: 식자재 원가율 · 인건비율 · Prime Cost (식당 핵심 지표)
+   - 식자재 원가율 = (식자재 + 주류/음료 매입공급가) / 매출공급가, 목표 ≤ 35%
+   - 인건비율     = (payroll + 매입카테고리 인건비) / 매출공급가, 목표 ≤ 30%
+   - Prime Cost % = (식자재 + 인건비) / 매출공급가, 목표 ≤ 60%
+   ======================================================================== */
+const COST_RATIO_THRESHOLDS = {
+  food:   { ok: 30, warn: 35, danger: 40 },   // %
+  labor:  { ok: 25, warn: 30, danger: 35 },
+  prime:  { ok: 55, warn: 60, danger: 65 }
+};
+function _ratioLevel(pct, t) {
+  if (pct <= t.ok) return 'ok';
+  if (pct <= t.warn) return 'normal';
+  if (pct <= t.danger) return 'warn';
+  return 'danger';
+}
+function _levelColor(level) {
+  return level === 'ok' ? 'var(--green)'
+       : level === 'warn' ? 'var(--orange)'
+       : level === 'danger' ? 'var(--red)' : 'var(--text)';
+}
+
+/**
+ * 1개 record 또는 record 배열에서 운영 KPI 계산
+ * @param {object|object[]} recordsLike
+ * @returns {{salesSupply, foodSupply, beverageSupply, foodCost, laborTotal, primeCost,
+ *           foodCostRatio, foodOnlyRatio, beverageRatio, laborRatio, primeCostRatio}}
+ *   (Ratio는 0~1 비율. 화면 표시 시 ×100)
+ */
+function computeCostRatios(recordsLike) {
+  const records = Array.isArray(recordsLike) ? recordsLike : [recordsLike];
+  let salesSupply = 0;
+  let foodSupply = 0, beverageSupply = 0, purchaseLabor = 0;
+  let payrollTotal = 0;
+  for (const rec of records) {
+    if (!rec) continue;
+    const totals = rec.totals || (rec.posRows ? computeTotalsFor(rec) : null);
+    if (totals && totals.supply != null) salesSupply += num(totals.supply);
+    (rec.purchaseRows || []).forEach(p => {
+      const s = num(p.supply);
+      if (p.category === '식자재') foodSupply += s;
+      else if (p.category === '주류/음료') beverageSupply += s;
+      else if (p.category === '인건비') purchaseLabor += s;
+    });
+    payrollTotal += (rec.payrollRows || []).reduce((s, r) => s + num(r.amount), 0);
+  }
+  const laborTotal = payrollTotal + purchaseLabor;
+  const foodCost = foodSupply + beverageSupply;
+  const primeCost = foodCost + laborTotal;
+  const ratio = (v) => salesSupply > 0 ? v / salesSupply : 0;
+  return {
+    salesSupply, foodSupply, beverageSupply, foodCost,
+    laborTotal, primeCost,
+    foodCostRatio: ratio(foodCost),
+    foodOnlyRatio: ratio(foodSupply),
+    beverageRatio: ratio(beverageSupply),
+    laborRatio: ratio(laborTotal),
+    primeCostRatio: ratio(primeCost)
+  };
+}
+
+/**
+ * 운영 KPI 카드 행 HTML 생성 (월정산 · 분석 탭 공용)
+ * @param {object} cr - computeCostRatios() 반환값
+ * @param {string} subLabel - '월 평균', '기간 평균' 등
+ */
+function renderCostRatioCards(cr, subLabel) {
+  if (!cr || cr.salesSupply <= 0) {
+    return `
+      <div style="margin-bottom: 24px;">
+        <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">운영 KPI <span style="color:var(--text-3);font-weight:400;font-size:11px;margin-left:6px;">${escapeHtml(subLabel || '')}</span></div>
+        <div style="padding:14px;border:1px dashed var(--border);border-radius:8px;font-size:12px;color:var(--text-3);">매출 데이터가 없어 운영 KPI를 계산할 수 없습니다.</div>
+      </div>`;
+  }
+  const foodPct = cr.foodCostRatio * 100;
+  const laborPct = cr.laborRatio * 100;
+  const primePct = cr.primeCostRatio * 100;
+  const fLevel = _ratioLevel(foodPct, COST_RATIO_THRESHOLDS.food);
+  const lLevel = _ratioLevel(laborPct, COST_RATIO_THRESHOLDS.labor);
+  const pLevel = _ratioLevel(primePct, COST_RATIO_THRESHOLDS.prime);
+  const statusText = (lv, tNorm) => lv === 'ok' ? '우수' : lv === 'normal' ? '양호' : lv === 'warn' ? '주의' : '위험';
+  const subFood = `식자재 ${(cr.foodOnlyRatio*100).toFixed(1)}% + 주류 ${(cr.beverageRatio*100).toFixed(1)}%`;
+  return `
+    <div style="margin-bottom: 24px;">
+      <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">운영 KPI <span style="color:var(--text-3);font-weight:400;font-size:11px;margin-left:6px;">${escapeHtml(subLabel || '')}</span></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">
+        <div class="m-card">
+          <div class="m-card-label">식자재 원가율 <span style="color:${_levelColor(fLevel)};font-weight:600;">${statusText(fLevel)}</span></div>
+          <div class="m-card-value" style="color:${_levelColor(fLevel)};">${foodPct.toFixed(1)}%</div>
+          <div class="m-card-sub">${subFood} · 목표 ≤ ${COST_RATIO_THRESHOLDS.food.warn}%</div>
+        </div>
+        <div class="m-card">
+          <div class="m-card-label">인건비율 <span style="color:${_levelColor(lLevel)};font-weight:600;">${statusText(lLevel)}</span></div>
+          <div class="m-card-value" style="color:${_levelColor(lLevel)};">${laborPct.toFixed(1)}%</div>
+          <div class="m-card-sub">인건비 ${fmt(Math.round(cr.laborTotal))} · 목표 ≤ ${COST_RATIO_THRESHOLDS.labor.warn}%</div>
+        </div>
+        <div class="m-card">
+          <div class="m-card-label">Prime Cost <span style="color:${_levelColor(pLevel)};font-weight:600;">${statusText(pLevel)}</span></div>
+          <div class="m-card-value" style="color:${_levelColor(pLevel)};">${primePct.toFixed(1)}%</div>
+          <div class="m-card-sub">식자재 + 인건비 ${fmt(Math.round(cr.primeCost))} · 목표 ≤ ${COST_RATIO_THRESHOLDS.prime.warn}%</div>
+        </div>
+        <div class="m-card">
+          <div class="m-card-label">매출공급가 (분모)</div>
+          <div class="m-card-value">${fmt(Math.round(cr.salesSupply))}</div>
+          <div class="m-card-sub">부가세 제외 매출</div>
+        </div>
+      </div>
+    </div>`;
+}
+
 /** 월정산 데이터 집계 — render/export 공용 */
 function computeMonthlyData(month) {
   if (!month) return null;
@@ -2603,11 +2714,13 @@ function computeMonthlyData(month) {
   }
   const monthPL = sumSalesSupply - (sumPSupply + sumExtra + sumPayroll);
   const payableVat = sumSalesVat - sumPVat;
+  const costRatios = computeCostRatios(dates.map(d => all[d]));
   return {
     month, dates, sumSales, sumSalesSupply, sumSalesVat,
     sumPTotal, sumPSupply, sumPVat, sumExtra, sumPayroll, sumDiscounts,
     monthPL, payableVat, byCategory, dailyRows,
-    dist: computeMonthlyDistribution(monthPL, sumDiscounts)
+    dist: computeMonthlyDistribution(monthPL, sumDiscounts),
+    costRatios
   };
 }
 
@@ -2681,6 +2794,8 @@ function renderMonthlyReport(month) {
           </tbody>
         </table>
       </div>
+
+      ${renderCostRatioCards(data.costRatios, '월 평균 (영업일 ' + dates.length + '일)')}
 
       ${Object.keys(byCategory).length ? `
         <div style="margin-bottom: 24px;">
@@ -4003,6 +4118,35 @@ function runValidation() {
     });
   }
 
+  // 12-B. 운영 KPI 임계치 (식자재 원가율 · Prime Cost)
+  {
+    const cr = computeCostRatios({
+      totals: { supply: t.supply },
+      purchaseRows: state.purchaseRows,
+      payrollRows: state.payrollRows
+    });
+    if (cr.salesSupply > 0 && (cr.foodSupply + cr.beverageSupply + cr.laborTotal) > 0) {
+      const foodPct = cr.foodCostRatio * 100;
+      const primePct = cr.primeCostRatio * 100;
+      const fLevel = _ratioLevel(foodPct, COST_RATIO_THRESHOLDS.food);
+      const pLevel = _ratioLevel(primePct, COST_RATIO_THRESHOLDS.prime);
+      const overall = (fLevel === 'danger' || pLevel === 'danger') ? 'danger'
+                    : (fLevel === 'warn' || pLevel === 'warn') ? 'warn'
+                    : (fLevel === 'normal' || pLevel === 'normal') ? 'info' : 'ok';
+      const titleMap = { ok: '운영 KPI 우수', info: '운영 KPI 양호', warn: '운영 KPI 주의', danger: '운영 KPI 위험' };
+      issues.push({
+        level: overall,
+        title: titleMap[overall],
+        detail: `식자재 원가율 <strong>${foodPct.toFixed(1)}%</strong> (목표 ≤${COST_RATIO_THRESHOLDS.food.warn}%) · ` +
+                `인건비율 <strong>${(cr.laborRatio*100).toFixed(1)}%</strong> · ` +
+                `Prime Cost <strong>${primePct.toFixed(1)}%</strong> (목표 ≤${COST_RATIO_THRESHOLDS.prime.warn}%)`,
+        action: (overall === 'warn' || overall === 'danger')
+          ? '일자별 변동성이 클 수 있으니 월정산 탭에서 추세를 확인하세요'
+          : undefined
+      });
+    }
+  }
+
   // 13. 급여 ↔ 통장 출금 자동 대사
   if (state.payrollRows.length || state.bankRows.some(b => b.kind === '인건비' && num(b.withdraw) > 0)) {
     const { matchByPayroll, matchByBank, candidateBankIdxs } = matchPayrollToBank();
@@ -4568,6 +4712,10 @@ function renderReport() {
       </div>
     </div>`;
 
+  // 운영 KPI (식자재 원가율 · 인건비율 · Prime Cost)
+  const periodCostRatios = computeCostRatios(filtered);
+  const costKpis = renderCostRatioCards(periodCostRatios, `${totalDays}일 합산`);
+
   // Main chart
   let chartHtml = '';
   if (view === 'daily') chartHtml = renderDailyChart(filtered);
@@ -4600,7 +4748,7 @@ function renderReport() {
       </table>
     </div>`;
 
-  container.innerHTML = kpis + chartHtml + `<div class="report-row">${pay}${topDays}</div>`;
+  container.innerHTML = kpis + costKpis + chartHtml + `<div class="report-row">${pay}${topDays}</div>`;
 }
 
 function renderDailyChart(records) {
