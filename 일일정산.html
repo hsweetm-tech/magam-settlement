@@ -1740,6 +1740,8 @@ main {
               <button class="seg-btn active" data-view="daily">일별</button>
               <button class="seg-btn" data-view="monthly">월별</button>
               <button class="seg-btn" data-view="weekday">요일별</button>
+              <button class="seg-btn" data-view="menu">메뉴믹스</button>
+              <button class="seg-btn" data-view="heatmap">히트맵</button>
             </div>
             <button class="btn btn-small" onclick="openGoalModal()" title="월 매출 목표 설정">
               <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
@@ -2624,6 +2626,86 @@ function computeCostRatios(recordsLike) {
     laborRatio: ratio(laborTotal),
     primeCostRatio: ratio(primeCost)
   };
+}
+
+/* ========================================================================
+   Phase 3-2: 메뉴믹스 ABC · 객단가 추세 · 시간×요일 히트맵 (분석 헬퍼)
+   ======================================================================== */
+
+/**
+ * 메뉴별 집계 + ABC 분류 (Pareto)
+ * - A: 누적 매출 ≤ 80%
+ * - B: 누적 매출 80~95%
+ * - C: 누적 매출 95~100% (정리 후보)
+ */
+function computeMenuMix(records) {
+  const map = {};
+  (records || []).forEach(rec => {
+    (rec && rec.posRows || []).forEach(r => {
+      const name = (r.menu || '').trim();
+      if (!name) return;
+      if (!map[name]) map[name] = { menu: name, qty: 0, sales: 0 };
+      map[name].qty += num(r.qty) || 1;
+      map[name].sales += num(r.amount);
+    });
+  });
+  const arr = Object.values(map).sort((a, b) => b.sales - a.sales);
+  const total = arr.reduce((s, x) => s + x.sales, 0);
+  let cum = 0;
+  return arr.map(x => {
+    const sharePct = total > 0 ? (x.sales / total) * 100 : 0;
+    cum += sharePct;
+    return {
+      menu: x.menu,
+      qty: x.qty,
+      sales: x.sales,
+      sharePct,
+      cumPct: cum,
+      avgPrice: x.qty > 0 ? x.sales / x.qty : 0,
+      class: cum <= 80 + 1e-6 ? 'A' : cum <= 95 + 1e-6 ? 'B' : 'C'
+    };
+  });
+}
+
+/**
+ * 시간×요일 히트맵 데이터 (7×24)
+ * - matrix[wd][hour] = { sales, count }
+ * - POS row.time이 'HH:MM' 형식이면 hour 추출
+ */
+function computeHourWeekdayHeatmap(records) {
+  const matrix = Array.from({ length: 7 }, () =>
+    Array.from({ length: 24 }, () => ({ sales: 0, count: 0 })));
+  (records || []).forEach(rec => {
+    if (!rec || !rec.date) return;
+    const d = new Date(rec.date);
+    if (isNaN(d)) return;
+    const wd = d.getDay();
+    (rec.posRows || []).forEach(r => {
+      if (!r.time) return;
+      const m = String(r.time).match(/(\d{1,2})/);
+      if (!m) return;
+      const h = parseInt(m[1]);
+      if (isNaN(h) || h < 0 || h > 23) return;
+      matrix[wd][h].sales += num(r.amount);
+      matrix[wd][h].count += 1;
+    });
+  });
+  return matrix;
+}
+
+/**
+ * 일별 객단가(영수증당 평균 매출) 시계열
+ * @returns [{date, avgCheck, sales, count}]
+ */
+function computeAvgCheckTrend(records) {
+  return (records || [])
+    .filter(r => r && r.date)
+    .map(r => {
+      const count = (r.posRows || []).length;
+      const sales = num((r.totals && r.totals.posTotal) || 0);
+      return { date: r.date, sales, count, avgCheck: count > 0 ? sales / count : 0 };
+    })
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 /**
@@ -4721,6 +4803,11 @@ function renderReport() {
   if (view === 'daily') chartHtml = renderDailyChart(filtered);
   else if (view === 'monthly') chartHtml = renderMonthlyChart(filtered);
   else if (view === 'weekday') chartHtml = renderWeekdayChart(filtered);
+  else if (view === 'menu') chartHtml = renderMenuMixCard(computeMenuMix(filtered));
+  else if (view === 'heatmap') chartHtml = renderHeatmapCard(computeHourWeekdayHeatmap(filtered));
+
+  // 객단가 추세 (항상 노출)
+  const avgCheckCard = renderAvgCheckTrendCard(computeAvgCheckTrend(filtered));
 
   // Payment donut
   const pay = renderPaymentDonut(cardTotal, cashTotal, etcTotal);
@@ -4748,7 +4835,7 @@ function renderReport() {
       </table>
     </div>`;
 
-  container.innerHTML = kpis + costKpis + chartHtml + `<div class="report-row">${pay}${topDays}</div>`;
+  container.innerHTML = kpis + costKpis + chartHtml + avgCheckCard + `<div class="report-row">${pay}${topDays}</div>`;
 }
 
 function renderDailyChart(records) {
@@ -5017,6 +5104,230 @@ function renderPaymentDonut(card, cash, etc) {
         </svg>
         <div class="donut-legend">${legend}</div>
       </div>
+    </div>`;
+}
+
+/* ====================== Phase 3-2 분석 카드 ====================== */
+
+/**
+ * 메뉴믹스 ABC 분석 카드 (TOP 메뉴 + ABC 요약)
+ */
+function renderMenuMixCard(items) {
+  if (!items.length) {
+    return `<div class="report-card" style="margin-bottom:16px;">
+      <div class="report-card-title">메뉴믹스 분석</div>
+      <div class="report-empty"><p>주문 내역(POS)이 있는 마감일이 필요합니다</p></div>
+    </div>`;
+  }
+  const total = items.reduce((s, x) => s + x.sales, 0);
+  const totalQty = items.reduce((s, x) => s + x.qty, 0);
+  const aItems = items.filter(x => x.class === 'A');
+  const bItems = items.filter(x => x.class === 'B');
+  const cItems = items.filter(x => x.class === 'C');
+  const aSales = aItems.reduce((s, x) => s + x.sales, 0);
+  const bSales = bItems.reduce((s, x) => s + x.sales, 0);
+  const cSales = cItems.reduce((s, x) => s + x.sales, 0);
+  const pct = (v) => total > 0 ? (v / total * 100).toFixed(1) : '0.0';
+  const classColor = (c) => c === 'A' ? 'var(--green)' : c === 'B' ? 'var(--orange)' : 'var(--text-3)';
+  const top = items.slice(0, 30);
+  return `
+    <div class="report-card" style="margin-bottom:16px;">
+      <div class="report-card-title">메뉴믹스 ABC 분석 <span style="color:var(--text-3);font-weight:400;font-size:11px;margin-left:6px;">총 ${items.length}종 · ${totalQty.toLocaleString()}건 · ${fmt(total)}</span></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:14px;">
+        <div class="m-card">
+          <div class="m-card-label" style="color:var(--green);font-weight:600;">A급 (효자 메뉴)</div>
+          <div class="m-card-value">${aItems.length}종</div>
+          <div class="m-card-sub">매출 ${pct(aSales)}% · 누적 80% 이내</div>
+        </div>
+        <div class="m-card">
+          <div class="m-card-label" style="color:var(--orange);font-weight:600;">B급 (보조 메뉴)</div>
+          <div class="m-card-value">${bItems.length}종</div>
+          <div class="m-card-sub">매출 ${pct(bSales)}% · 80~95%</div>
+        </div>
+        <div class="m-card">
+          <div class="m-card-label" style="color:var(--text-3);font-weight:600;">C급 (정리 후보)</div>
+          <div class="m-card-value">${cItems.length}종</div>
+          <div class="m-card-sub">매출 ${pct(cSales)}% · 95~100%</div>
+        </div>
+      </div>
+      <table class="mini-table">
+        <thead><tr><th style="width:40px;">순위</th><th>메뉴</th><th class="num">판매수</th><th class="num">매출</th><th class="num">평균객단가</th><th class="num">비중</th><th class="num">누적</th><th>등급</th></tr></thead>
+        <tbody>
+          ${top.map((x, i) => `
+            <tr>
+              <td><span class="rank ${i === 0 ? 'top' : ''}">${i+1}</span></td>
+              <td>${escapeHtml(x.menu)}</td>
+              <td class="num">${x.qty.toLocaleString()}</td>
+              <td class="num"><strong>${fmt(Math.round(x.sales))}</strong></td>
+              <td class="num">${fmt(Math.round(x.avgPrice))}</td>
+              <td class="num">${x.sharePct.toFixed(1)}%</td>
+              <td class="num">${x.cumPct.toFixed(1)}%</td>
+              <td><span style="color:${classColor(x.class)};font-weight:600;">${x.class}</span></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      ${items.length > 30 ? `<div style="font-size:11px;color:var(--text-3);margin-top:6px;">외 ${items.length - 30}종</div>` : ''}
+    </div>`;
+}
+
+/**
+ * 시간×요일 히트맵 (SVG)
+ * - 색 강도 = 평균 매출 / 최댓값
+ * - 빈 시간대(어떤 요일에도 0)는 컬럼 생략
+ */
+function renderHeatmapCard(matrix) {
+  const wdNames = ['일','월','화','수','목','금','토'];
+  const activeHours = [];
+  for (let h = 0; h < 24; h++) {
+    let any = false;
+    for (let w = 0; w < 7; w++) if (matrix[w][h].count > 0) { any = true; break; }
+    if (any) activeHours.push(h);
+  }
+  if (!activeHours.length) {
+    return `<div class="report-card" style="margin-bottom:16px;">
+      <div class="report-card-title">시간 × 요일 히트맵</div>
+      <div class="report-empty"><p>POS 시간 정보가 없습니다. (시간 컬럼이 매핑되어 있는지 확인하세요)</p></div>
+    </div>`;
+  }
+  // avg sales per cell = sales / number-of-days-of-that-weekday-with-data
+  // 간단히 sales 자체로 강도 매핑 (낮은 표본 수 보정은 생략, 색만 보면 됨)
+  let max = 0;
+  for (let w = 0; w < 7; w++) for (const h of activeHours) max = Math.max(max, matrix[w][h].sales);
+
+  const cellW = 38, cellH = 28, labelW = 30, headerH = 24;
+  const W = labelW + activeHours.length * cellW + 8;
+  const H = headerH + 7 * cellH + 8;
+  const colorFor = (v) => {
+    if (max === 0 || v === 0) return 'var(--subtle)';
+    const t = v / max;
+    if (t > 0.75) return '#171717';
+    if (t > 0.5)  return '#525252';
+    if (t > 0.25) return '#a3a3a3';
+    return '#e5e5e5';
+  };
+  const textColor = (v) => max > 0 && v / max > 0.5 ? '#fff' : 'var(--text-2)';
+  let header = '';
+  activeHours.forEach((h, i) => {
+    header += `<text x="${labelW + i * cellW + cellW/2}" y="${headerH - 6}" text-anchor="middle" font-size="10" fill="var(--text-3)" font-family="JetBrains Mono, monospace">${h}</text>`;
+  });
+  let rows = '';
+  for (let w = 0; w < 7; w++) {
+    const wdCol = w === 0 ? 'var(--red)' : w === 6 ? 'var(--accent)' : 'var(--text-2)';
+    rows += `<text x="${labelW - 6}" y="${headerH + w * cellH + cellH/2 + 4}" text-anchor="end" font-size="11" fill="${wdCol}" font-weight="600">${wdNames[w]}</text>`;
+    activeHours.forEach((h, i) => {
+      const cell = matrix[w][h];
+      const x = labelW + i * cellW;
+      const y = headerH + w * cellH;
+      const sales = cell.sales;
+      const count = cell.count;
+      const label = sales > 0 ? (sales >= 100000 ? (Math.round(sales/10000) + '만') : (Math.round(sales/1000) + '천')) : '';
+      rows += `<rect x="${x+1}" y="${y+1}" width="${cellW-2}" height="${cellH-2}" fill="${colorFor(sales)}" rx="2">
+        <title>${wdNames[w]}요일 ${h}:00&#10;매출 ${fmt(sales)}&#10;주문 ${count}건</title>
+      </rect>`;
+      if (label) rows += `<text x="${x + cellW/2}" y="${y + cellH/2 + 4}" text-anchor="middle" font-size="9" fill="${textColor(sales)}" font-family="JetBrains Mono, monospace">${label}</text>`;
+    });
+  }
+  // 피크 셀 찾기
+  let peakWd = 0, peakHr = activeHours[0], peakSales = 0;
+  for (let w = 0; w < 7; w++) for (const h of activeHours) {
+    if (matrix[w][h].sales > peakSales) { peakSales = matrix[w][h].sales; peakWd = w; peakHr = h; }
+  }
+  return `<div class="report-card" style="margin-bottom:16px;">
+    <div class="report-card-title">시간 × 요일 히트맵 ${peakSales > 0 ? `<span style="color:var(--text-3);font-weight:400;font-size:11px;margin-left:6px;">피크 ${wdNames[peakWd]}요일 ${peakHr}:00 (${fmt(peakSales)})</span>` : ''}</div>
+    <div style="overflow-x:auto;padding:8px 0;">
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;min-width:${W}px;height:${H}px;display:block;" xmlns="http://www.w3.org/2000/svg">
+        ${header}${rows}
+      </svg>
+    </div>
+    <div style="font-size:11px;color:var(--text-3);margin-top:4px;">색이 진할수록 매출 큼 · 셀에 마우스 올리면 상세</div>
+  </div>`;
+}
+
+/**
+ * 객단가(영수증당 평균) 추세 mini-line chart + 요일별 평균
+ */
+function renderAvgCheckTrendCard(items) {
+  if (!items.length) return '';
+  const validItems = items.filter(x => x.count > 0);
+  if (!validItems.length) return '';
+  const total = validItems.reduce((s, x) => s + x.sales, 0);
+  const totalCount = validItems.reduce((s, x) => s + x.count, 0);
+  const periodAvg = totalCount > 0 ? total / totalCount : 0;
+
+  // 요일별 평균
+  const wdAgg = Array.from({length: 7}, () => ({ sales: 0, count: 0 }));
+  validItems.forEach(it => {
+    const d = new Date(it.date);
+    if (isNaN(d)) return;
+    wdAgg[d.getDay()].sales += it.sales;
+    wdAgg[d.getDay()].count += it.count;
+  });
+  const wdNames = ['일','월','화','수','목','금','토'];
+
+  // 라인 차트 SVG
+  const W = 720, H = 180, PL = 60, PR = 20, PT = 16, PB = 30;
+  const cw = W - PL - PR, ch = H - PT - PB;
+  const max = Math.max(...validItems.map(x => x.avgCheck), periodAvg) * 1.1;
+  const min = 0;
+  const xAt = (i) => validItems.length === 1 ? PL + cw/2 : PL + (i / (validItems.length - 1)) * cw;
+  const yAt = (v) => PT + ch - ((v - min) / (max - min || 1)) * ch;
+  const points = validItems.map((x, i) => `${xAt(i)},${yAt(x.avgCheck)}`).join(' ');
+  const avgY = yAt(periodAvg);
+
+  let dots = '';
+  validItems.forEach((x, i) => {
+    dots += `<circle cx="${xAt(i)}" cy="${yAt(x.avgCheck)}" r="2.5" fill="var(--text)">
+      <title>${x.date}&#10;객단가 ${fmt(Math.round(x.avgCheck))}&#10;매출 ${fmt(x.sales)} · 영수증 ${x.count}건</title>
+    </circle>`;
+  });
+
+  // y축 라벨
+  let yLabels = '';
+  for (let i = 0; i <= 4; i++) {
+    const v = (i / 4) * max;
+    const y = PT + ch - (i / 4) * ch;
+    yLabels += `<line x1="${PL}" y1="${y}" x2="${W - PR}" y2="${y}" stroke="var(--border)" stroke-width="1" stroke-dasharray="${i===0?'':'2,3'}"/>`;
+    yLabels += `<text x="${PL - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="var(--text-3)" font-family="JetBrains Mono, monospace">${v >= 10000 ? (Math.round(v/1000)/10) + '만' : Math.round(v).toLocaleString()}</text>`;
+  }
+
+  // x축 라벨 (양끝 + 중간)
+  let xLabels = '';
+  const labelIdxs = validItems.length <= 1 ? [0] : validItems.length <= 4 ? validItems.map((_, i) => i) : [0, Math.floor(validItems.length/2), validItems.length - 1];
+  labelIdxs.forEach(i => {
+    xLabels += `<text x="${xAt(i)}" y="${PT + ch + 18}" text-anchor="middle" font-size="10" fill="var(--text-3)" font-family="JetBrains Mono, monospace">${validItems[i].date.slice(5)}</text>`;
+  });
+
+  // 요일별 mini bar
+  const wdMax = Math.max(...wdAgg.map(a => a.count > 0 ? a.sales / a.count : 0));
+  const wdHtml = wdNames.map((nm, i) => {
+    const ac = wdAgg[i].count > 0 ? wdAgg[i].sales / wdAgg[i].count : 0;
+    const w = wdMax > 0 ? (ac / wdMax) * 100 : 0;
+    const wdCol = i === 0 ? 'var(--red)' : i === 6 ? 'var(--accent)' : 'var(--text-2)';
+    return `<div style="display:flex;align-items:center;gap:8px;font-size:11px;">
+      <span style="width:18px;color:${wdCol};font-weight:600;text-align:center;">${nm}</span>
+      <div style="flex:1;background:var(--subtle);height:14px;border-radius:3px;overflow:hidden;">
+        <div style="background:${wdCol};height:100%;width:${w.toFixed(1)}%;"></div>
+      </div>
+      <span style="width:80px;text-align:right;font-family:JetBrains Mono,monospace;color:var(--text);">${ac > 0 ? fmt(Math.round(ac)) : '-'}</span>
+    </div>`;
+  }).join('');
+
+  return `
+    <div class="report-card" style="margin-bottom:16px;">
+      <div class="report-card-title">객단가 추세 <span style="color:var(--text-3);font-weight:400;font-size:11px;margin-left:6px;">기간 평균 ${fmt(Math.round(periodAvg))} · 영수증 ${totalCount.toLocaleString()}건</span></div>
+      <div style="overflow-x:auto;">
+        <svg viewBox="0 0 ${W} ${H}" style="width:100%;min-width:${Math.max(W, validItems.length * 30)}px;height:${H}px;display:block;" xmlns="http://www.w3.org/2000/svg">
+          ${yLabels}
+          <polyline points="${points}" fill="none" stroke="var(--text)" stroke-width="1.5"/>
+          ${dots}
+          <line x1="${PL}" y1="${avgY}" x2="${W - PR}" y2="${avgY}" stroke="var(--text-2)" stroke-width="1" stroke-dasharray="4,3" opacity="0.6"/>
+          <text x="${W - PR - 4}" y="${avgY - 4}" text-anchor="end" font-size="10" fill="var(--text-2)" font-family="JetBrains Mono, monospace">평균 ${fmt(Math.round(periodAvg))}</text>
+          ${xLabels}
+        </svg>
+      </div>
+      <div style="margin-top:12px;font-size:11px;color:var(--text-3);font-weight:600;">요일별 평균 객단가</div>
+      <div style="display:flex;flex-direction:column;gap:4px;margin-top:6px;">${wdHtml}</div>
     </div>`;
 }
 
