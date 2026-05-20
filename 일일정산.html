@@ -2383,6 +2383,55 @@ function clearHometaxData(month) {
   localStorage.removeItem(getHometaxKey(month));
 }
 
+/**
+ * 백업/복원에 포함될 글로벌 앱 설정 수집/적용.
+ * - partners (정률 분배 비율)
+ * - distSubtractDiscounts (컴프 차감 토글)
+ * - hometax_{YYYY-MM} (월별 홈택스 적재 데이터)
+ * STORAGE_KEY(일별 records)는 별도 — buildFullBackupPayload에서 records로 묶음.
+ */
+function collectAppSettings() {
+  const hometax = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith('hometax_')) {
+      try { hometax[k.slice('hometax_'.length)] = JSON.parse(localStorage.getItem(k) || '[]'); } catch {}
+    }
+  }
+  let partners = null;
+  try { const raw = localStorage.getItem(PARTNERS_KEY); if (raw) partners = JSON.parse(raw); } catch {}
+  return {
+    partners,
+    distSubtractDiscounts: localStorage.getItem(DIST_DISCOUNT_KEY) === 'true',
+    hometax
+  };
+}
+
+function applyAppSettings(s) {
+  if (!s || typeof s !== 'object') return;
+  if (Array.isArray(s.partners)) localStorage.setItem(PARTNERS_KEY, JSON.stringify(s.partners));
+  if (s.distSubtractDiscounts != null) localStorage.setItem(DIST_DISCOUNT_KEY, s.distSubtractDiscounts ? 'true' : 'false');
+  if (s.hometax && typeof s.hometax === 'object') {
+    Object.entries(s.hometax).forEach(([month, arr]) => {
+      if (Array.isArray(arr)) localStorage.setItem('hometax_' + month, JSON.stringify(arr));
+    });
+  }
+  // UI 즉시 반영
+  if (typeof renderPartners === 'function') renderPartners();
+  const distChk = document.getElementById('distSubtractDiscounts');
+  if (distChk) distChk.checked = s.distSubtractDiscounts === true;
+  if (typeof updateHometaxStatus === 'function') updateHometaxStatus();
+  if (typeof refreshMonthlyDistribution === 'function') refreshMonthlyDistribution();
+}
+
+function buildFullBackupPayload() {
+  return {
+    exportedAt: new Date().toISOString(),
+    records: getAllRecords(),
+    settings: collectAppSettings()
+  };
+}
+
 function clearHometaxCurrentMonth() {
   const mm = document.getElementById('monthlyMonth');
   if (!mm || !mm.value) { toast('월을 먼저 선택하세요', 'warn'); return; }
@@ -4358,7 +4407,7 @@ function confirmCloseDay() {
     uploadToCloud(`마감_${state.businessDate}.json`, record, false);
     // Also upload a full backup
     if (cs.autoDaily) {
-      uploadToCloud('전체백업_최신.json', { exportedAt: new Date().toISOString(), records: all }, true);
+      uploadToCloud('전체백업_최신.json', buildFullBackupPayload(), true);
     }
   }
 }
@@ -4996,8 +5045,7 @@ function resetAllData() {
 }
 
 function exportAllData() {
-  const all = getAllRecords();
-  const payload = { exportedAt: new Date().toISOString(), records: all };
+  const payload = buildFullBackupPayload();
   const filename = `정산_백업_${new Date().toISOString().slice(0,10)}.json`;
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -5035,8 +5083,9 @@ async function handleSingleLoad(file) {
     if (data.records) {
       if (!confirm('전체 백업 파일입니다. 기존 데이터를 덮어쓸까요?')) return;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data.records));
+      if (data.settings) applyAppSettings(data.settings);
       renderHistory();
-      toast('복원 완료', 'ok');
+      toast(data.settings ? '복원 완료 (설정 포함)' : '복원 완료', 'ok');
     } else if (data.date) {
       const all = getAllRecords();
       all[data.date] = data;
@@ -5075,7 +5124,7 @@ async function handleBatchLoad(files) {
   toast('✓ ' + msg, failed > 0 ? 'danger' : 'ok');
   const cs = getCloudSettings();
   if (cs.url) {
-    uploadToCloud('전체백업_최신.json', { exportedAt: new Date().toISOString(), records: all }, true);
+    uploadToCloud('전체백업_최신.json', buildFullBackupPayload(), true);
   }
 }
 
@@ -5867,6 +5916,9 @@ async function pullFromCloud(silent = false) {
     });
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+
+    // 클라우드 페이로드에 settings가 들어있으면 적용 (구버전 페이로드 호환을 위해 옵셔널)
+    if (data.content.settings) applyAppSettings(data.content.settings);
 
     const s2 = getCloudSettings();
     s2.lastPull = new Date().toISOString();
