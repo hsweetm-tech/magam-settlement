@@ -1353,11 +1353,51 @@ main {
 .m-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
 .m-table tbody tr:hover { background: var(--hover); }
 
+/* 월정산 sub-tab navigation */
+.msub-nav {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin: 16px 0 0;
+  padding: 0;
+  overflow-x: auto;
+}
+.msub-btn {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.msub-btn:hover { color: var(--text-2); }
+.msub-btn.active {
+  color: var(--text);
+  border-bottom-color: var(--text);
+}
+.msub-panel { display: none; padding-top: 16px; }
+.msub-panel.active { display: block; }
+.msub-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+.msub-section-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.msub-section-note { font-size: 12px; color: var(--text-3); }
+
 /* 월정산 인쇄(PDF 저장) — 헤더·사이드바·다른 탭 숨기고 월정산만 인쇄 */
 @media print {
   @page { size: A4; margin: 12mm; }
   body { background: #fff !important; color: #000 !important; }
-  header, aside.sidebar, .tabs, .tab-panel:not(#tab-monthly), .btn, .seg-btn, .section-note button { display: none !important; }
+  header, aside.sidebar, .tabs, .tab-panel:not(#tab-monthly), .btn, .seg-btn, .section-note button, .msub-nav { display: none !important; }
+  #tab-monthly .msub-panel { display: none !important; }
+  #tab-monthly .msub-panel#msub-profit { display: block !important; }
   .layout, main, .main, .container { display: block !important; }
   #tab-monthly { display: block !important; }
   #tab-monthly .section { border: none !important; box-shadow: none !important; page-break-inside: avoid; }
@@ -1770,97 +1810,114 @@ main {
             </button>
           </div>
         </div>
-        <div id="monthlyContent" style="padding: 40px 20px; text-align: center; color: var(--text-3); font-size: 13px;">
-          월을 선택하면 손익계산서가 여기에 표시됩니다.
-        </div>
-      </div>
 
-      <div class="section">
-        <div class="section-head">
-          <div class="section-title">홈택스 적격증빙</div>
-          <div class="section-note" id="hometaxCount">0건</div>
+        <!-- sub-tab navigation -->
+        <div class="msub-nav">
+          <button class="msub-btn active" data-msub="profit">손익</button>
+          <button class="msub-btn" data-msub="dist">분배</button>
+          <button class="msub-btn" data-msub="proof">증빙</button>
+          <button class="msub-btn" data-msub="settings">설정</button>
         </div>
-        <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
-          홈택스에서 다운로드한 매입세금계산서·카드매입·현금영수증 엑셀(.xlsx/.csv)을 업로드하면 입력 매입과 자동 대사됩니다. 종류는 파일명·컬럼으로 자동 감지(필요 시 수동 변경). 월별 별도 저장(localStorage).
-        </div>
-        <div class="upload-grid">
-          <div class="upload-zone" id="hometaxUpload">
-            <input type="file" id="hometaxFile" accept=".xlsx,.xls,.csv" style="display:none;">
-            <svg class="icon icon-lg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            <div class="upload-label">홈택스 엑셀 업로드</div>
-            <div class="upload-hint">자동 감지: 세금계산서 / 카드매입 / 현금영수증</div>
+
+        <!-- 손익 sub-panel: 동적 렌더링 -->
+        <div class="msub-panel active" id="msub-profit">
+          <div id="monthlyContent" style="padding: 40px 20px; text-align: center; color: var(--text-3); font-size: 13px;">
+            월을 선택하면 손익계산서가 여기에 표시됩니다.
           </div>
-          <div class="upload-zone" style="cursor:default;border-style:solid;">
-            <div style="font-size:11px;color:var(--text-3);">현재 월 적재된 증빙</div>
-            <div style="font-size:18px;font-weight:600;margin:4px 0;" id="hometaxLoadedCount">0건</div>
-            <div style="display:flex;gap:6px;justify-content:center;">
-              <button class="btn btn-small" onclick="clearHometaxCurrentMonth()" style="font-size:11px;">초기화</button>
+        </div>
+
+        <!-- 분배 sub-panel: 설정 + 결과 (결과는 동적 렌더링) -->
+        <div class="msub-panel" id="msub-dist">
+          <div class="msub-section-head">
+            <div class="msub-section-title">동업자 정률 분배 설정</div>
+            <div class="msub-section-note" id="partnerSumNote">합계 0%</div>
+          </div>
+          <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
+            동업자별 고정 비율(%). 합이 100% 일 때만 분배가 적용됩니다. 설정은 모든 월에 동일 적용 · 로컬 저장됩니다.
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>동업자명</th>
+                  <th class="num-cell">분배 비율 (%)</th>
+                  <th>메모</th>
+                  <th class="action-cell"></th>
+                </tr>
+              </thead>
+              <tbody id="partnerTableBody"></tbody>
+            </table>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-small" onclick="addPartner()">
+              <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              동업자 추가
+            </button>
+            <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2);margin-left:auto;">
+              <input type="checkbox" id="distSubtractDiscounts">
+              할인·쿠폰(컴프)을 분배 전 공동비용으로 차감
+            </label>
+          </div>
+          <div id="distResultContent" style="margin-top:20px;"></div>
+        </div>
+
+        <!-- 증빙 sub-panel: 홈택스 업로드 + 대사 결과 -->
+        <div class="msub-panel" id="msub-proof">
+          <div class="msub-section-head">
+            <div class="msub-section-title">홈택스 적격증빙</div>
+            <div class="msub-section-note" id="hometaxCount">0건</div>
+          </div>
+          <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
+            홈택스에서 다운로드한 매입세금계산서·카드매입·현금영수증 엑셀(.xlsx/.csv)을 업로드하면 입력 매입과 자동 대사됩니다. 종류는 파일명·컬럼으로 자동 감지(필요 시 수동 변경). 월별 별도 저장(localStorage).
+          </div>
+          <div class="upload-grid">
+            <div class="upload-zone" id="hometaxUpload">
+              <input type="file" id="hometaxFile" accept=".xlsx,.xls,.csv" style="display:none;">
+              <svg class="icon icon-lg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              <div class="upload-label">홈택스 엑셀 업로드</div>
+              <div class="upload-hint">자동 감지: 세금계산서 / 카드매입 / 현금영수증</div>
+            </div>
+            <div class="upload-zone" style="cursor:default;border-style:solid;">
+              <div style="font-size:11px;color:var(--text-3);">현재 월 적재된 증빙</div>
+              <div style="font-size:18px;font-weight:600;margin:4px 0;" id="hometaxLoadedCount">0건</div>
+              <div style="display:flex;gap:6px;justify-content:center;">
+                <button class="btn btn-small" onclick="clearHometaxCurrentMonth()" style="font-size:11px;">초기화</button>
+              </div>
             </div>
           </div>
+          <div id="proofResultContent" style="margin-top:20px;"></div>
         </div>
-      </div>
 
-      <div class="section">
-        <div class="section-head">
-          <div class="section-title">고정비 설정 (월 자동 반영)</div>
-          <div class="section-note" id="fixedExpenseTotal">월 합계 ₩0</div>
-        </div>
-        <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
-          매월 정기 발생 비용(임대료·관리비·통신비·보험료 등) 1회 설정 → 모든 월 손익계산서에 자동 반영. 단, 해당 월에 같은 분류의 매입행이 1건이라도 있으면 <strong>매입행이 우선</strong>(설정값 무시) — 변동 시 매입·비용 섹션에서 그대로 입력하면 됨.
-        </div>
-        <div class="table-wrap">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>항목명</th>
-                <th>분류</th>
-                <th class="num-cell">월 금액 (원)</th>
-                <th>메모</th>
-                <th class="action-cell"></th>
-              </tr>
-            </thead>
-            <tbody id="fixedExpenseTableBody"></tbody>
-          </table>
-        </div>
-        <div class="btn-row">
-          <button class="btn btn-small" onclick="addFixedExpense()">
-            <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            고정비 추가
-          </button>
-          <div style="margin-left:auto;font-size:11px;color:var(--text-3);">예: 임대료 ₩3,000,000 · 관리비 ₩200,000 · 보험료 ₩150,000</div>
-        </div>
-      </div>
-
-      <div class="section">
-        <div class="section-head">
-          <div class="section-title">정률 분배 설정</div>
-          <div class="section-note" id="partnerSumNote">합계 0%</div>
-        </div>
-        <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
-          동업자별 고정 비율(%). 합이 100% 일 때만 분배가 적용됩니다. 설정은 모든 월에 동일 적용 · 로컬 저장됩니다.
-        </div>
-        <div class="table-wrap">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>동업자명</th>
-                <th class="num-cell">분배 비율 (%)</th>
-                <th>메모</th>
-                <th class="action-cell"></th>
-              </tr>
-            </thead>
-            <tbody id="partnerTableBody"></tbody>
-          </table>
-        </div>
-        <div class="btn-row">
-          <button class="btn btn-small" onclick="addPartner()">
-            <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            동업자 추가
-          </button>
-          <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2);margin-left:auto;">
-            <input type="checkbox" id="distSubtractDiscounts">
-            할인·쿠폰(컴프)을 분배 전 공동비용으로 차감
-          </label>
+        <!-- 설정 sub-panel: 고정비 설정 -->
+        <div class="msub-panel" id="msub-settings">
+          <div class="msub-section-head">
+            <div class="msub-section-title">고정비 설정 (월 자동 반영)</div>
+            <div class="msub-section-note" id="fixedExpenseTotal">월 합계 ₩0</div>
+          </div>
+          <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
+            매월 정기 발생 비용(임대료·관리비·통신비·보험료 등) 1회 설정 → 모든 월 손익계산서에 자동 반영. 단, 해당 월에 같은 분류의 매입행이 1건이라도 있으면 <strong>매입행이 우선</strong>(설정값 무시) — 변동 시 매입·비용 섹션에서 그대로 입력하면 됨.
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>항목명</th>
+                  <th>분류</th>
+                  <th class="num-cell">월 금액 (원)</th>
+                  <th>메모</th>
+                  <th class="action-cell"></th>
+                </tr>
+              </thead>
+              <tbody id="fixedExpenseTableBody"></tbody>
+            </table>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-small" onclick="addFixedExpense()">
+              <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              고정비 추가
+            </button>
+            <div style="margin-left:auto;font-size:11px;color:var(--text-3);">예: 임대료 ₩3,000,000 · 관리비 ₩200,000 · 보험료 ₩150,000</div>
+          </div>
         </div>
       </div>
     </div>
@@ -2135,6 +2192,10 @@ function init() {
   document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
   const monthlyMonthEl = document.getElementById('monthlyMonth');
   if (monthlyMonthEl) monthlyMonthEl.addEventListener('change', (e) => { renderMonthlyReport(e.target.value); updateHometaxStatus(); });
+  // 월정산 sub-tab navigation
+  document.querySelectorAll('.msub-btn').forEach(btn => {
+    btn.addEventListener('click', () => switchMonthlySubTab(btn.dataset.msub));
+  });
   // 정률 분배 + 고정비 설정 init
   renderPartners();
   renderFixedExpenses();
@@ -2955,18 +3016,29 @@ function computeMonthlyData(month) {
 }
 
 function renderMonthlyReport(month) {
-  const container = document.getElementById('monthlyContent');
-  if (!container || !month) return;
+  const profitEl = document.getElementById('monthlyContent');
+  const distEl = document.getElementById('distResultContent');
+  const proofEl = document.getElementById('proofResultContent');
+  if (!profitEl || !month) return;
+
   const data = computeMonthlyData(month);
   if (!data) {
-    container.innerHTML = `<div style="padding:40px 20px;text-align:center;color:var(--text-3);font-size:13px;">${month} 데이터 없음</div>`;
+    profitEl.innerHTML = `<div style="padding:40px 20px;text-align:center;color:var(--text-3);font-size:13px;">${month} 데이터 없음</div>`;
+    if (distEl) distEl.innerHTML = '';
+    if (proofEl) proofEl.innerHTML = '';
     return;
   }
-  const { dates, sumSales, sumSalesSupply, sumSalesVat, sumPTotal, sumPSupply, sumPVat,
-          sumExtra, sumPayroll, sumDiscounts, monthPL, payableVat, byCategory, dailyRows, dist } = data;
-  const plColor = monthPL < 0 ? 'var(--red)' : 'var(--green)';
+  profitEl.innerHTML = renderMonthlyProfitContent(data);
+  if (distEl) distEl.innerHTML = renderMonthlyDistContent(data);
+  if (proofEl) proofEl.innerHTML = renderHometaxReconciliation(month);
+}
 
-  container.innerHTML = `
+/** 손익 sub-panel HTML: KPI 카드 + 일자별 + 운영 KPI + 손익계산서 + 매입분류 */
+function renderMonthlyProfitContent(data) {
+  const { dates, sumSales, sumSalesSupply, sumSalesVat, sumPTotal, sumPSupply, sumPVat,
+          sumExtra, sumPayroll, monthPL, payableVat, byCategory, dailyRows } = data;
+  const plColor = monthPL < 0 ? 'var(--red)' : 'var(--green)';
+  return `
     <div style="padding: 20px;">
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px;">
         <div class="m-card">
@@ -2987,7 +3059,7 @@ function renderMonthlyReport(month) {
         <div class="m-card">
           <div class="m-card-label">월 손익 (공급가 기준)</div>
           <div class="m-card-value" style="color: ${plColor};">${fmt(Math.round(monthPL))}</div>
-          <div class="m-card-sub">매출공급가 − 매입공급가 − 기타비용 − 인건비</div>
+          <div class="m-card-sub">매출공급가 − 매입공급가 − 기타비용 − 인건비 − 고정비</div>
         </div>
         <div class="m-card">
           <div class="m-card-label">납부세액 (추정)</div>
@@ -2995,6 +3067,10 @@ function renderMonthlyReport(month) {
           <div class="m-card-sub">매출VAT ${fmt(Math.round(sumSalesVat))} − 매입VAT ${fmt(Math.round(sumPVat))}</div>
         </div>
       </div>
+
+      ${renderCostRatioCards(data.costRatios, '월 평균 (영업일 ' + dates.length + '일)')}
+
+      ${renderIncomeStatement(data)}
 
       <div style="margin-bottom: 24px;">
         <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">일자별 손익 (${dates.length}일)</div>
@@ -3025,10 +3101,6 @@ function renderMonthlyReport(month) {
         </table>
       </div>
 
-      ${renderCostRatioCards(data.costRatios, '월 평균 (영업일 ' + dates.length + '일)')}
-
-      ${renderIncomeStatement(data)}
-
       ${Object.keys(byCategory).length ? `
         <div style="margin-bottom: 24px;">
           <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">매입 분류별 합계 (부가세 포함)</div>
@@ -3042,57 +3114,64 @@ function renderMonthlyReport(month) {
           </table>
         </div>
       ` : ''}
-
-      <div>
-        <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">동업자 정률 분배</div>
-        ${dist.partners.length === 0 ? `
-          <div style="padding: 14px; border: 1px dashed var(--border); border-radius: 8px; font-size: 12px; color: var(--text-3);">
-            아래 "정률 분배 설정" 카드에서 동업자와 비율을 입력하세요.
-          </div>
-        ` : !dist.ratioOk ? `
-          <div style="padding: 14px; border: 1px solid var(--orange); background: var(--orange-bg); border-radius: 8px; font-size: 12px; color: var(--orange);">
-            비율 합계가 <strong>${dist.ratioSum}%</strong>입니다. <strong>100%</strong>일 때만 분배가 계산됩니다.
-          </div>
-        ` : `
-          <div style="font-size: 12px; color: var(--text-3); margin-bottom: 6px;">
-            분배 대상 = 월 손익 ${fmt(Math.round(monthPL))}${dist.subtractDiscounts ? ` − 할인·쿠폰 ${fmt(Math.round(sumDiscounts))}(공동비용)` : ''} = <strong style="color:var(--text);">${fmt(Math.round(dist.distributable))}</strong>
-          </div>
-          <table class="m-table">
-            <thead>
-              <tr>
-                <th>동업자</th>
-                <th style="text-align:right;">비율</th>
-                <th style="text-align:right;">분배액</th>
-                <th>메모</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${dist.partners.map(p => `
-                <tr>
-                  <td>${escapeHtml(p.name)}</td>
-                  <td style="text-align:right;">${p.ratio}%</td>
-                  <td style="text-align:right; color: ${p.amount < 0 ? 'var(--red)' : 'var(--text)'};"><strong>${fmt(p.amount)}</strong></td>
-                  <td style="color:var(--text-3);">${escapeHtml(p.memo)}</td>
-                </tr>
-              `).join('')}
-              <tr style="background:var(--hover);">
-                <td><strong>합계</strong></td>
-                <td style="text-align:right;"><strong>${dist.ratioSum}%</strong></td>
-                <td style="text-align:right;"><strong>${fmt(dist.partners.reduce((s,p)=>s+p.amount,0))}</strong></td>
-                <td></td>
-              </tr>
-            </tbody>
-          </table>
-          ${dist.subtractDiscounts && sumDiscounts > 0 ? `
-            <div style="font-size: 11px; color: var(--text-3); margin-top: 6px;">
-              ※ 할인·쿠폰(컴프) ${fmt(Math.round(sumDiscounts))}은 공동비용으로 차감 후 분배되었습니다.
-            </div>
-          ` : ''}
-        `}
-      </div>
-
-      ${renderHometaxReconciliation(month)}
     </div>`;
+}
+
+/** 분배 sub-panel 결과 HTML: 분배 표만 (설정 표는 정적 markup) */
+function renderMonthlyDistContent(data) {
+  const { monthPL, sumDiscounts, dist } = data;
+  return `
+    <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">${data.month} 분배 결과</div>
+    ${dist.partners.length === 0 ? `
+      <div style="padding: 14px; border: 1px dashed var(--border); border-radius: 8px; font-size: 12px; color: var(--text-3);">
+        위 "동업자 정률 분배 설정" 표에 동업자와 비율을 입력하세요.
+      </div>
+    ` : !dist.ratioOk ? `
+      <div style="padding: 14px; border: 1px solid var(--orange); background: var(--orange-bg); border-radius: 8px; font-size: 12px; color: var(--orange);">
+        비율 합계가 <strong>${dist.ratioSum}%</strong>입니다. <strong>100%</strong>일 때만 분배가 계산됩니다.
+      </div>
+    ` : `
+      <div style="font-size: 12px; color: var(--text-3); margin-bottom: 6px;">
+        분배 대상 = 월 손익 ${fmt(Math.round(monthPL))}${dist.subtractDiscounts ? ` − 할인·쿠폰 ${fmt(Math.round(sumDiscounts))}(공동비용)` : ''} = <strong style="color:var(--text);">${fmt(Math.round(dist.distributable))}</strong>
+      </div>
+      <table class="m-table">
+        <thead>
+          <tr>
+            <th>동업자</th>
+            <th style="text-align:right;">비율</th>
+            <th style="text-align:right;">분배액</th>
+            <th>메모</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${dist.partners.map(p => `
+            <tr>
+              <td>${escapeHtml(p.name)}</td>
+              <td style="text-align:right;">${p.ratio}%</td>
+              <td style="text-align:right; color: ${p.amount < 0 ? 'var(--red)' : 'var(--text)'};"><strong>${fmt(p.amount)}</strong></td>
+              <td style="color:var(--text-3);">${escapeHtml(p.memo)}</td>
+            </tr>
+          `).join('')}
+          <tr style="background:var(--hover);">
+            <td><strong>합계</strong></td>
+            <td style="text-align:right;"><strong>${dist.ratioSum}%</strong></td>
+            <td style="text-align:right;"><strong>${fmt(dist.partners.reduce((s,p)=>s+p.amount,0))}</strong></td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+      ${dist.subtractDiscounts && sumDiscounts > 0 ? `
+        <div style="font-size: 11px; color: var(--text-3); margin-top: 6px;">
+          ※ 할인·쿠폰(컴프) ${fmt(Math.round(sumDiscounts))}은 공동비용으로 차감 후 분배되었습니다.
+        </div>
+      ` : ''}
+    `}`;
+}
+
+/** 월정산 sub-tab 전환 */
+function switchMonthlySubTab(name) {
+  document.querySelectorAll('.msub-btn').forEach(b => b.classList.toggle('active', b.dataset.msub === name));
+  document.querySelectorAll('.msub-panel').forEach(p => p.classList.toggle('active', p.id === 'msub-' + name));
 }
 
 /**
@@ -3411,8 +3490,10 @@ function exportMonthlyExcel() {
 function printMonthlyReport() {
   const data = _getMonthlyOrToast();
   if (!data) return;
-  // 인쇄 대화상자 → 'PDF로 저장' 선택. @media print CSS가 월정산만 노출.
-  window.print();
+  // 인쇄는 손익 sub-tab만 (@media print에서 msub-profit만 보이게 강제)
+  switchMonthlySubTab('profit');
+  // 다음 프레임에 인쇄 — DOM 갱신 보장
+  setTimeout(() => window.print(), 50);
 }
 
 function setupUpload(inputId, zoneId, type) {
