@@ -1775,6 +1775,31 @@ main {
 
       <div class="section">
         <div class="section-head">
+          <div class="section-title">홈택스 적격증빙</div>
+          <div class="section-note" id="hometaxCount">0건</div>
+        </div>
+        <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
+          홈택스에서 다운로드한 매입세금계산서·카드매입·현금영수증 엑셀(.xlsx/.csv)을 업로드하면 입력 매입과 자동 대사됩니다. 종류는 파일명·컬럼으로 자동 감지(필요 시 수동 변경). 월별 별도 저장(localStorage).
+        </div>
+        <div class="upload-grid">
+          <div class="upload-zone" id="hometaxUpload">
+            <input type="file" id="hometaxFile" accept=".xlsx,.xls,.csv" style="display:none;">
+            <svg class="icon icon-lg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <div class="upload-label">홈택스 엑셀 업로드</div>
+            <div class="upload-hint">자동 감지: 세금계산서 / 카드매입 / 현금영수증</div>
+          </div>
+          <div class="upload-zone" style="cursor:default;border-style:solid;">
+            <div style="font-size:11px;color:var(--text-3);">현재 월 적재된 증빙</div>
+            <div style="font-size:18px;font-weight:600;margin:4px 0;" id="hometaxLoadedCount">0건</div>
+            <div style="display:flex;gap:6px;justify-content:center;">
+              <button class="btn btn-small" onclick="clearHometaxCurrentMonth()" style="font-size:11px;">초기화</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-head">
           <div class="section-title">정률 분배 설정</div>
           <div class="section-note" id="partnerSumNote">합계 0%</div>
         </div>
@@ -2076,7 +2101,7 @@ function init() {
   document.getElementById('businessDate').addEventListener('input', onDateChange);
   document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
   const monthlyMonthEl = document.getElementById('monthlyMonth');
-  if (monthlyMonthEl) monthlyMonthEl.addEventListener('change', (e) => renderMonthlyReport(e.target.value));
+  if (monthlyMonthEl) monthlyMonthEl.addEventListener('change', (e) => { renderMonthlyReport(e.target.value); updateHometaxStatus(); });
   // 정률 분배 설정 init
   renderPartners();
   const distChk = document.getElementById('distSubtractDiscounts');
@@ -2084,6 +2109,9 @@ function init() {
     distChk.checked = getDistSubtractDiscounts();
     distChk.addEventListener('change', (e) => { setDistSubtractDiscounts(e.target.checked); refreshMonthlyDistribution(); });
   }
+  // 홈택스 업로드 init
+  setupHometaxUpload();
+  updateHometaxStatus();
   setupUpload('posFile', 'posUpload', 'pos');
   setupUpload('cardFile', 'cardUpload', 'card');
   setupUpload('bankFile', 'bankUpload', 'bank');
@@ -2256,6 +2284,235 @@ function computeMonthlyDistribution(monthPL, sumDiscounts) {
     amount: ratioOk ? Math.round(distributable * (num(p.ratio) / 100)) : 0
   }));
   return { partners: rows, distributable, ratioSum, ratioOk, subtractDiscounts };
+}
+
+/* ========================================================================
+   홈택스 적격증빙 대사 (Phase 2 — 마무리)
+   - 파일: localStorage 'hometax_{YYYY-MM}' = [{date, vendor, bizNo, supply, vat, total, docType}]
+   - 대사: (사업자번호 일치) OR (거래처 + 합계 ±10원) 기준으로 purchaseRows ↔ 홈택스 매칭
+   - 결과: 일치 / 홈택스만 / 입력만 — 월정산에 카드 형태로 표시
+   ======================================================================== */
+const HOMETAX_COLUMNS = {
+  date:   ['작성일자','거래일자','공급일자','결제일자','일자','거래년월일','승인일자','승인일시'],
+  vendor: ['상호','거래처','공급자','공급자상호','가맹점','가맹점명','상호명','공급자명'],
+  bizNo:  ['사업자번호','사업자등록번호','공급자등록번호','등록번호','가맹점사업자번호','공급자사업자등록번호'],
+  supply: ['공급가액','공급가','공급가(원)'],
+  vat:    ['세액','부가세','매입세액','부가가치세','부가세액','부가세(원)','세액(원)'],
+  total:  ['합계','합계금액','총액','거래금액','총거래금액','금액','승인금액','승인금액(원)','거래금액(원)']
+};
+
+function detectHometaxDocType(rows, filename) {
+  const fn = String(filename || '').toLowerCase();
+  if (/카드|신용/.test(fn)) return '카드전표';
+  if (/현금|현금영수/.test(fn)) return '현금영수증';
+  if (/세금계산서|계산서/.test(fn)) return '세금계산서';
+  const cols = Object.keys(rows[0] || {}).join('|');
+  if (/카드번호|승인번호|가맹점/.test(cols)) return '카드전표';
+  if (/용도|소득공제/.test(cols)) return '현금영수증';
+  return '세금계산서';
+}
+
+function _matchHometaxCol(cols, candidates) {
+  for (const c of cols) {
+    const norm = String(c).replace(/\s+/g, '');
+    for (const cand of candidates) {
+      const cn = cand.replace(/\s+/g, '');
+      if (norm === cn || norm.includes(cn) || cn.includes(norm)) return c;
+    }
+  }
+  return null;
+}
+
+function _parseHometaxDate(v, fallbackMonth) {
+  if (v == null || v === '') return '';
+  if (typeof v === 'number') {
+    const dt = new Date(Math.round((v - 25569) * 86400 * 1000));
+    if (!isNaN(dt)) return dt.toISOString().slice(0, 10);
+  }
+  const s = String(v).trim();
+  const m = s.match(/(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/);
+  if (m) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  const m2 = s.match(/(\d{1,2})[.\-\/](\d{1,2})/);
+  if (m2 && fallbackMonth) return `${fallbackMonth.slice(0,4)}-${m2[1].padStart(2,'0')}-${m2[2].padStart(2,'0')}`;
+  return s.slice(0, 10);
+}
+
+function _normalizeBizNo(v) {
+  return String(v || '').replace(/[^\d]/g, '');
+}
+
+/**
+ * 홈택스 엑셀/CSV 원본 rows를 표준 레코드로 변환
+ */
+function parseHometaxRows(rawRows, filename, fallbackMonth) {
+  if (!rawRows || !rawRows.length) return { records: [], docType: '세금계산서', detected: {} };
+  const cols = Object.keys(rawRows[0]);
+  const detected = {};
+  Object.entries(HOMETAX_COLUMNS).forEach(([k, cands]) => { detected[k] = _matchHometaxCol(cols, cands); });
+  const docType = detectHometaxDocType(rawRows, filename);
+  const records = rawRows.map(r => {
+    const supply = detected.supply ? num(r[detected.supply]) : 0;
+    const vat = detected.vat ? num(r[detected.vat]) : 0;
+    let total = detected.total ? num(r[detected.total]) : 0;
+    if (!total && (supply || vat)) total = supply + vat;
+    return {
+      date: detected.date ? _parseHometaxDate(r[detected.date], fallbackMonth) : '',
+      vendor: detected.vendor ? String(r[detected.vendor] || '').trim() : '',
+      bizNo: detected.bizNo ? _normalizeBizNo(r[detected.bizNo]) : '',
+      supply, vat, total,
+      docType
+    };
+  }).filter(r => r.total > 0 || r.supply > 0);
+  return { records, docType, detected };
+}
+
+function getHometaxKey(month) { return 'hometax_' + month; }
+function getHometaxData(month) {
+  if (!month) return [];
+  try {
+    const raw = localStorage.getItem(getHometaxKey(month));
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function saveHometaxData(month, records) {
+  localStorage.setItem(getHometaxKey(month), JSON.stringify(records));
+}
+function clearHometaxData(month) {
+  localStorage.removeItem(getHometaxKey(month));
+}
+
+function clearHometaxCurrentMonth() {
+  const mm = document.getElementById('monthlyMonth');
+  if (!mm || !mm.value) { toast('월을 먼저 선택하세요', 'warn'); return; }
+  if (!confirm(`${mm.value}월 적재된 홈택스 데이터를 모두 지울까요?`)) return;
+  clearHometaxData(mm.value);
+  updateHometaxStatus();
+  refreshMonthlyDistribution();
+  toast(`${mm.value} 홈택스 데이터 초기화`, 'ok');
+}
+
+function updateHometaxStatus() {
+  const mm = document.getElementById('monthlyMonth');
+  const month = mm ? mm.value : '';
+  const count = month ? getHometaxData(month).length : 0;
+  const c1 = document.getElementById('hometaxCount');
+  const c2 = document.getElementById('hometaxLoadedCount');
+  if (c1) c1.textContent = month ? `${month} · ${count}건` : '0건';
+  if (c2) c2.textContent = `${count}건`;
+}
+
+async function handleHometaxFile(file) {
+  const mm = document.getElementById('monthlyMonth');
+  if (!mm || !mm.value) { toast('월을 먼저 선택하세요 (월정산 탭 상단)', 'warn'); return; }
+  const month = mm.value;
+  try {
+    const ext = file.name.split('.').pop().toLowerCase();
+    let rows = [];
+    if (ext === 'csv') rows = await parseCSV(file);
+    else if (ext === 'xlsx' || ext === 'xls') rows = await parseExcel(file);
+    else { toast('지원하지 않는 파일 형식 (xlsx/xls/csv)', 'danger'); return; }
+    if (!rows.length) { toast('파일에서 데이터를 찾지 못했습니다', 'danger'); return; }
+    const { records, docType, detected } = parseHometaxRows(rows, file.name, month);
+    if (!records.length) { toast('합계/공급가액 컬럼을 찾지 못해 변환된 행이 없습니다', 'danger'); return; }
+    const monthRecs = records.filter(r => !r.date || r.date.startsWith(month));
+    const skipped = records.length - monthRecs.length;
+    const existing = getHometaxData(month);
+    let merged;
+    if (existing.length) {
+      const replace = confirm(`${month}월에 이미 ${existing.length}건이 있습니다.\n\n확인: 기존을 지우고 새로 적재\n취소: 기존에 추가`);
+      merged = replace ? monthRecs : existing.concat(monthRecs);
+    } else {
+      merged = monthRecs;
+    }
+    saveHometaxData(month, merged);
+    updateHometaxStatus();
+    refreshMonthlyDistribution();
+    const missDetect = Object.entries(detected).filter(([,v]) => !v).map(([k]) => k).join(',');
+    const detailMsg = `${docType} ${monthRecs.length}건 적재` + (skipped ? ` · ${skipped}건은 다른 월로 스킵` : '') + (missDetect ? ` · 미감지 컬럼: ${missDetect}` : '');
+    toast(detailMsg, monthRecs.length > 0 ? 'ok' : 'warn');
+  } catch (err) {
+    console.error(err);
+    toast('홈택스 파일 처리 실패: ' + err.message, 'danger');
+  }
+}
+
+function setupHometaxUpload() {
+  const zone = document.getElementById('hometaxUpload');
+  const input = document.getElementById('hometaxFile');
+  if (!zone || !input) return;
+  zone.addEventListener('click', () => input.click());
+  input.addEventListener('change', (e) => {
+    if (e.target.files[0]) handleHometaxFile(e.target.files[0]);
+    e.target.value = '';
+  });
+  zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    if (e.dataTransfer.files[0]) handleHometaxFile(e.dataTransfer.files[0]);
+  });
+}
+
+/**
+ * 월 단위 홈택스 ↔ 입력 매입 대사
+ * 매칭 우선순위:
+ *   1) 사업자번호(정규화) 일치 + 합계 ±10원
+ *   2) 거래처명 일치 + 합계 ±10원
+ *   3) 합계 일치 + 날짜 ±3일
+ */
+function reconcileHometax(month) {
+  const ht = getHometaxData(month);
+  if (!ht.length) return { matched: [], orphanHometax: [], orphanApp: [], appRows: [], hometaxRows: ht };
+  const all = getAllRecords();
+  // 월 내 입력 매입 (purchaseRows) — 어떤 record에 있든 다 모음
+  const appRows = [];
+  Object.keys(all).filter(d => d.startsWith(month)).forEach(d => {
+    const rec = all[d];
+    (rec.purchaseRows || []).forEach((p, i) => {
+      appRows.push({
+        date: p.date || d,
+        vendor: String(p.vendor || '').trim(),
+        bizNo: _normalizeBizNo(p.bizNo),
+        supply: num(p.supply), vat: num(p.vat),
+        total: num(p.total) || (num(p.supply) + num(p.vat)),
+        docType: p.docType || '',
+        _recordDate: d, _idx: i
+      });
+    });
+  });
+  const usedApp = new Set();
+  const matched = [];
+  const orphanHometax = [];
+  const dayDiff = (a, b) => {
+    if (!a || !b) return 99;
+    const da = new Date(a), db = new Date(b);
+    return Math.abs((da - db) / (86400 * 1000));
+  };
+  ht.forEach((h, hi) => {
+    let bestIdx = -1, bestScore = -1;
+    appRows.forEach((a, ai) => {
+      if (usedApp.has(ai)) return;
+      const totDiff = Math.abs(num(a.total) - num(h.total));
+      if (totDiff > 10) return; // 합계 필수
+      let score = 100 - totDiff;
+      if (h.bizNo && a.bizNo && h.bizNo === a.bizNo) score += 100;
+      if (h.vendor && a.vendor && (h.vendor === a.vendor || h.vendor.includes(a.vendor) || a.vendor.includes(h.vendor))) score += 50;
+      const dd = dayDiff(h.date, a.date);
+      if (dd <= 3) score += 20 - dd * 3;
+      if (score > bestScore) { bestScore = score; bestIdx = ai; }
+    });
+    if (bestIdx >= 0 && bestScore > 100) { // 최소 합계 일치 + 한 가지 신호는 있어야
+      usedApp.add(bestIdx);
+      matched.push({ hometaxIdx: hi, appIdx: bestIdx, score: bestScore });
+    } else {
+      orphanHometax.push(hi);
+    }
+  });
+  const orphanApp = appRows.map((_, i) => i).filter(i => !usedApp.has(i));
+  return { matched, orphanHometax, orphanApp, appRows, hometaxRows: ht };
 }
 
 /** 월정산 데이터 집계 — render/export 공용 */
@@ -2437,6 +2694,86 @@ function renderMonthlyReport(month) {
           ` : ''}
         `}
       </div>
+
+      ${renderHometaxReconciliation(month)}
+    </div>`;
+}
+
+function renderHometaxReconciliation(month) {
+  const rec = reconcileHometax(month);
+  if (!rec.hometaxRows.length) {
+    return `
+      <div style="margin-top: 24px;">
+        <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">홈택스 적격증빙 대사</div>
+        <div style="padding: 14px; border: 1px dashed var(--border); border-radius: 8px; font-size: 12px; color: var(--text-3);">
+          상단 "홈택스 적격증빙" 섹션에서 엑셀을 업로드하세요.
+        </div>
+      </div>`;
+  }
+  const m = rec.matched.length, oh = rec.orphanHometax.length, oa = rec.orphanApp.length;
+  const total = rec.hometaxRows.length;
+  const sumHometaxTotal = rec.hometaxRows.reduce((s, r) => s + num(r.total), 0);
+  const sumAppTotal = rec.appRows.reduce((s, r) => s + num(r.total), 0);
+  const diff = sumHometaxTotal - sumAppTotal;
+  const statusColor = (oh === 0 && oa === 0) ? 'var(--green)' : 'var(--orange)';
+  return `
+    <div style="margin-top: 24px;">
+      <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">홈택스 적격증빙 대사</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px;">
+        <div class="m-card"><div class="m-card-label">홈택스 (전체)</div><div class="m-card-value">${total}건</div><div class="m-card-sub">합계 ${fmt(Math.round(sumHometaxTotal))}</div></div>
+        <div class="m-card"><div class="m-card-label">입력 매입 (월 전체)</div><div class="m-card-value">${rec.appRows.length}건</div><div class="m-card-sub">합계 ${fmt(Math.round(sumAppTotal))}</div></div>
+        <div class="m-card"><div class="m-card-label">일치</div><div class="m-card-value" style="color:var(--green);">${m}건</div></div>
+        <div class="m-card"><div class="m-card-label">홈택스만 / 입력만</div><div class="m-card-value" style="color:${statusColor};">${oh} / ${oa}</div><div class="m-card-sub">차이 ${fmt(Math.round(diff))}</div></div>
+      </div>
+
+      ${oh > 0 ? `
+        <div style="margin-bottom: 14px;">
+          <div style="font-weight: 500; font-size: 12px; color: var(--orange); margin-bottom: 6px;">⚠ 홈택스에만 있음 (입력 누락 의심) · ${oh}건</div>
+          <table class="m-table">
+            <thead><tr><th>일자</th><th>거래처</th><th>사업자번호</th><th style="text-align:right;">공급가</th><th style="text-align:right;">세액</th><th style="text-align:right;">합계</th><th>종류</th></tr></thead>
+            <tbody>
+              ${rec.orphanHometax.slice(0, 30).map(i => { const h = rec.hometaxRows[i]; return `
+                <tr>
+                  <td>${escapeHtml(h.date || '-')}</td>
+                  <td>${escapeHtml(h.vendor || '-')}</td>
+                  <td style="font-family:monospace;font-size:11px;">${escapeHtml(h.bizNo || '-')}</td>
+                  <td style="text-align:right;">${fmt(num(h.supply))}</td>
+                  <td style="text-align:right;">${fmt(num(h.vat))}</td>
+                  <td style="text-align:right;"><strong>${fmt(num(h.total))}</strong></td>
+                  <td>${escapeHtml(h.docType || '-')}</td>
+                </tr>`; }).join('')}
+            </tbody>
+          </table>
+          ${oh > 30 ? `<div style="font-size:11px;color:var(--text-3);margin-top:4px;">외 ${oh - 30}건 더</div>` : ''}
+        </div>
+      ` : ''}
+
+      ${oa > 0 ? `
+        <div>
+          <div style="font-weight: 500; font-size: 12px; color: var(--orange); margin-bottom: 6px;">⚠ 입력만 있음 (홈택스에 없음 — 간이영수증 등) · ${oa}건</div>
+          <table class="m-table">
+            <thead><tr><th>일자</th><th>거래처</th><th style="text-align:right;">공급가</th><th style="text-align:right;">세액</th><th style="text-align:right;">합계</th><th>종류</th></tr></thead>
+            <tbody>
+              ${rec.orphanApp.slice(0, 30).map(i => { const a = rec.appRows[i]; return `
+                <tr>
+                  <td>${escapeHtml(a.date || '-')}</td>
+                  <td>${escapeHtml(a.vendor || '-')}</td>
+                  <td style="text-align:right;">${fmt(num(a.supply))}</td>
+                  <td style="text-align:right;">${fmt(num(a.vat))}</td>
+                  <td style="text-align:right;"><strong>${fmt(num(a.total))}</strong></td>
+                  <td>${escapeHtml(a.docType || '-')}</td>
+                </tr>`; }).join('')}
+            </tbody>
+          </table>
+          ${oa > 30 ? `<div style="font-size:11px;color:var(--text-3);margin-top:4px;">외 ${oa - 30}건 더</div>` : ''}
+        </div>
+      ` : ''}
+
+      ${m > 0 && oh === 0 && oa === 0 ? `
+        <div style="padding: 10px; background: var(--green-bg); color: var(--green); border-radius: 8px; font-size: 12px;">
+          ✓ 홈택스 ${total}건이 입력 매입과 모두 일치합니다.
+        </div>
+      ` : ''}
     </div>`;
 }
 
@@ -2517,6 +2854,32 @@ function exportMonthlyExcel() {
     ]);
   }
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(distSheet), '정률분배');
+
+  // Sheet 5: 홈택스 대사 (있을 때만)
+  const rec = reconcileHometax(data.month);
+  if (rec.hometaxRows.length || rec.appRows.length) {
+    const hSheet = [
+      ['홈택스 적격증빙 대사', data.month],
+      ['홈택스(전체)', rec.hometaxRows.length],
+      ['입력 매입(월 전체)', rec.appRows.length],
+      ['일치', rec.matched.length],
+      ['홈택스만 (입력 누락 의심)', rec.orphanHometax.length],
+      ['입력만 (홈택스에 없음)', rec.orphanApp.length],
+      []
+    ];
+    if (rec.orphanHometax.length) {
+      hSheet.push(['[홈택스만 있음]']);
+      hSheet.push(['일자','거래처','사업자번호','공급가','세액','합계','종류']);
+      rec.orphanHometax.forEach(i => { const h = rec.hometaxRows[i]; hSheet.push([h.date, h.vendor, h.bizNo, h.supply, h.vat, h.total, h.docType]); });
+      hSheet.push([]);
+    }
+    if (rec.orphanApp.length) {
+      hSheet.push(['[입력만 있음]']);
+      hSheet.push(['일자','거래처','공급가','세액','합계','종류']);
+      rec.orphanApp.forEach(i => { const a = rec.appRows[i]; hSheet.push([a.date, a.vendor, a.supply, a.vat, a.total, a.docType]); });
+    }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(hSheet), '홈택스대사');
+  }
 
   XLSX.writeFile(wb, `월정산_${data.month}.xlsx`);
   toast(`엑셀 저장: 월정산_${data.month}.xlsx`, 'ok');

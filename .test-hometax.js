@@ -1,0 +1,138 @@
+// 단위 테스트: 홈택스 파서 + 대사 검증
+const fs = require('fs');
+const path = require('path');
+const html = fs.readFileSync(path.join(__dirname, '일일정산.html'), 'utf8');
+
+const grab = (re, name) => {
+  const m = html.match(re);
+  if (!m) { console.error('FAIL: ' + name + ' 추출 실패'); process.exit(2); }
+  return m[0];
+};
+// anchor: 함수의 닫는 중괄호는 항상 줄 시작 위치(no leading whitespace) → /\n\}/
+const numFn = grab(/function num\(v\)[\s\S]*?\n\}/, 'num');
+const colsConst = grab(/const HOMETAX_COLUMNS = \{[\s\S]*?\n\};/, 'HOMETAX_COLUMNS');
+const detect = grab(/function detectHometaxDocType[\s\S]*?\n\}/, 'detectHometaxDocType');
+const mc = grab(/function _matchHometaxCol[\s\S]*?\n\}/, '_matchHometaxCol');
+const pd = grab(/function _parseHometaxDate[\s\S]*?\n\}/, '_parseHometaxDate');
+const nb = grab(/function _normalizeBizNo[\s\S]*?\n\}/, '_normalizeBizNo');
+const parse = grab(/function parseHometaxRows[\s\S]*?\n\}/, 'parseHometaxRows');
+const recon = grab(/function reconcileHometax[\s\S]*?\n\}/, 'reconcileHometax');
+
+const src = `
+  let _records = {};
+  let _hometax = {};
+  function getAllRecords() { return _records; }
+  function getHometaxData(month) { return _hometax[month] || []; }
+  ${numFn}
+  ${colsConst}
+  ${mc}
+  ${pd}
+  ${nb}
+  ${detect}
+  ${parse}
+  ${recon}
+  return {
+    num, parseHometaxRows, detectHometaxDocType, reconcileHometax,
+    setRecords: (r) => { _records = r; },
+    setHometax: (m, arr) => { _hometax[m] = arr; },
+    _normalizeBizNo
+  };
+`;
+const mod = new Function(src)();
+
+function check(label, cond, info) {
+  console.log((cond ? 'PASS' : 'FAIL') + ': ' + label + (info ? ' — ' + info : ''));
+  if (!cond) process.exitCode = 1;
+}
+
+// ===== 파서 =====
+// CASE 1: 세금계산서 컬럼명 인식
+let parsed = mod.parseHometaxRows([
+  { '작성일자': '2026-05-10', '공급자상호': '아스트라식자재', '사업자등록번호': '123-45-67890', '공급가액': 500000, '세액': 50000, '합계': 550000 }
+], '매입세금계산서_2026-05.xlsx', '2026-05');
+check('1) 세금계산서 docType', parsed.docType === '세금계산서');
+check('1) 레코드 1건', parsed.records.length === 1);
+check('1) 일자 ISO', parsed.records[0].date === '2026-05-10');
+check('1) 거래처', parsed.records[0].vendor === '아스트라식자재');
+check('1) 사업자번호 정규화', parsed.records[0].bizNo === '1234567890');
+check('1) 공급가', parsed.records[0].supply === 500000);
+check('1) 세액', parsed.records[0].vat === 50000);
+check('1) 합계', parsed.records[0].total === 550000);
+
+// CASE 2: 카드 파일명 → docType 카드전표
+parsed = mod.parseHometaxRows([
+  { '결제일자': '2026.05.12', '가맹점명': '이마트', '가맹점사업자번호': '111-22-33333', '공급가액': '100,000', '부가세': '10,000', '승인금액': '110,000' }
+], '신용카드매입_2026-05.xlsx', '2026-05');
+check('2) 카드 docType', parsed.docType === '카드전표');
+check('2) 카드 일자 dot 포맷', parsed.records[0].date === '2026-05-12');
+check('2) 카드 합계 콤마 처리', parsed.records[0].total === 110000);
+
+// CASE 3: 합계 없으면 supply+vat
+parsed = mod.parseHometaxRows([
+  { '거래일자': '2026-05-15', '상호': '주류상사', '등록번호': '999-88-77777', '공급가': 200000, '세액': 20000 }
+], '계산서.xlsx', '2026-05');
+check('3) total 누락 → supply+vat 보정', parsed.records[0].total === 220000);
+
+// CASE 4: 합계/공급가 모두 0인 행은 제외
+parsed = mod.parseHometaxRows([
+  { '작성일자': '2026-05-10', '상호': 'A', '공급가액': 100000, '세액': 10000, '합계': 110000 },
+  { '작성일자': '2026-05-11', '상호': 'B', '공급가액': 0, '세액': 0, '합계': 0 }
+], 'x.xlsx', '2026-05');
+check('4) 0원 행 제외', parsed.records.length === 1);
+
+// CASE 5: 미감지 컬럼 보고
+parsed = mod.parseHometaxRows([
+  { '일자': '2026-05-10', '회사': 'X', '돈': 100000 }
+], 'x.xlsx', '2026-05');
+check('5) supply 미감지', parsed.detected.supply == null);
+check('5) total 미감지', parsed.detected.total == null);
+
+// ===== 대사 =====
+// 시나리오: 5월에 입력 매입 3건, 홈택스 4건 (3 일치 + 1 누락)
+mod.setRecords({
+  '2026-05-10': {
+    purchaseRows: [
+      { date: '2026-05-10', vendor: '아스트라식자재', bizNo: '123-45-67890', supply: 500000, vat: 50000, total: 550000, docType: '세금계산서' }
+    ]
+  },
+  '2026-05-12': {
+    purchaseRows: [
+      { date: '2026-05-12', vendor: '이마트', bizNo: '1112233333', supply: 100000, vat: 10000, total: 110000, docType: '카드전표' },
+      { date: '2026-05-12', vendor: '동네분식', supply: 30000, vat: 0, total: 30000, docType: '구매영수증' } // 간이영수증, 홈택스에 없음
+    ]
+  }
+});
+mod.setHometax('2026-05', [
+  { date: '2026-05-10', vendor: '아스트라식자재', bizNo: '1234567890', supply: 500000, vat: 50000, total: 550000, docType: '세금계산서' },
+  { date: '2026-05-12', vendor: '이마트', bizNo: '1112233333', supply: 100000, vat: 10000, total: 110000, docType: '카드전표' },
+  { date: '2026-05-20', vendor: '농협하나로', bizNo: '5556677777', supply: 200000, vat: 20000, total: 220000, docType: '세금계산서' } // 입력 누락
+]);
+
+let r = mod.reconcileHometax('2026-05');
+check('6) 일치 2건', r.matched.length === 2, `got ${r.matched.length}`);
+check('6) 홈택스만 1건 (농협하나로)', r.orphanHometax.length === 1);
+check('6) 입력만 1건 (동네분식)', r.orphanApp.length === 1);
+check('6) appRows=3', r.appRows.length === 3);
+check('6) hometax=3', r.hometaxRows.length === 3);
+
+// CASE 7: 사업자번호 다르지만 거래처+합계 일치하면 매칭
+mod.setRecords({
+  '2026-06-01': { purchaseRows: [{ vendor: '카페A', supply: 50000, vat: 0, total: 50000 }] }
+});
+mod.setHometax('2026-06', [{ date: '2026-06-01', vendor: '카페A', total: 50000, supply: 50000, vat: 0 }]);
+r = mod.reconcileHometax('2026-06');
+check('7) 사업자번호 없이도 거래처+합계로 매칭', r.matched.length === 1);
+
+// CASE 8: 합계 차이 11원 이상 → 미매칭
+mod.setRecords({
+  '2026-07-01': { purchaseRows: [{ vendor: '카페B', total: 50000, supply: 50000 }] }
+});
+mod.setHometax('2026-07', [{ date: '2026-07-01', vendor: '카페B', total: 50100, supply: 50100 }]);
+r = mod.reconcileHometax('2026-07');
+check('8) 합계 차이 100원 → 미매칭', r.matched.length === 0 && r.orphanHometax.length === 1);
+
+// CASE 9: 홈택스 데이터 없음 → 빈 결과
+r = mod.reconcileHometax('2026-08');
+check('9) 데이터 없음', r.matched.length === 0 && r.hometaxRows.length === 0);
+
+if (!process.exitCode) console.log('\n전체 통과');
