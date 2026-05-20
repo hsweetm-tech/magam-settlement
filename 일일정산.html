@@ -1571,10 +1571,10 @@ main {
             <div class="upload-label">직원 1명 추가</div>
             <div class="upload-hint">한 명씩 수동으로</div>
           </div>
-          <div class="upload-zone" style="opacity:0.5;cursor:not-allowed;" title="통장 출금과 자동 매칭 (다음 단계)">
+          <div class="upload-zone" onclick="showPayrollMatchInfo()" title="급여 행과 통장 출금(인건비) 자동 매칭 결과">
             <svg class="icon icon-lg" viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>
             <div class="upload-label">통장 자동 대사</div>
-            <div class="upload-hint">출시 예정</div>
+            <div class="upload-hint" id="payrollMatchHint">통장 인건비 출금과 자동 매칭</div>
           </div>
         </div>
 
@@ -1587,6 +1587,7 @@ main {
                 <th class="num-cell">금액</th>
                 <th>결제수단</th>
                 <th>메모</th>
+                <th style="text-align:center;">통장대사</th>
                 <th class="action-cell"></th>
               </tr>
             </thead>
@@ -2631,13 +2632,99 @@ function clearPayroll() {
   state.payrollRows = [];
   updateAll(); saveDraft();
 }
+/**
+ * 급여 ↔ 통장 출금 자동 대사 (Phase B)
+ * - 후보 통장행: withdraw>0 && kind==='인건비'
+ * - 매칭 기준: 금액 일치(필수) + 동일 일자(가산) + 적요에 직원명 포함(가산)
+ * - 현금/카드 지급은 통장 매칭 대상이 아님(수동 처리)
+ */
+function matchPayrollToBank() {
+  const payroll = state.payrollRows || [];
+  const bank = state.bankRows || [];
+  const matchByPayroll = {}; // payrollIdx -> bankIdx
+  const matchByBank = {};    // bankIdx -> payrollIdx
+  const cand = [];
+  bank.forEach((b, i) => {
+    if (num(b.withdraw) > 0 && b.kind === '인건비') cand.push(i);
+  });
+  const used = new Set();
+  payroll.forEach((p, pi) => {
+    if (num(p.amount) <= 0) return;
+    if (p.method && p.method !== '계좌이체') return;
+    let bestIdx = -1, bestScore = -1;
+    for (const bi of cand) {
+      if (used.has(bi)) continue;
+      const b = bank[bi];
+      if (num(b.withdraw) !== num(p.amount)) continue;
+      let score = 100;
+      const nameNeedle = String(p.employee || '').trim();
+      if (nameNeedle && b.desc && String(b.desc).includes(nameNeedle)) score += 50;
+      if (p.date && b.date && p.date === b.date) score += 10;
+      if (score > bestScore) { bestScore = score; bestIdx = bi; }
+    }
+    if (bestIdx >= 0) {
+      used.add(bestIdx);
+      matchByPayroll[pi] = bestIdx;
+      matchByBank[bestIdx] = pi;
+    }
+  });
+  return { matchByPayroll, matchByBank, candidateBankIdxs: cand };
+}
+
+function updatePayrollMatchHint() {
+  const hint = document.getElementById('payrollMatchHint');
+  if (!hint) return;
+  const { matchByPayroll, candidateBankIdxs, matchByBank } = matchPayrollToBank();
+  const eligible = state.payrollRows.filter(p => num(p.amount) > 0 && (!p.method || p.method === '계좌이체')).length;
+  const matched = Object.keys(matchByPayroll).length;
+  const orphan = candidateBankIdxs.filter(bi => matchByBank[bi] == null).length;
+  if (!state.payrollRows.length && !candidateBankIdxs.length) {
+    hint.textContent = '통장 인건비 출금과 자동 매칭';
+  } else if (eligible === 0 && candidateBankIdxs.length === 0) {
+    hint.textContent = '계좌이체 급여 없음';
+  } else if (orphan === 0 && matched === eligible) {
+    hint.textContent = `✓ ${matched}/${eligible}건 모두 일치`;
+  } else {
+    hint.textContent = `${matched}/${eligible}건 매칭${orphan ? ` · 통장 ${orphan}건 미매칭` : ''}`;
+  }
+}
+
+function showPayrollMatchInfo() {
+  const { matchByPayroll, matchByBank, candidateBankIdxs } = matchPayrollToBank();
+  const eligible = state.payrollRows.filter(p => num(p.amount) > 0 && (!p.method || p.method === '계좌이체')).length;
+  const matched = Object.keys(matchByPayroll).length;
+  const orphan = candidateBankIdxs.filter(bi => matchByBank[bi] == null).length;
+  if (!state.payrollRows.length) {
+    toast('급여 행을 먼저 추가하세요', 'warn');
+    return;
+  }
+  if (!candidateBankIdxs.length) {
+    toast('통장에 인건비로 분류된 출금이 없습니다 · 통장 표에서 분류를 "인건비"로 변경하세요', 'warn');
+    return;
+  }
+  const msg = `급여 통장 매칭: ${matched}/${eligible}건${orphan ? ` · 통장 인건비 미매칭 ${orphan}건` : ''}`;
+  toast(msg, (matched === eligible && orphan === 0) ? 'ok' : 'warn');
+}
+
 function renderPayrollTable() {
   const tbody = document.getElementById('payrollTableBody');
   if (!tbody) return;
   document.getElementById('payrollTableWrap').style.display = state.payrollRows.length ? 'block' : 'none';
   const countEl = document.getElementById('payrollCount');
   if (countEl) countEl.textContent = state.payrollRows.length + '건';
-  tbody.innerHTML = state.payrollRows.map((r, i) => `
+  const { matchByPayroll } = matchPayrollToBank();
+  tbody.innerHTML = state.payrollRows.map((r, i) => {
+    let badge;
+    if (num(r.amount) <= 0) {
+      badge = '<span class="status-pill pending">—</span>';
+    } else if (r.method && r.method !== '계좌이체') {
+      badge = `<span class="status-pill pending" title="현금·카드 지급은 통장 대사 대상 아님">${escapeHtml(r.method)}</span>`;
+    } else if (matchByPayroll[i] != null) {
+      badge = `<span class="status-pill ok" style="cursor:pointer" title="통장 #${matchByPayroll[i]+1}행과 매칭됨 · 클릭하여 이동" onclick="jumpToRow('bank', ${matchByPayroll[i]})">✓ 통장</span>`;
+    } else {
+      badge = '<span class="status-pill warn" title="동일 금액의 인건비 출금이 통장에 없음">✗ 없음</span>';
+    }
+    return `
     <tr>
       <td><input value="${escapeHtml(r.date || '')}" placeholder="YYYY-MM-DD" style="width:120px" onchange="state.payrollRows[${i}].date=this.value;saveDraft();updateAll()"></td>
       <td><input value="${escapeHtml(r.employee || '')}" placeholder="직원명" onchange="state.payrollRows[${i}].employee=this.value;saveDraft();updateAll()"></td>
@@ -2646,9 +2733,11 @@ function renderPayrollTable() {
         ${['계좌이체','현금','카드','기타'].map(m => `<option ${r.method===m?'selected':''}>${m}</option>`).join('')}
       </select></td>
       <td><input value="${escapeHtml(r.memo || '')}" placeholder="(예: 5월 정상급여)" onchange="state.payrollRows[${i}].memo=this.value;saveDraft();updateAll()"></td>
+      <td style="text-align:center;">${badge}</td>
       <td class="action-cell"><button class="delete-row" onclick="deletePayrollRow(${i})">×</button></td>
     </tr>
-  `).join('');
+  `;
+  }).join('');
 }
 
 function renderPurchaseTable() {
@@ -2709,10 +2798,16 @@ function renderBankTable() {
   const tbody = document.getElementById('bankTableBody');
   if (!tbody) return;
   document.getElementById('bankTableWrap').style.display = state.bankRows.length ? 'block' : 'none';
-  tbody.innerHTML = state.bankRows.map((r, i) => `
+  const { matchByBank } = matchPayrollToBank();
+  tbody.innerHTML = state.bankRows.map((r, i) => {
+    const payIdx = matchByBank[i];
+    const payTag = payIdx != null
+      ? `<span class="status-pill ok" style="margin-left:6px;cursor:pointer;font-size:10px;" title="급여 #${payIdx+1}행과 매칭됨 · ${escapeHtml(state.payrollRows[payIdx].employee||'직원')}" onclick="event.stopPropagation();jumpToRow('payroll', ${payIdx})">↔ 급여 #${payIdx+1}</span>`
+      : '';
+    return `
     <tr>
       <td><input value="${escapeHtml(r.date || '')}" style="width:100px" onchange="state.bankRows[${i}].date=this.value;saveDraft();updateAll()"></td>
-      <td><input value="${escapeHtml(r.desc || '')}" placeholder="적요" onchange="state.bankRows[${i}].desc=this.value;saveDraft();updateAll()"></td>
+      <td><div style="display:flex;align-items:center;gap:4px;"><input value="${escapeHtml(r.desc || '')}" placeholder="적요" style="flex:1;min-width:0;" onchange="state.bankRows[${i}].desc=this.value;saveDraft();updateAll()">${payTag}</div></td>
       <td class="num-cell"><input type="number" class="num-cell" value="${r.withdraw||0}" onchange="state.bankRows[${i}].withdraw=num(this.value);saveDraft();updateAll()"></td>
       <td class="num-cell"><input type="number" class="num-cell" value="${r.deposit||0}" onchange="state.bankRows[${i}].deposit=num(this.value);saveDraft();updateAll()"></td>
       <td class="num-cell"><input type="number" class="num-cell" value="${r.balance||0}" onchange="state.bankRows[${i}].balance=num(this.value);saveDraft();updateAll()"></td>
@@ -2721,7 +2816,8 @@ function renderBankTable() {
       </select></td>
       <td class="action-cell"><button class="delete-row" onclick="deleteBankRow(${i})">×</button></td>
     </tr>
-  `).join('');
+  `;
+  }).join('');
 }
 
 /* ========================================================================
@@ -2901,6 +2997,7 @@ function updateAll() {
   renderPurchaseTable();
   renderPayrollTable();
   renderBankTable();
+  updatePayrollMatchHint();
   document.getElementById('posCount').textContent = state.posRows.length + '건';
   document.getElementById('cardCount').textContent = state.cardRows.length + '건';
   document.getElementById('purchaseCount').textContent = state.purchaseRows.length + '건';
@@ -3176,6 +3273,55 @@ function runValidation() {
     });
   }
 
+  // 13. 급여 ↔ 통장 출금 자동 대사
+  if (state.payrollRows.length || state.bankRows.some(b => b.kind === '인건비' && num(b.withdraw) > 0)) {
+    const { matchByPayroll, matchByBank, candidateBankIdxs } = matchPayrollToBank();
+    const eligiblePayroll = state.payrollRows
+      .map((p, i) => ({ p, i }))
+      .filter(({ p }) => num(p.amount) > 0 && (!p.method || p.method === '계좌이체'));
+    const matchedCount = Object.keys(matchByPayroll).length;
+    const unmatchedPay = eligiblePayroll.filter(({ i }) => matchByPayroll[i] == null);
+    const orphanBank = candidateBankIdxs.filter(bi => matchByBank[bi] == null);
+    const level = (unmatchedPay.length === 0 && orphanBank.length === 0) ? 'ok'
+                : (unmatchedPay.length > 0 || orphanBank.length > 0) ? 'warn' : 'info';
+    let detail = `급여 <strong>${matchedCount}/${eligiblePayroll.length}</strong>건 통장 매칭`;
+    if (orphanBank.length) detail += ` · 통장 인건비 출금 중 미매칭 <strong>${orphanBank.length}</strong>건`;
+    if (unmatchedPay.length === 0 && orphanBank.length === 0 && matchedCount > 0) detail += ' · 모두 일치';
+    const rows = [];
+    unmatchedPay.slice(0, 5).forEach(({ p, i }) => rows.push({
+      source: 'payroll', idx: i,
+      cells: [
+        { label: '직원', value: p.employee || '(이름 없음)' },
+        { label: '지급일', value: p.date || '-' },
+        { label: '금액', value: fmt(num(p.amount)), highlight: true },
+        { label: '상태', value: '통장 매칭 없음' }
+      ]
+    }));
+    orphanBank.slice(0, 5).forEach(bi => {
+      const b = state.bankRows[bi];
+      rows.push({
+        source: 'bank', idx: bi,
+        cells: [
+          { label: '적요', value: b.desc || '-' },
+          { label: '일자', value: b.date || '-' },
+          { label: '출금', value: fmt(num(b.withdraw)), highlight: true },
+          { label: '상태', value: '급여 행 없음' }
+        ]
+      });
+    });
+    const issue = {
+      level,
+      title: level === 'ok' ? '급여 통장 대사 일치' : '급여 통장 대사 확인',
+      detail
+    };
+    if (rows.length) {
+      issue.rows = rows;
+      issue._totalCount = unmatchedPay.length + orphanBank.length;
+      issue.action = '직원명·금액·일자가 통장 적요와 일치하는지 확인하세요 (계좌이체만 자동 매칭)';
+    }
+    issues.push(issue);
+  }
+
   state.issues = issues;
   renderIssues();
   updateStatusSidebar();
@@ -3226,7 +3372,7 @@ function jumpToRow(source, idx) {
   // Go to input tab
   switchTab('input');
   setTimeout(() => {
-    const tableBody = { pos: 'posTableBody', card: 'cardTableBody', purchase: 'purchaseTableBody', bank: 'bankTableBody' }[source] || 'posTableBody';
+    const tableBody = { pos: 'posTableBody', card: 'cardTableBody', purchase: 'purchaseTableBody', payroll: 'payrollTableBody', bank: 'bankTableBody' }[source] || 'posTableBody';
     const row = document.querySelectorAll(`#${tableBody} tr`)[idx];
     if (!row) return;
     // Scroll into view
