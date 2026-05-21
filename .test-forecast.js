@@ -21,6 +21,8 @@ const ratFn = grab(/function computeCostRatios[\s\S]*?\n\}/, 'computeCostRatios'
 const fcRain = grab(/const FORECAST_RAIN_MULT = [\d.]+;/, 'FORECAST_RAIN_MULT');
 const fcHoliday = grab(/const FORECAST_HOLIDAY_MULT = [\d.]+;/, 'FORECAST_HOLIDAY_MULT');
 const fcClosed = grab(/const FORECAST_CLOSED_DOW = \[[\d,\s]+\];/, 'FORECAST_CLOSED_DOW');
+const fcOutlier = grab(/const FORECAST_OUTLIER_MULT = [\d.]+;/, 'FORECAST_OUTLIER_MULT');
+const detectOutliers = grab(/function _detectForecastOutliers[\s\S]*?\n\}/, '_detectForecastOutliers');
 const wdBaseline = grab(/function _computeWeekdayBaseline[\s\S]*?\n\}/, '_computeWeekdayBaseline');
 const computeForecast = grab(/function computeProfitForecast[\s\S]*?\n\}/, 'computeProfitForecast');
 
@@ -40,12 +42,14 @@ const src = `
   ${fcRain}
   ${fcHoliday}
   ${fcClosed}
+  ${fcOutlier}
+  ${detectOutliers}
   ${wdBaseline}
   ${computeForecast}
   return {
-    _computeWeekdayBaseline, computeProfitForecast,
+    _computeWeekdayBaseline, computeProfitForecast, _detectForecastOutliers,
     setFixed: (f) => { _fixedExpenses = f; },
-    FORECAST_RAIN_MULT, FORECAST_HOLIDAY_MULT
+    FORECAST_RAIN_MULT, FORECAST_HOLIDAY_MULT, FORECAST_OUTLIER_MULT
   };
 `;
 const mod = new Function(src)();
@@ -128,5 +132,44 @@ check('7) 기타고정비 14일 안분 1,400,000', data.estFixedOther === expect
 const emptyData = mod.computeProfitForecast([], [], 7);
 check('8) 빈 records → totalEstSales=0', emptyData.totalEstSales === 0);
 check('8) 영업이익 = -비용', emptyData.estOpProfit === 0 - 0 - emptyData.estLabor - emptyData.estFixedOther);
+
+// CASE 9: outlier 자동 감지 (median × 3 초과)
+const recs2 = [
+  { date: '2026-05-13', totals: { posTotal: 100000 } },  // 수
+  { date: '2026-05-14', totals: { posTotal: 200000 } },  // 목
+  { date: '2026-05-15', totals: { posTotal: 4170300 } }, // 금 — outlier (median × 3 = 600k 초과)
+  { date: '2026-05-16', totals: { posTotal: 350000 } },  // 토
+  { date: '2026-05-17', totals: { posTotal: 500000 } },  // 일
+  { date: '2026-05-18', totals: { posTotal: 200000 } },  // 월
+  { date: '2026-05-19', totals: { posTotal: 0 } }        // 화 휴무
+];
+const out = mod._detectForecastOutliers(recs2);
+check('9) 5/15 outlier 자동 감지', out.set.has('2026-05-15'));
+check('9) 다른 날은 outlier 아님', !out.set.has('2026-05-13') && !out.set.has('2026-05-16'));
+
+// CASE 10: outlier 제외 후 baseline → 금요일 평균이 outlier 영향 안 받음
+mod.setFixed([]);
+const baselineWithOut = mod._computeWeekdayBaseline(recs2);
+// 금요일 데이터(5/15)가 outlier로 제외됨 → count=0 → overall avg로 imputation
+check('10) 금요일 outlier 제외 후 count=0', baselineWithOut[5].count === 0);
+// overall avg = (100k+200k+350k+500k+200k) / 5 = 270k (5/15 제외, 휴무 제외)
+const expectedOverall = (100000+200000+350000+500000+200000) / 5;
+check('10) 금요일 imputation = overall (4M 영향 X)', near(baselineWithOut[5].avg, expectedOverall));
+
+// CASE 11: 수동 표시 outlier
+const recs3 = [
+  { date: '2026-05-13', totals: { posTotal: 100000 } },
+  { date: '2026-05-14', totals: { posTotal: 100000 }, _meta: { excludeFromForecast: true } }
+];
+const out3 = mod._detectForecastOutliers(recs3);
+check('11) 수동 표시 outlier 인식', out3.set.has('2026-05-14') && out3.manual.has('2026-05-14'));
+
+// CASE 12: 표본 < 4 → 자동 outlier 없음 (안전)
+const recs4 = [
+  { date: '2026-05-13', totals: { posTotal: 100000 } },
+  { date: '2026-05-15', totals: { posTotal: 10000000 } }  // 거대 매출이지만 표본 2
+];
+const out4 = mod._detectForecastOutliers(recs4);
+check('12) 표본 부족 → 자동 outlier 없음', !out4.set.has('2026-05-15'));
 
 if (!process.exitCode) console.log('\n전체 통과');

@@ -3212,14 +3212,45 @@ function computeHourWeekdayHeatmap(records) {
 const FORECAST_RAIN_MULT = 0.85;      // 비/눈 → 매출 -15% (업계 평균)
 const FORECAST_HOLIDAY_MULT = 0.55;   // 강남역 직장인 상권: 공휴일 -45%
 const FORECAST_CLOSED_DOW = [2];      // 매주 화요일 휴무 (Date.getDay() 기준 화=2)
+const FORECAST_OUTLIER_MULT = 3;      // 전체 영업일 median × 3 초과 매출은 outlier (단체예약·이벤트)
 
 /**
- * 과거 records로부터 요일별 평균 매출 기준선 (휴무일 제외)
+ * 이상 매출일(outlier) 자동 감지 + 사용자 명시 표시 통합
+ * - record._meta.excludeFromForecast === true 면 무조건 제외
+ * - 자동: median × 3 초과 매출은 outlier (표본 ≥ 4일 일 때만)
+ * @returns {{ set: Set<string>, threshold: number, median: number, manual: Set<string> }}
  */
-function _computeWeekdayBaseline(records) {
+function _detectForecastOutliers(records) {
+  const sales = [];
+  const manual = new Set();
+  (records || []).forEach(r => {
+    if (!r || !r.date || !r.totals) return;
+    if (r._meta && r._meta.excludeFromForecast === true) {
+      manual.add(r.date);
+    }
+    const d = new Date(r.date); if (isNaN(d)) return;
+    if (FORECAST_CLOSED_DOW.includes(d.getDay())) return;
+    const s = num(r.totals.posTotal);
+    if (s > 0) sales.push({ date: r.date, sales: s });
+  });
+  const set = new Set(manual);
+  if (sales.length < 4) return { set, threshold: Infinity, median: 0, manual };
+  const sorted = sales.map(x => x.sales).slice().sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const threshold = median * FORECAST_OUTLIER_MULT;
+  sales.forEach(x => { if (x.sales > threshold) set.add(x.date); });
+  return { set, threshold, median, manual };
+}
+
+/**
+ * 과거 records로부터 요일별 평균 매출 기준선 (휴무일·outlier 제외)
+ */
+function _computeWeekdayBaseline(records, outliers) {
+  const outlierSet = (outliers && outliers.set) || _detectForecastOutliers(records).set;
   const wd = Array.from({ length: 7 }, () => ({ sum: 0, count: 0 }));
   records.forEach(r => {
     if (!r || !r.date || !r.totals) return;
+    if (outlierSet.has(r.date)) return; // outlier 제외
     const sales = num(r.totals.posTotal);
     if (sales <= 0) return;
     const d = new Date(r.date);
@@ -3229,8 +3260,10 @@ function _computeWeekdayBaseline(records) {
     wd[w].sum += sales;
     wd[w].count += 1;
   });
-  // 평균 계산 + 데이터 없는 요일은 전체 평균으로 imputation
-  const overall = records.filter(r => r.totals && num(r.totals.posTotal) > 0);
+  // 평균 계산 + 데이터 없는 요일은 전체 평균으로 imputation (outlier 제외)
+  const overall = records.filter(r =>
+    r.totals && num(r.totals.posTotal) > 0 && !outlierSet.has(r.date)
+  );
   const overallAvg = overall.length ? overall.reduce((s, r) => s + num(r.totals.posTotal), 0) / overall.length : 0;
   return wd.map((x, i) => ({
     weekday: i,
@@ -3248,7 +3281,8 @@ function _computeWeekdayBaseline(records) {
  * @returns 예측 데이터
  */
 function computeProfitForecast(historicalRecords, weatherForecast, forecastDays) {
-  const baseline = _computeWeekdayBaseline(historicalRecords);
+  const outliers = _detectForecastOutliers(historicalRecords);
+  const baseline = _computeWeekdayBaseline(historicalRecords, outliers);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const wxMap = {};
@@ -3311,7 +3345,8 @@ function computeProfitForecast(historicalRecords, weatherForecast, forecastDays)
     estSupply, estVariableCost, estLabor, estFixedOther,
     estOpProfit, opMarginPct,
     baseline, ratios,
-    monthlyFixedLabor, monthlyFixedOther
+    monthlyFixedLabor, monthlyFixedOther,
+    outliers  // { set, threshold, median, manual }
   };
 }
 
@@ -3420,11 +3455,28 @@ function _forecastCardHtml(data, currentDays, defaultDays) {
     yLabels += `<text x="${PL - 6}" y="${y + 4}" text-anchor="end" font-size="10" fill="var(--text-3)" font-family="JetBrains Mono, monospace">${v >= 10000 ? Math.round(v/10000) + '만' : Math.round(v)}</text>`;
   }
 
+  // Outlier(이벤트성 매출) 안내
+  const outArr = Array.from(data.outliers.set || []).sort();
+  const manualSet = data.outliers.manual || new Set();
+  const outlierBox = outArr.length ? `
+    <div style="margin-top:10px;padding:10px 12px;background:var(--orange-bg, var(--subtle));border:1px solid var(--orange);border-radius:8px;font-size:12px;">
+      <div style="font-weight:600;color:var(--orange);margin-bottom:4px;">⚠ baseline에서 제외된 이벤트성 매출 ${outArr.length}일</div>
+      <div style="color:var(--text-2);">${outArr.map(d => {
+        const isManual = manualSet.has(d);
+        return `${d}${isManual ? ' (수동)' : ` (median × ${FORECAST_OUTLIER_MULT} = ${fmtKRW(data.outliers.threshold)} 초과)`}`;
+      }).join(' · ')}</div>
+      <div style="color:var(--text-3);font-size:11px;margin-top:4px;">
+        단체예약·행사로 인한 이상치는 평균 매출을 왜곡하므로 추정 baseline에서 제외됩니다.
+        마감내역에서 [이벤트] 토글로 수동 표시도 가능합니다.
+      </div>
+    </div>` : '';
+
   // 추정 가정 텍스트
+  const baseSamples = data.baseline.reduce((s,b)=>s+b.count,0);
   const assumptions = `
     <div style="font-size:11px;color:var(--text-3);margin-top:10px;line-height:1.6;">
       <strong>추정 가정:</strong>
-      요일별 평균 매출(과거 ${data.baseline.reduce((s,b)=>s+b.count,0)}일 합산) ·
+      요일별 평균 매출(과거 ${baseSamples}일 합산${outArr.length ? `, 이벤트성 ${outArr.length}일 제외` : ''}) ·
       비/눈 ${Math.round((1-FORECAST_RAIN_MULT)*100)}%↓ ·
       공휴일 ${Math.round((1-FORECAST_HOLIDAY_MULT)*100)}%↓ ·
       매주 화요일 휴무 (매출 0) ·
@@ -3486,9 +3538,10 @@ function _forecastCardHtml(data, currentDays, defaultDays) {
         <tbody>${dayRows}</tbody>
       </table>
     </details>
+    ${outlierBox}
     ${assumptions}
     <div style="font-size:11px;color:var(--text-3);margin-top:6px;">
-      ※ 영업외손익·법인세·부가세 미반영 간이 추정. 과거 데이터 표본이 작으면(${data.baseline.reduce((s,b)=>s+b.count,0)}일) 정확도 낮음 — 한 달 이상 누적 후 더 신뢰 가능.
+      ※ 영업외손익·법인세·부가세 미반영 간이 추정. 과거 데이터 표본이 작으면(${baseSamples}일) 정확도 낮음 — 한 달 이상 누적 후 더 신뢰 가능.
     </div>`;
 }
 
@@ -5720,6 +5773,8 @@ function renderHistory() {
     if (dangers) tags.push(`<span style="color: var(--red);">위험 ${dangers}</span>`);
     if (warns) tags.push(`<span style="color: var(--orange);">주의 ${warns}</span>`);
     if (!dangers && !warns && oks) tags.push(`<span style="color: var(--green);">정상</span>`);
+    const isEvent = r._meta && r._meta.excludeFromForecast === true;
+    if (isEvent) tags.push(`<span style="color: var(--orange);" title="단체예약·행사 등 — 추정 baseline에서 제외">⛔ 이벤트(추정 제외)</span>`);
     const issueMeta = tags.length ? ' · ' + tags.join(' · ') : '';
     return `
       <div class="history-item">
@@ -5732,6 +5787,7 @@ function renderHistory() {
           <div class="history-meta">POS ${r.posRows.length}건 · 전표 ${r.cardRows.length}건${issueMeta}</div>
         </div>
         <div class="history-actions">
+          <button class="btn btn-small btn-ghost" onclick="toggleEventDay('${d}')" title="단체예약·행사로 인한 이상 매출 표시 — 추정에서 제외">${isEvent ? '이벤트 해제' : '이벤트 표시'}</button>
           <button class="btn btn-small btn-ghost" onclick="reopenRecord('${d}')">열기</button>
           <button class="btn btn-small btn-ghost btn-danger-ghost" onclick="deleteRecord('${d}')">삭제</button>
         </div>
@@ -6493,6 +6549,22 @@ function reopenRecord(date) {
   updateAll();
   switchTab('input');
   toast(`${date} 불러왔습니다`, 'ok');
+}
+
+/**
+ * 마감일을 "이벤트(단체예약/행사)"로 표시하거나 해제.
+ * record._meta.excludeFromForecast = true 면 추정 baseline에서 제외.
+ */
+function toggleEventDay(date) {
+  const all = getAllRecords();
+  if (!all[date]) { toast(date + ' record가 없습니다', 'danger'); return; }
+  if (!all[date]._meta) all[date]._meta = {};
+  const cur = all[date]._meta.excludeFromForecast === true;
+  all[date]._meta.excludeFromForecast = !cur;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+  toast(!cur ? `${date} 이벤트 표시 (추정 제외)` : `${date} 이벤트 해제`, 'ok');
+  renderHistory();
+  _queueCloudUpload();
 }
 
 function deleteRecord(date) {
