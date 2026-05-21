@@ -3587,8 +3587,8 @@ function computeMonthlyForecast(month, weatherForecast) {
   const _bep = (vr) => (vr < 1 ? bepFixedCost / (1 - vr) : 0);
   const bepActualSupply = _bep(ratioActual);
   const bepTargetSupply = _bep(ratioTarget);
-  // 일 평균 영업일수 = lastDay - 휴무일 (대략)
-  const monthBusinessDays = days.filter(d => !d.isClosed).length;
+  // 영업일 = 실제 매출(actual) + 추정(estimate) — 휴무·미마감 제외
+  const monthBusinessDays = days.filter(d => d.type === 'actual' || d.type === 'estimate').length;
   const bepActualDaily = monthBusinessDays > 0 ? bepActualSupply / monthBusinessDays : 0;
   const bepTargetDaily = monthBusinessDays > 0 ? bepTargetSupply / monthBusinessDays : 0;
   // 부족액 = BEP - 추정 매출 (공급가 기준)
