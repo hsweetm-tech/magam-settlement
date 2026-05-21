@@ -2329,27 +2329,46 @@ function _appendOpenMeteoDaily(arr, data) {
   });
 }
 
-/** 마감/이력 record에 weather 필드 채우기 (없는 일자만) */
-async function backfillWeatherAll() {
+/**
+ * 마감/이력 record에 weather 필드 채우기 (없는 일자만)
+ * @param {{silent?: boolean}} opts - silent=true이면 toast 없이 백그라운드 fetch (자동 호출용)
+ */
+let _weatherBackfillRunning = false;
+async function backfillWeatherAll(opts = {}) {
+  if (_weatherBackfillRunning) return;
+  const silent = !!opts.silent;
   const all = getAllRecords();
   const need = Object.keys(all).filter(d => !all[d].weather).sort();
-  if (!need.length) { toast('이미 모든 일자에 날씨 데이터가 있습니다', 'ok'); return; }
-  toast(`☁ 강남역 날씨 ${need.length}일치 가져오는 중...`, '');
+  if (!need.length) {
+    if (!silent) toast('이미 모든 일자에 날씨 데이터가 있습니다', 'ok');
+    return;
+  }
+  _weatherBackfillRunning = true;
+  if (!silent) toast(`☁ 강남역 날씨 ${need.length}일치 가져오는 중...`, '');
   try {
     const start = need[0], end = need[need.length - 1];
     const list = await fetchWeatherForRange(start, end);
     let updated = 0;
+    const cur = getAllRecords();  // race 방지: 최신 state 다시 읽기
     list.forEach(w => {
-      if (all[w.date] && !all[w.date].weather) { all[w.date].weather = w; updated++; }
+      if (cur[w.date] && !cur[w.date].weather) { cur[w.date].weather = w; updated++; }
     });
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
-    toast(`✓ 날씨 ${updated}일치 적용`, 'ok');
-    if (typeof renderReport === 'function') renderReport();
-    if (typeof renderHistory === 'function') renderHistory();
-    const mm = document.getElementById('monthlyMonth');
-    if (mm && mm.value && typeof renderMonthlyReport === 'function') renderMonthlyReport(mm.value);
+    if (updated > 0) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(cur));
+      if (!silent) toast(`✓ 날씨 ${updated}일치 적용`, 'ok');
+      // UI 갱신 (silent일 때도 보고 있는 화면에 반영)
+      if (typeof renderReport === 'function' && document.getElementById('tab-report') && document.getElementById('tab-report').classList.contains('active')) renderReport();
+      if (typeof renderHistory === 'function') renderHistory();
+      const mm = document.getElementById('monthlyMonth');
+      if (mm && mm.value && typeof renderMonthlyReport === 'function' && document.getElementById('tab-monthly') && document.getElementById('tab-monthly').classList.contains('active')) renderMonthlyReport(mm.value);
+    } else if (!silent) {
+      toast('새로 받을 날씨가 없습니다', 'ok');
+    }
   } catch (err) {
-    toast('날씨 받기 실패: ' + (err.message || '네트워크 오류'), 'danger');
+    if (!silent) toast('날씨 받기 실패: ' + (err.message || '네트워크 오류'), 'danger');
+    // silent 모드에서는 조용히 실패 (오프라인 등)
+  } finally {
+    _weatherBackfillRunning = false;
   }
 }
 
@@ -2475,11 +2494,16 @@ function switchTab(name) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + name));
   if (name === 'history') renderHistory();
   if (name === 'validate') { runValidation(); renderHourly(); renderMenuTop(); }
-  if (name === 'report') renderReport();
+  if (name === 'report') {
+    renderReport();
+    // 분석 탭 진입 시 누락된 날씨 silent backfill (이미 다 있으면 즉시 종료)
+    if (typeof backfillWeatherAll === 'function') backfillWeatherAll({ silent: true });
+  }
   if (name === 'monthly') {
     const mm = document.getElementById('monthlyMonth');
     if (mm && !mm.value) mm.value = new Date().toISOString().slice(0, 7);
     if (mm) renderMonthlyReport(mm.value);
+    if (typeof backfillWeatherAll === 'function') backfillWeatherAll({ silent: true });
   }
 }
 
@@ -7054,6 +7078,11 @@ async function pullFromCloud(silent = false) {
 }
 
 init();
+
+// 앱 로드 후 누락된 날씨 silent backfill (백그라운드, 2초 지연으로 init 부담 회피)
+setTimeout(() => {
+  if (typeof backfillWeatherAll === 'function') backfillWeatherAll({ silent: true });
+}, 2000);
 </script>
 
 </body>
