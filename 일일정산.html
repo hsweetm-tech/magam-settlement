@@ -1770,13 +1770,13 @@ body.tab-summary main { grid-template-columns: 1fr; }
           <div class="section-title">리포트 분석</div>
           <div class="report-controls">
             <div class="seg-control">
-              <button class="seg-btn active" data-range="7">최근 7일</button>
+              <button class="seg-btn" data-range="7">최근 7일</button>
               <button class="seg-btn" data-range="30">30일</button>
               <button class="seg-btn" data-range="90">90일</button>
               <button class="seg-btn" data-range="all">전체</button>
-              <button class="seg-btn" data-range="month">월별</button>
+              <button class="seg-btn active" data-range="month">월별</button>
             </div>
-            <input type="month" id="reportMonth" style="display:none;padding:6px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;background:var(--bg);color:var(--text);">
+            <input type="month" id="reportMonth" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;background:var(--bg);color:var(--text);">
             <div class="seg-control">
               <button class="seg-btn active" data-view="daily">일별</button>
               <button class="seg-btn" data-view="monthly">월별</button>
@@ -2510,8 +2510,11 @@ function init() {
   });
   document.getElementById('loadFileInput').addEventListener('change', handleLoadFile);
 
-  // Report segment controls
-  state.reportConfig = { range: '7', view: 'daily', month: new Date().toISOString().slice(0,7) };
+  // Report segment controls — 기본 range 'month' (사장님 요청 2026-05-21)
+  state.reportConfig = { range: 'month', view: 'daily', month: new Date().toISOString().slice(0,7) };
+  // month input 초기값 = 이번 달
+  const _rm = document.getElementById('reportMonth');
+  if (_rm && !_rm.value) _rm.value = state.reportConfig.month;
   document.querySelectorAll('#tab-report .seg-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       const group = btn.closest('.seg-control');
