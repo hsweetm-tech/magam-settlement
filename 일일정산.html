@@ -3443,13 +3443,29 @@ function computeMonthlyForecast(month, weatherForecast) {
   const monthExpected = actualSum + estimateSum;
   const estSupply = Math.round(monthExpected / 1.1);
 
-  // 비용: 변동비 = 매출공급가 × 원가율(전체 학습 데이터, outlier 제외)
-  // 인건비·고정비는 월 전액 (월 단위 추정이므로 안분 X)
+  // 변동비: 그 달 실제 발생한 식자재+주류 매입공급가만 (미래 추정 안 함, 보수적)
+  // 사장님 요청 (2026-05-21): 오픈 초기 재고 비축 등으로 원가율이 비정상이라
+  // 추정 매출 × 원가율 곱하지 말고 실비까지만.
+  let actualVariableCost = 0;
+  let foodSupplyActual = 0, beverageSupplyActual = 0;
+  for (let dt2 = new Date(firstDay); dt2 <= lastDay; dt2.setDate(dt2.getDate() + 1)) {
+    const ds = new Date(dt2).toISOString().slice(0,10);
+    const rec = all[ds];
+    if (rec && Array.isArray(rec.purchaseRows)) {
+      rec.purchaseRows.forEach(p => {
+        const s = num(p.supply);
+        if (p.category === '식자재') { foodSupplyActual += s; actualVariableCost += s; }
+        else if (p.category === '주류/음료') { beverageSupplyActual += s; actualVariableCost += s; }
+      });
+    }
+  }
+  const estVariableCost = actualVariableCost;
+
+  // 학습 원가율은 참고용으로만 (footnote에 표시)
   const trainOut = trainRecords.filter(r => !outliers.set.has(r.date));
   const ratios = computeCostRatios(trainOut);
-  const variableRatio = ratios.foodCostRatio + ratios.beverageRatio;
-  const estVariableCost = Math.round(estSupply * variableRatio);
 
+  // 인건비·고정비는 월 전액
   const fixedExp = getFixedExpenses();
   const monthlyFixedLabor = fixedExp.filter(e => e.category === '인건비').reduce((s, e) => s + num(e.amount), 0);
   const monthlyFixedOther = fixedExp.filter(e => e.category !== '인건비').reduce((s, e) => s + num(e.amount), 0);
@@ -3466,7 +3482,8 @@ function computeMonthlyForecast(month, weatherForecast) {
   return {
     month, days, today: todayStr,
     actualSum, estimateSum, monthExpected, estSupply,
-    estVariableCost, monthlyFixedLabor, monthlyFixedOther,
+    estVariableCost, foodSupplyActual, beverageSupplyActual,
+    monthlyFixedLabor, monthlyFixedOther,
     estOpProfit, opMarginPct,
     actualDays, estimateDays, closedDays, missingDays,
     baseline, ratios, outliers
@@ -3588,9 +3605,9 @@ function _monthlyForecastCardHtml(data) {
           <div class="kpi-delta flat">실제 ${fmtKRW(data.actualSum)} + 추정 ${fmtKRW(data.estimateSum)}</div>
         </div>
         <div class="kpi-card">
-          <div class="kpi-label">변동비 (식자재+주류)</div>
+          <div class="kpi-label">변동비 (실제 발생 매입)</div>
           <div class="kpi-value" style="color:var(--text-2);">${fmtKRW(data.estVariableCost)}</div>
-          <div class="kpi-delta flat">${((data.ratios.foodCostRatio+data.ratios.beverageRatio)*100).toFixed(1)}% 적용</div>
+          <div class="kpi-delta flat">식자재 ${fmtKRW(data.foodSupplyActual)} + 주류 ${fmtKRW(data.beverageSupplyActual)}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">고정비 (월 전액)</div>
@@ -3627,7 +3644,7 @@ function _monthlyForecastCardHtml(data) {
         실제 매출 ${data.actualDays}일 + 추정 ${data.estimateDays}일 + 휴무 ${data.closedDays}일 + 미마감 ${data.missingDays}일 ·
         요일별 평균 baseline (표본 ${baseSamples}일${outArr.length ? `, 이벤트성 ${outArr.length}일 제외` : ''}) ·
         비/눈 ${Math.round((1-FORECAST_RAIN_MULT)*100)}%↓ · 공휴일 ${Math.round((1-FORECAST_HOLIDAY_MULT)*100)}%↓ · 매주 화요일 휴무 ·
-        식자재+주류 원가율 ${((data.ratios.foodCostRatio+data.ratios.beverageRatio)*100).toFixed(1)}% ·
+        <strong>변동비 = 실제 발생 매입만</strong>(추정 매출 × 원가율 X, 오픈 초기 재고 비축으로 학습 원가율 ${((data.ratios.foodCostRatio+data.ratios.beverageRatio)*100).toFixed(1)}%이 비정상이라 미적용) ·
         인건비 ${fmtKRW(data.monthlyFixedLabor)} + 기타 고정비 ${fmtKRW(data.monthlyFixedOther)} (월 전액 차감).
         영업외손익·법인세·부가세 미반영.
       </div>

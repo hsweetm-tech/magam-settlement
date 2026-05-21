@@ -214,8 +214,15 @@ const [yr, mo] = thisMonth.split('-').map(Number);
 const lastDay = new Date(yr, mo, 0).getDate();
 
 mod2.setAll({
-  // 이번 달 1~며칠은 실제 (today 며칠 전)
-  [`${thisMonth}-${String(Math.max(1, today.getDate() - 2)).padStart(2,'0')}`]: { totals: { posTotal: 500000, supply: 454545 } }
+  // 이번 달 며칠 전 = 실제 매출 + 식자재 매입
+  [`${thisMonth}-${String(Math.max(1, today.getDate() - 2)).padStart(2,'0')}`]: {
+    totals: { posTotal: 500000, supply: 454545 },
+    purchaseRows: [
+      { category: '식자재', supply: 200000 },
+      { category: '주류/음료', supply: 50000 },
+      { category: '임대료', supply: 3000000 }  // 변동비에 안 잡혀야 함
+    ]
+  }
 });
 mod2.setFixed([
   { name: '인건비', category: '인건비', amount: 10000000 },
@@ -224,9 +231,17 @@ mod2.setFixed([
 const m = mod2.computeMonthlyForecast(thisMonth, []);
 check('13) 월 일수 합 = lastDay', m.days.length === lastDay);
 check('13) 실제 1건', m.actualDays === 1);
-check('13) 추정 + 실제 ≥ 1', m.estimateDays + m.actualDays >= 1);
 check('13) 인건비 월 전액 (안분 X)', m.monthlyFixedLabor === 10000000);
 check('13) 기타고정비 월 전액', m.monthlyFixedOther === 3000000);
+
+// CASE 15: 변동비 = 실제 발생 매입만 (식자재+주류, 임대료 제외)
+check('15) 변동비 식자재 200,000', m.foodSupplyActual === 200000);
+check('15) 변동비 주류 50,000', m.beverageSupplyActual === 50000);
+check('15) 변동비 합 250,000 (임대료 제외)', m.estVariableCost === 250000);
+
+// CASE 16: 영업이익 = 매출공급가 - 실제변동비 - 인건비 - 기타고정비
+const expectedProfit = m.estSupply - 250000 - 10000000 - 3000000;
+check('16) 영업이익 계산', m.estOpProfit === expectedProfit);
 
 // CASE 14: 잘못된 month → null 안전
 check('14) 잘못된 month', mod2.computeMonthlyForecast('not-a-month', []) === null);
