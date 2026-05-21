@@ -2554,6 +2554,9 @@ function init() {
   // 기본 탭(input) → 사이드바 + 날짜 피커 노출
   document.body.classList.add('tab-daily');
 
+  // 시재 자동 정리 (사장님 요청 — 매일 입력 안 해도 자동 일치·이월)
+  try { autoFillCashCarryover(); } catch {}
+
   // Auto-sync from cloud on app start (if connected and enabled)
   const cs = getCloudSettings();
   if (cs.url && cs.autoSync !== false) {
@@ -5384,6 +5387,41 @@ function mergeJeongRecord(inc) {
   _queueCloudUpload();
 }
 
+/**
+ * 현금 시재 자동 정리 (사장님 요청 2026-05-21)
+ * - 모든 마감 record를 날짜 순회
+ * - openingCash 비어있으면 이전 영업일 마감 시재로 자동 채움
+ * - actualCash 비어있으면 expectedCash로 자동 채움 (시재 일치 가정)
+ * - 사용자가 명시적으로 입력한 값은 보존 (0 아니면)
+ */
+function autoFillCashCarryover() {
+  const all = getAllRecords();
+  const dates = Object.keys(all).sort();
+  let prev = 0;
+  let changed = false;
+  for (const d of dates) {
+    const rec = all[d];
+    if (!rec.extras) rec.extras = {};
+    if (!num(rec.extras.openingCash) && prev > 0) {
+      rec.extras.openingCash = prev;
+      changed = true;
+    }
+    const posCash = rec.totals ? num(rec.totals.posCash) : 0;
+    const expected = num(rec.extras.openingCash) + posCash
+                   - num(rec.extras.expenses) - num(rec.extras.deposits);
+    if (!num(rec.extras.actualCash) && expected > 0) {
+      rec.extras.actualCash = expected;
+      changed = true;
+    }
+    prev = num(rec.extras.actualCash) || expected;
+  }
+  if (changed) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+    _queueCloudUpload();
+  }
+  return prev; // 마지막 마감 시재 = 오늘 openingCash 후보
+}
+
 function computeTotals() {
   const posTotal = state.posRows.reduce((s, r) => s + (r.amount||0), 0);
   const posCardByMethod = state.posRows.filter(r => r.method === '카드').reduce((s,r) => s + r.amount, 0);
@@ -5576,7 +5614,14 @@ function runValidation() {
   const actualCash = state.extras.actualCash || 0;
   if (actualCash > 0 || expectedCash > 0) {
     const cashDiff = actualCash - expectedCash;
-    if (Math.abs(cashDiff) === 0) {
+    if (actualCash === 0) {
+      // 사용자가 실제 시재 미입력 → 자동 산정 가정
+      issues.push({
+        level: 'info',
+        title: '현금 시재 자동 산정',
+        detail: `예상 <strong>${fmt(expectedCash)}</strong> = 이월 ${fmt(openingCash)} + 현금매출 ${fmt(t.posCash)} − 지출 ${fmt(state.extras.expenses)} − 입금 ${fmt(state.extras.deposits)}<br>실제 시재 입력 없음 — 자동 일치 가정 (마감 시 ${fmt(expectedCash)}로 기록됨)`
+      });
+    } else if (Math.abs(cashDiff) === 0) {
       issues.push({ level: 'ok', title: '현금 시재 일치', detail: `예상·실제 모두 ${fmt(actualCash)}` });
     } else {
       issues.push({
@@ -6207,6 +6252,9 @@ function confirmCloseDay() {
   document.getElementById('sbCloseStatus').textContent = '마감완료';
   updateDateStatus();
   toast(`${state.businessDate} 마감 완료`, 'ok');
+
+  // 마감 후 현금 시재 자동 정리 (이월 + 자동 일치)
+  try { autoFillCashCarryover(); } catch {}
 
   // 마감 시점 강남역 날씨 자동 fetch (fire-and-forget, 실패해도 마감엔 영향 없음)
   fetchWeatherForRange(state.businessDate, state.businessDate).then(list => {
@@ -7116,6 +7164,17 @@ function loadDraft() {
     state.payrollRows = [];
     state.bankRows = [];
     state.extras = { actualCash: 0, openingCash: 0, expenses: 0, deposits: 0, discounts: 0, vatRate: 10, serviceRate: 0, memo: '' };
+    // 새 영업일 시작 시: 이전 영업일 마감 시재를 openingCash로 자동 이월
+    const dates = Object.keys(all).filter(d => d < state.businessDate).sort();
+    if (dates.length) {
+      const prevRec = all[dates[dates.length - 1]];
+      if (prevRec && prevRec.extras) {
+        const prevExp = prevRec.totals ? num(prevRec.totals.posCash) : 0;
+        const prevExpected = num(prevRec.extras.openingCash) + prevExp
+                           - num(prevRec.extras.expenses) - num(prevRec.extras.deposits);
+        state.extras.openingCash = num(prevRec.extras.actualCash) || prevExpected;
+      }
+    }
   } else {
     try {
       const d = JSON.parse(raw);
