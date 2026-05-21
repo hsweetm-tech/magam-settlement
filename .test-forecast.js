@@ -172,4 +172,64 @@ const recs4 = [
 const out4 = mod._detectForecastOutliers(recs4);
 check('12) 표본 부족 → 자동 outlier 없음', !out4.set.has('2026-05-15'));
 
+// computeMonthlyForecast 통합 — module 다시 재구성 (getAllRecords/computeMonthlyForecast 포함)
+const monthForecastFn = grab(/function computeMonthlyForecast[\s\S]*?\n\}/, 'computeMonthlyForecast');
+
+const src2 = `
+  let _all = {};
+  let _fixedExpenses = [];
+  function getAllRecords() { return _all; }
+  function getFixedExpenses() { return _fixedExpenses; }
+  function computeTotalsFor(rec) { return rec.totals || { supply: 0, posTotal: 0 }; }
+  ${numFn}
+  ${holConst}
+  ${wxConst}
+  ${thresh}
+  ${wxInfo}
+  ${getHol}
+  ${isRain}
+  ${ratLvl}
+  ${ratFn}
+  ${fcRain}
+  ${fcHoliday}
+  ${fcClosed}
+  ${fcOutlier}
+  ${detectOutliers}
+  ${wdBaseline}
+  ${computeForecast}
+  ${monthForecastFn}
+  return {
+    computeMonthlyForecast,
+    setAll: (a) => { _all = a; },
+    setFixed: (f) => { _fixedExpenses = f; }
+  };
+`;
+const mod2 = new Function(src2)();
+
+// CASE 13: 월단위 추정 — 5/15 실제 + 5/22~5/31 추정 가능 (오늘이 5/21 가정 어렵지만 today 컴퓨터 기준)
+const today = new Date(); today.setHours(0,0,0,0);
+const todayStr = today.toISOString().slice(0,10);
+const thisMonth = todayStr.slice(0,7);
+const [yr, mo] = thisMonth.split('-').map(Number);
+const lastDay = new Date(yr, mo, 0).getDate();
+
+mod2.setAll({
+  // 이번 달 1~며칠은 실제 (today 며칠 전)
+  [`${thisMonth}-${String(Math.max(1, today.getDate() - 2)).padStart(2,'0')}`]: { totals: { posTotal: 500000, supply: 454545 } }
+});
+mod2.setFixed([
+  { name: '인건비', category: '인건비', amount: 10000000 },
+  { name: '임대료', category: '임대료', amount: 3000000 }
+]);
+const m = mod2.computeMonthlyForecast(thisMonth, []);
+check('13) 월 일수 합 = lastDay', m.days.length === lastDay);
+check('13) 실제 1건', m.actualDays === 1);
+check('13) 추정 + 실제 ≥ 1', m.estimateDays + m.actualDays >= 1);
+check('13) 인건비 월 전액 (안분 X)', m.monthlyFixedLabor === 10000000);
+check('13) 기타고정비 월 전액', m.monthlyFixedOther === 3000000);
+
+// CASE 14: 잘못된 month → null 안전
+check('14) 잘못된 month', mod2.computeMonthlyForecast('not-a-month', []) === null);
+check('14) 빈 month', mod2.computeMonthlyForecast('', []) === null);
+
 if (!process.exitCode) console.log('\n전체 통과');
