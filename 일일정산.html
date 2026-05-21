@@ -1449,7 +1449,8 @@ body.tab-summary main { grid-template-columns: 1fr; }
 <main>
   <div class="content">
     <div class="tabs">
-      <button class="tab active" data-tab="input">데이터 입력</button>
+      <button class="tab active" data-tab="dashboard">대시보드</button>
+      <button class="tab" data-tab="input">데이터 입력</button>
       <button class="tab" data-tab="validate">검증 결과<span class="tab-badge" id="issueBadge">0</span></button>
       <button class="tab" data-tab="history">마감 내역</button>
       <button class="tab" data-tab="report">리포트 분석</button>
@@ -1457,7 +1458,17 @@ body.tab-summary main { grid-template-columns: 1fr; }
       <button class="tab" data-tab="monthly">월정산</button>
     </div>
 
-    <div class="tab-panel active" id="tab-input">
+    <div class="tab-panel active" id="tab-dashboard">
+      <div class="section">
+        <div class="section-head">
+          <div class="section-title">대시보드</div>
+          <div class="section-note" id="dashboardSubtitle"></div>
+        </div>
+        <div id="dashboardContent" style="padding: 24px;"></div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="tab-input">
 
       <div class="section">
         <div class="section-head">
@@ -2554,11 +2565,14 @@ function init() {
   // Cloud button initial state
   updateCloudBtn();
 
-  // 기본 탭(input) → 사이드바 + 날짜 피커 노출
-  document.body.classList.add('tab-daily');
+  // 기본 탭(dashboard) → 사이드바 숨김, 메인 풀폭
+  document.body.classList.add('tab-summary');
 
   // 시재 자동 정리 (사장님 요청 — 매일 입력 안 해도 자동 일치·이월)
   try { autoFillCashCarryover(); } catch {}
+
+  // 대시보드 초기 렌더
+  try { renderDashboard(); } catch {}
 
   // Auto-sync from cloud on app start (if connected and enabled)
   const cs = getCloudSettings();
@@ -2575,6 +2589,7 @@ function switchTab(name) {
   const isDailyTab = (name === 'input' || name === 'validate');
   document.body.classList.toggle('tab-daily', isDailyTab);
   document.body.classList.toggle('tab-summary', !isDailyTab);
+  if (name === 'dashboard') renderDashboard();
   if (name === 'history') renderHistory();
   if (name === 'validate') { runValidation(); renderHourly(); renderMenuTop(); }
   if (name === 'report') {
@@ -4148,6 +4163,285 @@ function computeMonthlyData(month) {
     costRatios,
     fixedExpensesResolved: fixedResolved
   };
+}
+
+/* ========================================================================
+   대시보드 (Phase 4-1): 페이스 카드 + 이상 신호 + 현금흐름 요약
+   - default 탭. 매일 앱 열면 가장 먼저 보임.
+   ======================================================================== */
+
+/** 이번 달 페이스 — 목표 대비 진행률·필요 일평균·추세 예상 */
+function _computePace(monthStr) {
+  const all = getAllRecords();
+  const goals = (typeof getGoals === 'function') ? getGoals() : {};
+  const goal = goals[monthStr];
+  const today = new Date(); today.setHours(0,0,0,0);
+  const todayStr = today.toISOString().slice(0,10);
+  const [yr, mo] = monthStr.split('-').map(Number);
+  const lastDay = new Date(yr, mo, 0);
+
+  // 이번 달 누적 실제 매출
+  let monthActual = 0;
+  let actualDays = 0;
+  Object.keys(all).filter(d => d.startsWith(monthStr) && d <= todayStr).forEach(d => {
+    const r = all[d];
+    const s = r && r.totals ? num(r.totals.posTotal) : 0;
+    if (s > 0) { monthActual += s; actualDays++; }
+  });
+
+  // 영업일 수 (화요일 휴무 제외)
+  let totalBizDays = 0, remainBizDays = 0;
+  for (let d = new Date(yr, mo-1, 1); d <= lastDay; d.setDate(d.getDate()+1)) {
+    const wd = d.getDay();
+    if (FORECAST_CLOSED_DOW.includes(wd)) continue;
+    totalBizDays++;
+    if (new Date(d) >= today) remainBizDays++;
+  }
+  const elapsedBizDays = totalBizDays - remainBizDays;
+
+  // 오늘 시점 누적 목표 (goal.dailyBreakdown 기반)
+  let targetToDate = 0;
+  if (goal && Array.isArray(goal.dailyBreakdown)) {
+    goal.dailyBreakdown.forEach(d => { if (d.date <= todayStr) targetToDate += num(d.goal); });
+  }
+
+  // 페이스·예상·필요값
+  const totalGoal = goal ? num(goal.totalGoal) : 0;
+  const overallPct = totalGoal > 0 ? (monthActual / totalGoal) * 100 : 0;
+  const pacePct = targetToDate > 0 ? (monthActual / targetToDate) * 100 : 0;
+  const avgDaily = actualDays > 0 ? monthActual / actualDays : 0;
+  const projectedMonth = monthActual + avgDaily * remainBizDays;
+  const remainGoal = totalGoal > 0 ? Math.max(0, totalGoal - monthActual) : 0;
+  const requiredDaily = (remainBizDays > 0 && remainGoal > 0) ? remainGoal / remainBizDays : 0;
+
+  return {
+    monthStr, goal, totalGoal,
+    monthActual, actualDays,
+    totalBizDays, elapsedBizDays, remainBizDays,
+    targetToDate, overallPct, pacePct,
+    avgDaily, projectedMonth, requiredDaily, remainGoal,
+    todayStr
+  };
+}
+
+/** 이상 신호 자동 감지 — 최근 records 추세 분석 */
+function _detectAnomalies(monthStr) {
+  const all = getAllRecords();
+  const todayStr = new Date().toISOString().slice(0,10);
+  const dates14 = Object.keys(all).filter(d => d <= todayStr).sort().slice(-14);
+  const recent14 = dates14.map(d => ({ date: d, ...all[d] }));
+  const valid = recent14.filter(r => r.totals && num(r.totals.posTotal) > 0);
+
+  const alerts = [];
+  if (!valid.length) return { alerts };
+
+  // 1. 객단가 (영수증당 평균) 하락 감지
+  const checkAvgList = valid.map(r => {
+    const cnt = (r.posRows || []).length;
+    return cnt > 0 ? num(r.totals.posTotal) / cnt : 0;
+  }).filter(v => v > 0);
+  if (checkAvgList.length >= 3) {
+    const overallCheck = checkAvgList.reduce((s,v)=>s+v,0) / checkAvgList.length;
+    const last3 = checkAvgList.slice(-3);
+    const recentCheck = last3.reduce((s,v)=>s+v,0) / last3.length;
+    if (overallCheck > 0 && recentCheck < overallCheck * 0.8) {
+      alerts.push({
+        level: 'warn',
+        icon: '📉',
+        title: '객단가 하락',
+        detail: `최근 3일 평균 ${fmt(Math.round(recentCheck))} (전체 ${fmt(Math.round(overallCheck))} 대비 ${((recentCheck/overallCheck-1)*100).toFixed(1)}%)`
+      });
+    }
+  }
+
+  // 2. 매출 급락 (2일 연속 평균 -30% 이상)
+  const salesList = valid.map(r => num(r.totals.posTotal));
+  if (salesList.length >= 5) {
+    const avg = salesList.reduce((s,v)=>s+v,0) / salesList.length;
+    const last2 = salesList.slice(-2);
+    const bothLow = last2.every(s => s < avg * 0.7);
+    if (bothLow && avg > 0) {
+      alerts.push({
+        level: 'danger',
+        icon: '⚠️',
+        title: '매출 급락 2일 연속',
+        detail: `최근 2일 ${last2.map(s=>fmt(Math.round(s))).join(' · ')} (평균 ${fmt(Math.round(avg))} 대비 -30% 이상)`
+      });
+    }
+  }
+
+  // 3. 식자재 원가율 임계 초과 (이번 달 KPI)
+  try {
+    const md = computeMonthlyData(monthStr);
+    if (md && md.costRatios && md.costRatios.salesSupply > 0) {
+      const fcPct = md.costRatios.foodCostRatio * 100;
+      const pcPct = md.costRatios.primeCostRatio * 100;
+      if (fcPct > COST_RATIO_THRESHOLDS.food.danger) {
+        alerts.push({ level: 'danger', icon: '🔥', title: `식자재 원가율 ${fcPct.toFixed(1)}%`, detail: `목표 ≤${COST_RATIO_THRESHOLDS.food.warn}% · 한계치 ${COST_RATIO_THRESHOLDS.food.danger}% 초과` });
+      } else if (fcPct > COST_RATIO_THRESHOLDS.food.warn) {
+        alerts.push({ level: 'warn', icon: '🟡', title: `식자재 원가율 ${fcPct.toFixed(1)}%`, detail: `목표 ≤${COST_RATIO_THRESHOLDS.food.warn}% 초과 — 추세 주의` });
+      }
+      if (pcPct > COST_RATIO_THRESHOLDS.prime.danger) {
+        alerts.push({ level: 'danger', icon: '🔥', title: `Prime Cost ${pcPct.toFixed(1)}%`, detail: `목표 ≤${COST_RATIO_THRESHOLDS.prime.warn}% · 한계 ${COST_RATIO_THRESHOLDS.prime.danger}% 초과 — 흑자 어려움` });
+      }
+    }
+  } catch {}
+
+  // 4. 시재 차이 (마지막 마감 record의 actual vs expected)
+  if (valid.length) {
+    const lastRec = valid[valid.length - 1];
+    const e = lastRec.extras || {};
+    const posCash = num(lastRec.totals.posCash);
+    const expected = num(e.openingCash) + posCash - num(e.expenses) - num(e.deposits);
+    const actual = num(e.actualCash);
+    if (actual > 0 && Math.abs(actual - expected) > 5000) {
+      const diff = actual - expected;
+      alerts.push({ level: 'warn', icon: '💵', title: `${lastRec.date} 현금 시재 차이`, detail: `${diff > 0 ? '과잉' : '부족'} ${fmt(Math.abs(diff))} · 예상 ${fmt(expected)} vs 실제 ${fmt(actual)}` });
+    }
+  }
+
+  return { alerts, samples: valid.length };
+}
+
+/** 이번 달 현금흐름 요약 — 운영/투자/재무 단순화 */
+function _computeCashFlowSummary(monthStr) {
+  const all = getAllRecords();
+  const dates = Object.keys(all).filter(d => d.startsWith(monthStr)).sort();
+  let cashSalesIn = 0;    // 매출 중 현금
+  let cardSalesIn = 0;    // 카드 매출 (영업일+1~2 통장 입금)
+  let cashExpenseOut = 0; // extras.expenses (현금 지출)
+  let bankIn = 0, bankOut = 0;
+  let openingCashStart = 0, lastActualCash = 0;
+  dates.forEach((d, idx) => {
+    const r = all[d];
+    if (!r) return;
+    if (r.totals) {
+      cashSalesIn += num(r.totals.posCash);
+      cardSalesIn += num(r.totals.posCard);
+    }
+    const e = r.extras || {};
+    if (idx === 0) openingCashStart = num(e.openingCash);
+    cashExpenseOut += num(e.expenses);
+    (r.bankRows || []).forEach(b => {
+      bankIn += num(b.deposit);
+      bankOut += num(b.withdraw);
+    });
+    if (num(e.actualCash) > 0) lastActualCash = num(e.actualCash);
+  });
+  const netCashFlow = (cashSalesIn + bankIn) - (cashExpenseOut + bankOut);
+  return {
+    monthStr, dates,
+    cashSalesIn, cardSalesIn, cashExpenseOut,
+    bankIn, bankOut,
+    openingCashStart, lastActualCash,
+    netCashFlow
+  };
+}
+
+function renderDashboard() {
+  const container = document.getElementById('dashboardContent');
+  if (!container) return;
+  const subtitleEl = document.getElementById('dashboardSubtitle');
+  const today = new Date();
+  const monthStr = today.toISOString().slice(0,7);
+  const todayStr = today.toISOString().slice(0,10);
+  if (subtitleEl) subtitleEl.textContent = `${todayStr} · ${monthStr} 진행 중`;
+
+  const pace = _computePace(monthStr);
+  const { alerts, samples = 0 } = _detectAnomalies(monthStr);
+  const cf = _computeCashFlowSummary(monthStr);
+
+  // ========== 페이스 카드 ==========
+  const paceColor = pace.pacePct >= 100 ? 'var(--green)' : pace.pacePct >= 85 ? 'var(--text)' : pace.pacePct >= 60 ? 'var(--orange)' : 'var(--red)';
+  const paceStatus = pace.pacePct >= 100 ? '목표 상회' : pace.pacePct >= 90 ? '순항' : pace.pacePct >= 75 ? '약간 부족' : pace.pacePct >= 50 ? '분발 필요' : '크게 부족';
+  const paceHtml = !pace.goal ? `
+    <div class="report-card" style="margin-bottom:16px;">
+      <div class="report-card-title">이번 달 페이스</div>
+      <div class="report-empty">
+        <p>이번 달 매출 목표가 설정되지 않았습니다 — <a href="javascript:void(0)" onclick="switchTab('report');setTimeout(openGoalModal,300)" style="color:var(--text);text-decoration:underline;">목표 설정하기</a></p>
+      </div>
+    </div>
+  ` : `
+    <div class="report-card" style="margin-bottom:16px;">
+      <div class="report-card-title">이번 달 페이스 <span style="color:var(--text-3);font-weight:400;font-size:11px;margin-left:6px;">${pace.monthStr} · 영업 ${pace.elapsedBizDays}/${pace.totalBizDays}일 진행</span></div>
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label">이번 달 누적</div>
+          <div class="kpi-value">${fmt(Math.round(pace.monthActual))}</div>
+          <div class="kpi-delta flat">목표 ${fmt(Math.round(pace.totalGoal))} · ${pace.overallPct.toFixed(1)}%</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">오늘 시점 페이스</div>
+          <div class="kpi-value" style="color:${paceColor};">${pace.pacePct.toFixed(1)}%</div>
+          <div class="kpi-delta flat">${paceStatus} · 오늘까지 목표 ${fmt(Math.round(pace.targetToDate))}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">남은 영업일</div>
+          <div class="kpi-value">${pace.remainBizDays}일</div>
+          <div class="kpi-delta flat">화요일 휴무 제외</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">필요 일평균 (목표달성)</div>
+          <div class="kpi-value">${fmt(Math.round(pace.requiredDaily))}</div>
+          <div class="kpi-delta flat">현재 일평균 ${fmt(Math.round(pace.avgDaily))} · 추세 예상 ${fmt(Math.round(pace.projectedMonth))}</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // ========== 이상 신호 카드 ==========
+  const alertColor = (lv) => lv === 'danger' ? 'var(--red)' : lv === 'warn' ? 'var(--orange)' : 'var(--text-2)';
+  const alertBg = (lv) => lv === 'danger' ? 'var(--red-bg, #fef2f2)' : lv === 'warn' ? 'var(--orange-bg, #fffbeb)' : 'var(--subtle)';
+  const anomalyHtml = `
+    <div class="report-card" style="margin-bottom:16px;">
+      <div class="report-card-title">이상 신호 ${alerts.length > 0 ? `<span style="color:var(--red);font-weight:600;margin-left:6px;">${alerts.length}건</span>` : `<span style="color:var(--green);font-weight:400;font-size:11px;margin-left:6px;">정상 (최근 ${samples}일 분석)</span>`}</div>
+      ${alerts.length === 0 ? `
+        <div style="padding:14px;color:var(--text-3);font-size:12px;">✓ 객단가·매출·원가율·시재 모두 정상 범위. 계속 좋습니다.</div>
+      ` : alerts.map(a => `
+        <div style="display:flex;gap:10px;padding:10px 12px;background:${alertBg(a.level)};border-left:3px solid ${alertColor(a.level)};border-radius:6px;margin-bottom:6px;">
+          <div style="font-size:18px;">${a.icon}</div>
+          <div style="flex:1;">
+            <div style="font-weight:600;font-size:13px;color:${alertColor(a.level)};">${escapeHtml(a.title)}</div>
+            <div style="font-size:12px;color:var(--text-2);margin-top:2px;">${a.detail}</div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  // ========== 현금흐름 카드 ==========
+  const netColor = cf.netCashFlow < 0 ? 'var(--red)' : 'var(--green)';
+  const cashFlowHtml = `
+    <div class="report-card" style="margin-bottom:16px;">
+      <div class="report-card-title">현금흐름 (${monthStr})</div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <tbody>
+          <tr style="background:var(--subtle);">
+            <td style="padding:8px 12px;font-weight:600;" colspan="3">💰 들어옴 (Inflow)</td>
+          </tr>
+          <tr><td style="padding:6px 12px 6px 28px;">현금 매출 (POS)</td><td style="text-align:right;padding:6px 12px;font-family:JetBrains Mono,monospace;">${fmt(Math.round(cf.cashSalesIn))}</td><td style="width:60px;color:var(--text-3);font-size:11px;">즉시</td></tr>
+          <tr><td style="padding:6px 12px 6px 28px;">카드 매출 (POS)</td><td style="text-align:right;padding:6px 12px;font-family:JetBrains Mono,monospace;color:var(--text-3);">${fmt(Math.round(cf.cardSalesIn))}</td><td style="width:60px;color:var(--text-3);font-size:11px;">익영업일</td></tr>
+          <tr><td style="padding:6px 12px 6px 28px;">통장 입금</td><td style="text-align:right;padding:6px 12px;font-family:JetBrains Mono,monospace;">${fmt(Math.round(cf.bankIn))}</td><td></td></tr>
+          <tr style="background:var(--subtle);">
+            <td style="padding:8px 12px;font-weight:600;" colspan="3">💸 나감 (Outflow)</td>
+          </tr>
+          <tr><td style="padding:6px 12px 6px 28px;">현금 지출 (extras)</td><td style="text-align:right;padding:6px 12px;font-family:JetBrains Mono,monospace;color:var(--red);">-${fmt(Math.round(cf.cashExpenseOut))}</td><td></td></tr>
+          <tr><td style="padding:6px 12px 6px 28px;">통장 출금</td><td style="text-align:right;padding:6px 12px;font-family:JetBrains Mono,monospace;color:var(--red);">-${fmt(Math.round(cf.bankOut))}</td><td></td></tr>
+          <tr style="background:var(--hover);font-weight:600;border-top:2px solid var(--border);">
+            <td style="padding:10px 12px;">순현금흐름</td>
+            <td style="text-align:right;padding:10px 12px;font-family:JetBrains Mono,monospace;color:${netColor};">${fmt(Math.round(cf.netCashFlow))}</td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="font-size:11px;color:var(--text-3);margin-top:8px;">
+        ${cf.openingCashStart > 0 ? `월초 시재 ${fmt(Math.round(cf.openingCashStart))} · ` : ''}
+        ${cf.lastActualCash > 0 ? `최근 매장 현금 ${fmt(Math.round(cf.lastActualCash))}` : '시재 데이터 없음'}
+      </div>
+    </div>
+  `;
+
+  container.innerHTML = paceHtml + anomalyHtml + cashFlowHtml;
 }
 
 function renderMonthlyReport(month) {
