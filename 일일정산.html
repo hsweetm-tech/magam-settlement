@@ -2354,6 +2354,7 @@ async function backfillWeatherAll(opts = {}) {
     });
     if (updated > 0) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(cur));
+      _queueCloudUpload();
       if (!silent) toast(`✓ 날씨 ${updated}일치 적용`, 'ok');
       // UI 갱신 (silent일 때도 보고 있는 화면에 반영)
       if (typeof renderReport === 'function' && document.getElementById('tab-report') && document.getElementById('tab-report').classList.contains('active')) renderReport();
@@ -2766,7 +2767,8 @@ function buildFullBackupPayload() {
   return {
     exportedAt: new Date().toISOString(),
     records: getAllRecords(),
-    settings: collectAppSettings()
+    settings: collectAppSettings(),
+    deletedDates: getDeletedDates()
   };
 }
 
@@ -3017,21 +3019,41 @@ function getFixedExpenses() {
 }
 function saveFixedExpenses(arr) {
   localStorage.setItem(FIXED_EXPENSES_KEY, JSON.stringify(arr));
-  _queueSettingsCloudUpload();
+  _queueCloudUpload();
+}
+
+/* ========================================================================
+   삭제된 record date의 tombstone — 클라우드 pull로 부활 방지
+   ======================================================================== */
+const DELETED_DATES_KEY = 'deleted_dates_v1';
+function getDeletedDates() {
+  try { const r = localStorage.getItem(DELETED_DATES_KEY); return r ? (JSON.parse(r) || []) : []; }
+  catch { return []; }
+}
+function saveDeletedDates(arr) {
+  const dedup = Array.from(new Set(arr || []));
+  localStorage.setItem(DELETED_DATES_KEY, JSON.stringify(dedup));
+}
+function markDateDeleted(date) {
+  const list = getDeletedDates();
+  if (list.indexOf(date) === -1) list.push(date);
+  saveDeletedDates(list);
+}
+function unmarkDateDeleted(date) {
+  saveDeletedDates(getDeletedDates().filter(d => d !== date));
 }
 
 /**
- * 설정류(고정비·동업자 비율·홈택스·컴프 토글) 변경 시 클라우드 자동 업로드.
- * - 버그 fix: 새로고침 시 pullFromCloud가 옛날 cloud 데이터로 로컬을 덮어쓰는 문제 해결.
- *   → 변경 직후 cloud를 최신 상태로 만들어서 다음 pull이 안전.
+ * 설정·record·tombstone 변경 시 클라우드 자동 업로드 (통합 debounce).
+ * 기존 _queueSettingsCloudUpload의 확장 — record 변경 시도 호출됨.
  * - 1.5초 debounce: 빠른 연속 편집 시 한 번만 업로드.
  * - cs.url 없거나 autoSync 꺼져있으면 no-op.
  */
-let _settingsUploadTimer = null;
-function _queueSettingsCloudUpload() {
-  if (_settingsUploadTimer) clearTimeout(_settingsUploadTimer);
-  _settingsUploadTimer = setTimeout(() => {
-    _settingsUploadTimer = null;
+let _cloudUploadTimer = null;
+function _queueCloudUpload() {
+  if (_cloudUploadTimer) clearTimeout(_cloudUploadTimer);
+  _cloudUploadTimer = setTimeout(() => {
+    _cloudUploadTimer = null;
     try {
       const cs = (typeof getCloudSettings === 'function') ? getCloudSettings() : null;
       if (cs && cs.url && cs.autoSync !== false) {
@@ -3040,6 +3062,8 @@ function _queueSettingsCloudUpload() {
     } catch {}
   }, 1500);
 }
+// 하위 호환: 기존 _queueSettingsCloudUpload 호출 그대로 살림 (별칭)
+const _queueSettingsCloudUpload = _queueCloudUpload;
 function addFixedExpense() {
   const list = getFixedExpenses();
   list.push({ id: 'fx-' + Math.random().toString(36).slice(2, 8), name: '', amount: 0, category: '임대료', memo: '' });
@@ -4501,6 +4525,10 @@ function mergeJeongRecord(inc) {
   out.totals = (inc.totals && typeof inc.totals === 'object') ? inc.totals : computeTotalsFor(out);
   all[inc.date] = out;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+  // 정리본을 import하면 사용자가 해당 일자를 의도적으로 복원/추가한 것이므로
+  // 만약 이전에 tombstone이 있었다면 제거 (재추가 의도 반영)
+  if (typeof unmarkDateDeleted === 'function') unmarkDateDeleted(inc.date);
+  _queueCloudUpload();
 }
 
 function computeTotals() {
@@ -5390,7 +5418,15 @@ function renderHistory() {
   }
   list.innerHTML = '<div class="history-list">' + dates.map(d => {
     const r = all[d];
-    const dangers = r.issues ? r.issues.filter(i => i.level === 'danger').length : 0;
+    const issues = r.issues || [];
+    const dangers = issues.filter(i => i.level === 'danger').length;
+    const warns = issues.filter(i => i.level === 'warn').length;
+    const oks = issues.filter(i => i.level === 'ok').length;
+    const tags = [];
+    if (dangers) tags.push(`<span style="color: var(--red);">위험 ${dangers}</span>`);
+    if (warns) tags.push(`<span style="color: var(--orange);">주의 ${warns}</span>`);
+    if (!dangers && !warns && oks) tags.push(`<span style="color: var(--green);">정상</span>`);
+    const issueMeta = tags.length ? ' · ' + tags.join(' · ') : '';
     return `
       <div class="history-item">
         <div class="history-date-col">
@@ -5399,7 +5435,7 @@ function renderHistory() {
         </div>
         <div class="history-info">
           <div>매출 <span class="amt">${fmt(r.totals.posTotal)}</span> · 카드 ${fmt(r.totals.posCard)} · 현금 ${fmt(r.totals.posCash)}</div>
-          <div class="history-meta">POS ${r.posRows.length}건 · 전표 ${r.cardRows.length}건${dangers ? ` · <span style="color: var(--red);">위험 ${dangers}</span>` : ''}</div>
+          <div class="history-meta">POS ${r.posRows.length}건 · 전표 ${r.cardRows.length}건${issueMeta}</div>
         </div>
         <div class="history-actions">
           <button class="btn btn-small btn-ghost" onclick="reopenRecord('${d}')">열기</button>
@@ -6169,8 +6205,10 @@ function deleteRecord(date) {
   const all = getAllRecords();
   delete all[date];
   localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+  markDateDeleted(date);  // tombstone — pullFromCloud에서 부활 방지
   renderHistory();
-  toast('삭제됨');
+  toast('삭제됨', 'ok');
+  _queueCloudUpload();  // 클라우드에도 즉시 반영
 }
 
 function saveDraft() {
@@ -6336,17 +6374,21 @@ async function handleSingleLoad(file) {
       if (!confirm('전체 백업 파일입니다. 기존 데이터를 덮어쓸까요?')) return;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data.records));
       if (data.settings) applyAppSettings(data.settings);
+      if (Array.isArray(data.deletedDates)) saveDeletedDates(data.deletedDates);
       renderHistory();
       toast(data.settings ? '복원 완료 (설정 포함)' : '복원 완료', 'ok');
+      _queueCloudUpload();
     } else if (data.date) {
       const all = getAllRecords();
       all[data.date] = data;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+      unmarkDateDeleted(data.date);  // 사용자가 의도적으로 복원
       state.businessDate = data.date;
       document.getElementById('businessDate').value = data.date;
       reopenRecord(data.date);
       renderHistory();
       toast(`${data.date} 복원됨`, 'ok');
+      _queueCloudUpload();
     }
   } catch (err) { toast('파일을 읽을 수 없습니다', 'danger'); }
 }
@@ -6355,6 +6397,7 @@ async function handleBatchLoad(files) {
   const all = getAllRecords();
   let added = 0, replaced = 0, failed = 0;
   const failedNames = [];
+  const importedDates = [];
   for (const file of files) {
     try {
       const text = await file.text();
@@ -6362,6 +6405,7 @@ async function handleBatchLoad(files) {
       if (data.date) {
         if (all[data.date]) replaced++; else added++;
         all[data.date] = data;
+        importedDates.push(data.date);
       } else {
         failed++; failedNames.push(file.name);
       }
@@ -6370,6 +6414,7 @@ async function handleBatchLoad(files) {
     }
   }
   localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+  importedDates.forEach(d => unmarkDateDeleted(d));  // 의도적 복원 → tombstone 제거
   renderHistory();
   let msg = `일괄 import: ${added}개 추가, ${replaced}개 덮어씀`;
   if (failed > 0) msg += ` · ${failed}개 실패(${failedNames.join(', ')})`;
@@ -7148,10 +7193,22 @@ async function pullFromCloud(silent = false) {
     const localCount = Object.keys(localRecords).length;
     const cloudModified = new Date(data.lastModified);
 
-    // Merge strategy: union of records, prefer newer (by closedAt)
-    const merged = { ...localRecords };
-    let added = 0, updated = 0;
+    // 1) 클라우드 페이로드의 deletedDates를 로컬과 union
+    //    (다른 PC에서 삭제한 일자가 이 PC에 전파됨)
+    const cloudDeleted = Array.isArray(data.content.deletedDates) ? data.content.deletedDates : [];
+    const localDeleted = getDeletedDates();
+    const tombstoned = new Set([...localDeleted, ...cloudDeleted]);
+    saveDeletedDates(Array.from(tombstoned));
+
+    // 2) Merge: union, prefer newer (by closedAt) — 단, tombstone에 있으면 skip + 로컬에서도 제거
+    const merged = {};
+    let added = 0, updated = 0, skipped = 0;
+    Object.keys(localRecords).forEach(date => {
+      if (!tombstoned.has(date)) merged[date] = localRecords[date];
+      else skipped++;
+    });
     Object.keys(cloudRecords).forEach(date => {
+      if (tombstoned.has(date)) return; // 삭제된 일자는 cloud에서도 무시
       const cloudR = cloudRecords[date];
       const localR = localRecords[date];
       if (!localR) {
