@@ -3574,6 +3574,27 @@ function computeMonthlyForecast(month, weatherForecast) {
   const closedDays = days.filter(d => d.type === 'closed').length;
   const missingDays = days.filter(d => d.type === 'missing').length;
 
+  // ===== BEP (손익분기점) 산정 =====
+  // BEP 매출공급가 = 월 고정비 / (1 − 변동비율)
+  // 고정비 = 인건비(전체) + 기타고정비(자동반영) + 기타비용
+  // 변동비율 시나리오 2종:
+  //   (1) 실제 비율 = 현재까지 식자재+주류 매입공급가 / 현재 매출공급가
+  //   (2) 목표 비율 = 식자재 원가율 목표 35% (업계 평균)
+  const bepFixedCost = actualLaborCombined + actualFixedOtherApplied + actualExtra;
+  const cogsActualSupply = foodSupplyActual + beverageSupplyActual;
+  const ratioActual = actualSalesSupply > 0 ? cogsActualSupply / actualSalesSupply : 0;
+  const ratioTarget = 0.35; // 식자재+주류 목표
+  const _bep = (vr) => (vr < 1 ? bepFixedCost / (1 - vr) : 0);
+  const bepActualSupply = _bep(ratioActual);
+  const bepTargetSupply = _bep(ratioTarget);
+  // 일 평균 영업일수 = lastDay - 휴무일 (대략)
+  const monthBusinessDays = days.filter(d => !d.isClosed).length;
+  const bepActualDaily = monthBusinessDays > 0 ? bepActualSupply / monthBusinessDays : 0;
+  const bepTargetDaily = monthBusinessDays > 0 ? bepTargetSupply / monthBusinessDays : 0;
+  // 부족액 = BEP - 추정 매출 (공급가 기준)
+  const bepGapActual = bepActualSupply - estSupply;
+  const bepGapTarget = bepTargetSupply - estSupply;
+
   return {
     month, days, today: todayStr,
     actualSum, estimateSum, monthExpected, estSupply, estimateAddSupply,
@@ -3584,7 +3605,13 @@ function computeMonthlyForecast(month, weatherForecast) {
     monthlyFixedLabor, monthlyFixedOther,
     estOpProfit, opMarginPct,
     actualDays, estimateDays, closedDays, missingDays,
-    baseline, ratios, outliers
+    baseline, ratios, outliers,
+    // BEP
+    bepFixedCost, ratioActual, ratioTarget,
+    bepActualSupply, bepTargetSupply,
+    bepActualDaily, bepTargetDaily,
+    bepGapActual, bepGapTarget,
+    monthBusinessDays
   };
 }
 
@@ -3716,6 +3743,28 @@ function _monthlyForecastCardHtml(data) {
           <div class="kpi-label">예상 영업이익 (간이)</div>
           <div class="kpi-value" style="color:${profitColor};">${fmtKRW(data.estOpProfit)}</div>
           <div class="kpi-delta flat">실제 ${fmtKRW(data.actualOpProfit)} + 추정 ${fmtKRW(data.estimateAddSupply)}</div>
+        </div>
+      </div>
+
+      <div style="margin-bottom:16px;padding:14px 16px;background:var(--subtle);border-radius:10px;border:1px solid var(--border);">
+        <div style="font-weight:600;font-size:13px;margin-bottom:10px;">손익분기점 (BEP) 매출 — 영업이익 = 0 도달 목표</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;">
+          <div>
+            <div style="font-size:11px;color:var(--text-3);">현재 변동비율 기준 (${(data.ratioActual*100).toFixed(1)}%)</div>
+            <div style="font-size:18px;font-weight:600;margin:2px 0;">${fmtKRW(data.bepActualSupply)} <span style="font-size:11px;color:var(--text-3);font-weight:400;">/ 월 공급가</span></div>
+            <div style="font-size:11px;color:var(--text-3);">일 평균 ${fmtKRW(data.bepActualDaily)} · ${data.bepGapActual > 0 ? `<span style="color:var(--red);">부족 ${fmtKRW(data.bepGapActual)}</span>` : `<span style="color:var(--green);">달성 +${fmtKRW(-data.bepGapActual)}</span>`}</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text-3);">목표 변동비율 기준 (${(data.ratioTarget*100).toFixed(0)}% — 업계 평균)</div>
+            <div style="font-size:18px;font-weight:600;margin:2px 0;">${fmtKRW(data.bepTargetSupply)} <span style="font-size:11px;color:var(--text-3);font-weight:400;">/ 월 공급가</span></div>
+            <div style="font-size:11px;color:var(--text-3);">일 평균 ${fmtKRW(data.bepTargetDaily)} · ${data.bepGapTarget > 0 ? `<span style="color:var(--red);">부족 ${fmtKRW(data.bepGapTarget)}</span>` : `<span style="color:var(--green);">달성 +${fmtKRW(-data.bepGapTarget)}</span>`}</div>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--text-3);margin-top:10px;line-height:1.6;">
+          BEP 매출공급가 = 월 고정비 ${fmtKRW(data.bepFixedCost)} ÷ (1 − 변동비율) ·
+          영업 ${data.monthBusinessDays}일로 나누면 일 평균 BEP.
+          <strong>현재 변동비율 ${(data.ratioActual*100).toFixed(1)}%</strong>는 오픈 초기 재고 비축으로 비정상적으로 높음 — 운영 안정화되면
+          <strong>목표 35%</strong> 시나리오가 현실적 목표.
         </div>
       </div>
 
