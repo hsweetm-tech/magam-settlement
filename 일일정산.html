@@ -4125,18 +4125,12 @@ function renderMonthlyProfitContent(data) {
           <div class="m-card-value">${fmt(Math.round(sumSales))}</div>
           <div class="m-card-sub">공급가 ${fmt(Math.round(sumSalesSupply))}</div>
         </div>
-        ${(() => {
-          const appliedLabor = num(data.fixedExpensesResolved.appliedByCategory['인건비']);
-          const appliedOther = num(data.sumFixedApplied) - appliedLabor;  // 고정비 인건비 외 (임대료·관리비 등 자동반영)
-          const purchaseSupplyCombined = Math.round(sumPSupply + appliedOther);
-          const purchaseTotalCombined = Math.round(sumPTotal + appliedOther);
-          return `
         <div class="m-card">
           <div class="m-card-label">매입 + 고정비 (부가세 포함)</div>
-          <div class="m-card-value">${fmt(purchaseTotalCombined)}</div>
+          <div class="m-card-value">${fmt(Math.round(sumPTotal + (num(data.sumFixedApplied) - num(data.fixedExpensesResolved.appliedByCategory['인건비']))))}</div>
           <div class="m-card-sub">
             매입행 ${fmt(Math.round(sumPTotal))} (공급가 ${fmt(Math.round(sumPSupply))} + VAT ${fmt(Math.round(sumPVat))})<br>
-            과세 ${fmt(Math.round(data.sumTaxableTotal))} · 면세 ${fmt(Math.round(data.sumExemptTotal))}${appliedOther > 0 ? ` · 고정비 자동반영 ${fmt(Math.round(appliedOther))}` : ''}
+            과세 ${fmt(Math.round(data.sumTaxableTotal))} · 면세 ${fmt(Math.round(data.sumExemptTotal))} · 고정비 자동반영 ${fmt(Math.round(num(data.sumFixedApplied) - num(data.fixedExpensesResolved.appliedByCategory['인건비'])))}
           </div>
         </div>
         <div class="m-card">
@@ -4152,9 +4146,8 @@ function renderMonthlyProfitContent(data) {
         <div class="m-card">
           <div class="m-card-label">월 손익 (공급가 기준)</div>
           <div class="m-card-value" style="color: ${plColor};">${fmt(Math.round(monthPL))}</div>
-          <div class="m-card-sub">매출공급가 ${fmt(Math.round(sumSalesSupply))} − 매입+고정비 ${fmt(purchaseSupplyCombined)} − 인건비 ${fmt(Math.round(data.costRatios.laborTotal))} − 기타비용 ${fmt(Math.round(sumExtra))}</div>
-        </div>`;
-        })()}
+          <div class="m-card-sub">매출공급가 ${fmt(Math.round(sumSalesSupply))} − 매입+고정비 ${fmt(Math.round(sumPSupply + (num(data.sumFixedApplied) - num(data.fixedExpensesResolved.appliedByCategory['인건비']))))} − 인건비 ${fmt(Math.round(data.costRatios.laborTotal))} − 기타비용 ${fmt(Math.round(sumExtra))}</div>
+        </div>
         <div class="m-card">
           <div class="m-card-label">납부세액 (추정)</div>
           <div class="m-card-value">${fmt(Math.round(payableVat))}</div>
