@@ -1774,6 +1774,7 @@ main {
               <button class="seg-btn" data-view="weekday">요일별</button>
               <button class="seg-btn" data-view="menu">메뉴믹스</button>
               <button class="seg-btn" data-view="heatmap">히트맵</button>
+              <button class="seg-btn" data-view="forecast">손익추정</button>
             </div>
             <button class="btn btn-small" onclick="openGoalModal()" title="월 매출 목표 설정">
               <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
@@ -3199,6 +3200,296 @@ function computeHourWeekdayHeatmap(records) {
     });
   });
   return matrix;
+}
+
+/* ========================================================================
+   Phase 3-6: 손익 추정 (Profit Forecast)
+   - 모델: 요일별 평균 × 비/눈 보정 × 공휴일 보정 × 화요일 휴무
+   - 미래 날씨: Open-Meteo forecast (today~14일까지)
+   - 비용: 변동비(원가율) + 인건비·고정비 안분
+   ======================================================================== */
+
+const FORECAST_RAIN_MULT = 0.85;      // 비/눈 → 매출 -15% (업계 평균)
+const FORECAST_HOLIDAY_MULT = 0.55;   // 강남역 직장인 상권: 공휴일 -45%
+const FORECAST_CLOSED_DOW = [2];      // 매주 화요일 휴무 (Date.getDay() 기준 화=2)
+
+/**
+ * 과거 records로부터 요일별 평균 매출 기준선 (휴무일 제외)
+ */
+function _computeWeekdayBaseline(records) {
+  const wd = Array.from({ length: 7 }, () => ({ sum: 0, count: 0 }));
+  records.forEach(r => {
+    if (!r || !r.date || !r.totals) return;
+    const sales = num(r.totals.posTotal);
+    if (sales <= 0) return;
+    const d = new Date(r.date);
+    if (isNaN(d)) return;
+    const w = d.getDay();
+    if (FORECAST_CLOSED_DOW.includes(w)) return; // 휴무일 데이터는 기준선 제외
+    wd[w].sum += sales;
+    wd[w].count += 1;
+  });
+  // 평균 계산 + 데이터 없는 요일은 전체 평균으로 imputation
+  const overall = records.filter(r => r.totals && num(r.totals.posTotal) > 0);
+  const overallAvg = overall.length ? overall.reduce((s, r) => s + num(r.totals.posTotal), 0) / overall.length : 0;
+  return wd.map((x, i) => ({
+    weekday: i,
+    avg: x.count > 0 ? x.sum / x.count : overallAvg,
+    count: x.count,
+    isClosedDow: FORECAST_CLOSED_DOW.includes(i)
+  }));
+}
+
+/**
+ * 다음 forecastDays 일의 예측 매출 + 손익 추정
+ * @param {Array} historicalRecords - 과거 records (모델 학습용)
+ * @param {Array} weatherForecast - [{date, weathercode, precipitation, ...}] 미래 날씨
+ * @param {number} forecastDays - 추정할 일 수 (오늘 포함)
+ * @returns 예측 데이터
+ */
+function computeProfitForecast(historicalRecords, weatherForecast, forecastDays) {
+  const baseline = _computeWeekdayBaseline(historicalRecords);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const wxMap = {};
+  (weatherForecast || []).forEach(w => { if (w && w.date) wxMap[w.date] = w; });
+  const days = [];
+  for (let i = 0; i < forecastDays; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() + i);
+    const dateStr = d.toISOString().slice(0, 10);
+    const w = d.getDay();
+    const closed = FORECAST_CLOSED_DOW.includes(w);
+    const holiday = getHoliday(dateStr);
+    const weather = wxMap[dateStr] || null;
+    const rainy = isRainDay(weather);
+    const base = baseline[w].avg;
+    let est = closed ? 0 : base;
+    let mult = 1;
+    const factors = [];
+    if (!closed) {
+      if (rainy) { est *= FORECAST_RAIN_MULT; mult *= FORECAST_RAIN_MULT; factors.push(`강수 ${Math.round((1-FORECAST_RAIN_MULT)*100)}%↓`); }
+      if (holiday) { est *= FORECAST_HOLIDAY_MULT; mult *= FORECAST_HOLIDAY_MULT; factors.push(`공휴일 ${Math.round((1-FORECAST_HOLIDAY_MULT)*100)}%↓`); }
+    } else {
+      factors.push('화요일 휴무');
+    }
+    days.push({
+      date: dateStr,
+      weekday: w,
+      isClosed: closed,
+      holiday,
+      weather,
+      baseAvg: base,
+      multiplier: mult,
+      estSales: Math.round(est),
+      factors
+    });
+  }
+  const totalEstSales = days.reduce((s, d) => s + d.estSales, 0);
+  const businessDays = days.filter(d => !d.isClosed).length;
+
+  // 비용 추정: 변동비 = 매출 × 원가율; 고정비 = 월 합 × (영업일 / 30)
+  const ratios = computeCostRatios(historicalRecords);
+  const variableRatio = ratios.foodCostRatio + ratios.beverageRatio; // 식자재+주류
+  const estVariableCost = Math.round(totalEstSales * variableRatio);
+
+  // 인건비·고정비 일 안분 (월 30일 기준)
+  const fixedExp = getFixedExpenses();
+  const monthlyFixedLabor = fixedExp.filter(e => e.category === '인건비').reduce((s, e) => s + num(e.amount), 0);
+  const monthlyFixedOther = fixedExp.filter(e => e.category !== '인건비').reduce((s, e) => s + num(e.amount), 0);
+  const estLabor = Math.round(monthlyFixedLabor * (forecastDays / 30));
+  const estFixedOther = Math.round(monthlyFixedOther * (forecastDays / 30));
+
+  // 매출공급가 = est sales / 1.1 (부가세 10%)
+  const estSupply = Math.round(totalEstSales / 1.1);
+  // 영업이익 = 매출공급가 - 변동비공급가(변동비는 이미 supply ratio 적용된 셈, 단순화) - 인건비 - 기타고정비
+  const estOpProfit = estSupply - estVariableCost - estLabor - estFixedOther;
+  const opMarginPct = estSupply > 0 ? (estOpProfit / estSupply * 100) : 0;
+
+  return {
+    days, totalEstSales, businessDays, forecastDays,
+    estSupply, estVariableCost, estLabor, estFixedOther,
+    estOpProfit, opMarginPct,
+    baseline, ratios,
+    monthlyFixedLabor, monthlyFixedOther
+  };
+}
+
+let _forecastCache = { records: null, days: 0, data: null };
+
+async function _ensureForecastWeather(forecastDays) {
+  const start = new Date(); start.setHours(0,0,0,0);
+  const end = new Date(start); end.setDate(end.getDate() + forecastDays - 1);
+  const startStr = start.toISOString().slice(0,10);
+  const endStr = end.toISOString().slice(0,10);
+  try {
+    return await fetchWeatherForRange(startStr, endStr);
+  } catch {
+    return [];
+  }
+}
+
+/** view='forecast' 진입 시 즉시 보이는 placeholder + async 로딩 */
+function renderForecastPlaceholder(historicalRecords) {
+  // 비동기 fetch + 렌더 트리거
+  setTimeout(() => _renderForecastAsync(historicalRecords), 50);
+  return `
+    <div class="report-card" style="margin-bottom:16px;" id="forecastCardContainer">
+      <div class="report-card-title">손익 추정 <span style="color:var(--text-3);font-weight:400;font-size:11px;margin-left:6px;">미래 매출·비용·영업이익 예측</span></div>
+      <div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">
+        ☁ 강남역 날씨 예보 + 과거 데이터로 추정 중…
+      </div>
+    </div>`;
+}
+
+async function _renderForecastAsync(historicalRecords) {
+  const container = document.getElementById('forecastCardContainer');
+  if (!container) return;
+  if (!historicalRecords.length) {
+    container.innerHTML = `
+      <div class="report-card-title">손익 추정</div>
+      <div class="report-empty"><p>마감된 영업일이 있어야 추정 가능합니다</p></div>`;
+    return;
+  }
+  // 기본 추정 기간: 이번 달 잔여 일수 (오늘 포함 ~ 월말)
+  const today = new Date(); today.setHours(0,0,0,0);
+  const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  const defaultDays = Math.max(1, Math.min(30, Math.ceil((lastDay - today) / 86400000) + 1));
+  const days = (state.forecastConfig && state.forecastConfig.days) || defaultDays;
+  const wx = await _ensureForecastWeather(Math.min(days, 16)); // Open-Meteo forecast 16일 안정 상한
+  const data = computeProfitForecast(historicalRecords, wx, days);
+  container.innerHTML = _forecastCardHtml(data, days, defaultDays);
+}
+
+function setForecastDays(n) {
+  if (!state.forecastConfig) state.forecastConfig = {};
+  state.forecastConfig.days = parseInt(n) || 7;
+  const filtered = _getFilteredReportRecords();
+  _renderForecastAsync(filtered);
+}
+
+function _getFilteredReportRecords() {
+  const all = getAllRecords();
+  const allDates = Object.keys(all).sort();
+  let filtered = allDates.map(d => ({ date: d, ...all[d] }));
+  const range = (state.reportConfig && state.reportConfig.range) || '30';
+  if (range !== 'all') {
+    const days = parseInt(range);
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - days + 1);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    filtered = filtered.filter(r => r.date >= cutoffStr);
+  }
+  return filtered;
+}
+
+function _forecastCardHtml(data, currentDays, defaultDays) {
+  const wdNames = ['일','월','화','수','목','금','토'];
+  const fmtKRW = (n) => fmt(Math.round(n));
+  const profitColor = data.estOpProfit < 0 ? 'var(--red)' : 'var(--green)';
+  // 일별 차트 — 막대 (실 영업일만 색, 휴무는 회색)
+  const W = 720, H = 220, PL = 50, PR = 20, PT = 16, PB = 50;
+  const cw = W - PL - PR, ch = H - PT - PB;
+  const maxVal = Math.max(...data.days.map(d => d.estSales), 1);
+  const barW = cw / data.days.length;
+  let bars = '', xLabels = '', vLabels = '';
+  data.days.forEach((d, i) => {
+    const x = PL + i * barW + barW * 0.15;
+    const w = barW * 0.7;
+    const barH = (d.estSales / maxVal) * ch;
+    const y = PT + ch - barH;
+    const wd = d.weekday;
+    const wdCol = wd === 0 ? 'var(--red)' : wd === 6 ? 'var(--accent)' : 'var(--text-2)';
+    const col = d.isClosed ? 'var(--border)' : (d.holiday ? 'var(--orange)' : (isRainDay(d.weather) ? 'var(--text-2)' : 'var(--text)'));
+    const tooltip = `${d.date} (${wdNames[wd]})\n예상 ${fmtKRW(d.estSales)}${d.factors.length ? '\n' + d.factors.join(' · ') : ''}${d.weather ? `\n날씨 ${getWeatherInfo(d.weather.weathercode).label} · 강수 ${num(d.weather.precipitation).toFixed(1)}mm` : ''}`;
+    bars += `<rect x="${x}" y="${y}" width="${w}" height="${barH || 1}" fill="${col}" opacity="${d.isClosed ? '0.3' : '0.85'}" rx="2"><title>${tooltip}</title></rect>`;
+    if (barH > 22 && !d.isClosed) {
+      vLabels += `<text x="${x + w/2}" y="${y - 4}" text-anchor="middle" font-size="9" fill="var(--text-2)" font-family="JetBrains Mono, monospace">${(d.estSales/10000|0)}만</text>`;
+    }
+    if (i % Math.max(1, Math.ceil(data.days.length / 14)) === 0 || i === data.days.length - 1) {
+      xLabels += `<text x="${x + w/2}" y="${PT + ch + 16}" text-anchor="middle" font-size="9" fill="var(--text-3)" font-family="JetBrains Mono, monospace">${d.date.slice(5)}</text>`;
+      xLabels += `<text x="${x + w/2}" y="${PT + ch + 28}" text-anchor="middle" font-size="10" fill="${wdCol}" font-weight="600">${wdNames[wd]}</text>`;
+    }
+  });
+  // y축 라벨
+  let yLabels = '';
+  for (let i = 0; i <= 3; i++) {
+    const y = PT + ch - (i / 3) * ch;
+    const v = (i / 3) * maxVal;
+    yLabels += `<line x1="${PL}" y1="${y}" x2="${W - PR}" y2="${y}" stroke="var(--border)" stroke-width="1" stroke-dasharray="${i===0?'':'2,3'}"/>`;
+    yLabels += `<text x="${PL - 6}" y="${y + 4}" text-anchor="end" font-size="10" fill="var(--text-3)" font-family="JetBrains Mono, monospace">${v >= 10000 ? Math.round(v/10000) + '만' : Math.round(v)}</text>`;
+  }
+
+  // 추정 가정 텍스트
+  const assumptions = `
+    <div style="font-size:11px;color:var(--text-3);margin-top:10px;line-height:1.6;">
+      <strong>추정 가정:</strong>
+      요일별 평균 매출(과거 ${data.baseline.reduce((s,b)=>s+b.count,0)}일 합산) ·
+      비/눈 ${Math.round((1-FORECAST_RAIN_MULT)*100)}%↓ ·
+      공휴일 ${Math.round((1-FORECAST_HOLIDAY_MULT)*100)}%↓ ·
+      매주 화요일 휴무 (매출 0) ·
+      식자재+주류 원가율 ${((data.ratios.foodCostRatio+data.ratios.beverageRatio)*100).toFixed(1)}% ·
+      월 인건비 ${fmtKRW(data.monthlyFixedLabor)} · 기타 고정비 ${fmtKRW(data.monthlyFixedOther)} (${data.forecastDays}일 안분).
+    </div>`;
+
+  // 일별 표
+  const dayRows = data.days.map(d => `
+    <tr>
+      <td>${d.date}</td>
+      <td style="color:${d.weekday===0?'var(--red)':d.weekday===6?'var(--accent)':'var(--text-2)'};">${wdNames[d.weekday]}</td>
+      <td>${d.weather ? getWeatherInfo(d.weather.weathercode).icon + ' ' + getWeatherInfo(d.weather.weathercode).label : '-'}</td>
+      <td>${d.holiday || ''}${d.isClosed ? ' (휴무)' : ''}</td>
+      <td class="num"><strong>${d.isClosed ? '-' : fmtKRW(d.estSales)}</strong></td>
+      <td style="font-size:11px;color:var(--text-3);">${d.factors.join(' · ')}</td>
+    </tr>`).join('');
+
+  return `
+    <div class="report-card-title">손익 추정 <span style="color:var(--text-3);font-weight:400;font-size:11px;margin-left:6px;">${data.forecastDays}일 (영업 ${data.businessDays}일)</span></div>
+    <div style="display:flex;gap:8px;align-items:center;margin:8px 0 12px;flex-wrap:wrap;">
+      <span style="font-size:12px;color:var(--text-2);">추정 기간</span>
+      <button class="seg-btn ${currentDays===7?'active':''}" onclick="setForecastDays(7)">7일</button>
+      <button class="seg-btn ${currentDays===14?'active':''}" onclick="setForecastDays(14)">14일</button>
+      <button class="seg-btn ${currentDays===defaultDays && currentDays!==7 && currentDays!==14 && currentDays!==30?'active':''}" onclick="setForecastDays(${defaultDays})">이번달 잔여 (${defaultDays}일)</button>
+      <button class="seg-btn ${currentDays===30?'active':''}" onclick="setForecastDays(30)">30일</button>
+    </div>
+    <div class="kpi-grid" style="margin-bottom:14px;">
+      <div class="kpi-card">
+        <div class="kpi-label">예상 매출 (총액)</div>
+        <div class="kpi-value">${fmtKRW(data.totalEstSales)}</div>
+        <div class="kpi-delta flat">공급가 ${fmtKRW(data.estSupply)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">변동비 (식자재+주류)</div>
+        <div class="kpi-value" style="color:var(--text-2);">${fmtKRW(data.estVariableCost)}</div>
+        <div class="kpi-delta flat">${((data.ratios.foodCostRatio+data.ratios.beverageRatio)*100).toFixed(1)}% 적용</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">고정비 (인건+기타)</div>
+        <div class="kpi-value" style="color:var(--text-2);">${fmtKRW(data.estLabor + data.estFixedOther)}</div>
+        <div class="kpi-delta flat">인건 ${fmtKRW(data.estLabor)} · 기타 ${fmtKRW(data.estFixedOther)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">예상 영업이익 (간이)</div>
+        <div class="kpi-value" style="color:${profitColor};">${fmtKRW(data.estOpProfit)}</div>
+        <div class="kpi-delta flat">영업이익률 ${data.opMarginPct.toFixed(1)}%</div>
+      </div>
+    </div>
+    <div style="overflow-x:auto;margin-bottom:8px;">
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;min-width:${Math.max(W, data.days.length*38)}px;height:${H}px;display:block;" xmlns="http://www.w3.org/2000/svg">
+        ${yLabels}${bars}${vLabels}${xLabels}
+      </svg>
+    </div>
+    <details style="margin-top:8px;">
+      <summary style="cursor:pointer;font-size:12px;color:var(--text-2);">일별 상세 (${data.days.length}일)</summary>
+      <table class="mini-table" style="margin-top:8px;">
+        <thead><tr><th>날짜</th><th>요일</th><th>날씨</th><th>비고</th><th class="num">예상 매출</th><th>적용 보정</th></tr></thead>
+        <tbody>${dayRows}</tbody>
+      </table>
+    </details>
+    ${assumptions}
+    <div style="font-size:11px;color:var(--text-3);margin-top:6px;">
+      ※ 영업외손익·법인세·부가세 미반영 간이 추정. 과거 데이터 표본이 작으면(${data.baseline.reduce((s,b)=>s+b.count,0)}일) 정확도 낮음 — 한 달 이상 누적 후 더 신뢰 가능.
+    </div>`;
 }
 
 /**
@@ -5568,6 +5859,7 @@ function renderReport() {
   else if (view === 'weekday') chartHtml = renderWeekdayChart(filtered);
   else if (view === 'menu') chartHtml = renderMenuMixCard(computeMenuMix(filtered));
   else if (view === 'heatmap') chartHtml = renderHeatmapCard(computeHourWeekdayHeatmap(filtered));
+  else if (view === 'forecast') chartHtml = renderForecastPlaceholder(filtered);
 
   // 객단가 추세 (항상 노출)
   const avgCheckCard = renderAvgCheckTrendCard(computeAvgCheckTrend(filtered));
