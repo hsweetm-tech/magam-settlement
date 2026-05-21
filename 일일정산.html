@@ -1973,6 +1973,20 @@ body.tab-summary main { grid-template-columns: 1fr; }
             </button>
             <div style="margin-left:auto;font-size:11px;color:var(--text-3);">예: 임대료 ₩6,000,000 · 캐치테이블 ₩2,200,000</div>
           </div>
+
+          <div class="msub-section-head" style="margin-top: 28px;">
+            <div class="msub-section-title">자본금 (1회 입력)</div>
+            <div class="msub-section-note" id="capitalNote"></div>
+          </div>
+          <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
+            매장 오픈 시 사장님이 통장·현금으로 투입한 초기 자본금. 누적 영업손익과 합쳐 <strong>현재 잔존 자본</strong>을 대시보드에서 추적합니다.
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <label style="font-size:12px;color:var(--text-2);">초기 자본금 (원):</label>
+            <input type="number" id="initialCapital" placeholder="예: 25000000" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;width:180px;font-family:JetBrains Mono,monospace;">
+            <input type="date" id="capitalDate" placeholder="투입일" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+            <button class="btn btn-small" onclick="saveCapitalSettings()">저장</button>
+          </div>
         </div>
       </div>
     </div>
@@ -2602,6 +2616,7 @@ function switchTab(name) {
     if (mm && !mm.value) mm.value = new Date().toISOString().slice(0, 7);
     if (mm) renderMonthlyReport(mm.value);
     if (typeof backfillWeatherAll === 'function') backfillWeatherAll({ silent: true });
+    if (typeof loadCapitalSettings === 'function') loadCapitalSettings();
   }
   if (name === 'forecast') {
     const fm = document.getElementById('forecastMonth');
@@ -2837,12 +2852,14 @@ function collectAppSettings() {
       try { hometax[k.slice('hometax_'.length)] = JSON.parse(localStorage.getItem(k) || '[]'); } catch {}
     }
   }
-  let partners = null, fixedExpenses = null;
+  let partners = null, fixedExpenses = null, capital = null;
   try { const raw = localStorage.getItem(PARTNERS_KEY); if (raw) partners = JSON.parse(raw); } catch {}
   try { const raw = localStorage.getItem(FIXED_EXPENSES_KEY); if (raw) fixedExpenses = JSON.parse(raw); } catch {}
+  try { const raw = localStorage.getItem(CAPITAL_KEY); if (raw) capital = JSON.parse(raw); } catch {}
   return {
     partners,
     fixedExpenses,
+    capital,
     distSubtractDiscounts: localStorage.getItem(DIST_DISCOUNT_KEY) === 'true',
     hometax
   };
@@ -2852,6 +2869,9 @@ function applyAppSettings(s) {
   if (!s || typeof s !== 'object') return;
   if (Array.isArray(s.partners)) localStorage.setItem(PARTNERS_KEY, JSON.stringify(s.partners));
   if (Array.isArray(s.fixedExpenses)) localStorage.setItem(FIXED_EXPENSES_KEY, JSON.stringify(s.fixedExpenses));
+  if (s.capital && typeof s.capital === 'object' && num(s.capital.amount) > 0) {
+    localStorage.setItem(CAPITAL_KEY, JSON.stringify(s.capital));
+  }
   if (s.distSubtractDiscounts != null) localStorage.setItem(DIST_DISCOUNT_KEY, s.distSubtractDiscounts ? 'true' : 'false');
   if (s.hometax && typeof s.hometax === 'object') {
     Object.entries(s.hometax).forEach(([month, arr]) => {
@@ -4166,9 +4186,40 @@ function computeMonthlyData(month) {
 }
 
 /* ========================================================================
-   대시보드 (Phase 4-1): 페이스 카드 + 이상 신호 + 현금흐름 요약
+   대시보드 (Phase 4-1): 페이스 카드 + 이상 신호 + 현금흐름 요약 + 자본 현황
    - default 탭. 매일 앱 열면 가장 먼저 보임.
    ======================================================================== */
+
+const CAPITAL_KEY = 'initial_capital_v1';
+function getCapitalSettings() {
+  try { const r = localStorage.getItem(CAPITAL_KEY); return r ? JSON.parse(r) : null; }
+  catch { return null; }
+}
+function saveCapitalSettings() {
+  const amt = num(document.getElementById('initialCapital').value);
+  const date = document.getElementById('capitalDate').value || new Date().toISOString().slice(0,10);
+  if (amt <= 0) { toast('자본금을 0보다 큰 값으로 입력하세요', 'warn'); return; }
+  localStorage.setItem(CAPITAL_KEY, JSON.stringify({ amount: amt, date }));
+  _queueCloudUpload();
+  const note = document.getElementById('capitalNote');
+  if (note) note.textContent = `투입 ${date} · ${fmt(amt)}`;
+  toast(`자본금 ${fmt(amt)} 저장 (${date})`, 'ok');
+  // 대시보드 새로고침
+  if (typeof renderDashboard === 'function') renderDashboard();
+}
+function loadCapitalSettings() {
+  const cap = getCapitalSettings();
+  const ipt = document.getElementById('initialCapital');
+  const dte = document.getElementById('capitalDate');
+  const note = document.getElementById('capitalNote');
+  if (cap) {
+    if (ipt) ipt.value = cap.amount;
+    if (dte) dte.value = cap.date;
+    if (note) note.textContent = `투입 ${cap.date} · ${fmt(cap.amount)}`;
+  } else {
+    if (note) note.textContent = '미설정';
+  }
+}
 
 /** 이번 달 페이스 — 목표 대비 진행률·필요 일평균·추세 예상 */
 function _computePace(monthStr) {
@@ -4441,7 +4492,63 @@ function renderDashboard() {
     </div>
   `;
 
-  container.innerHTML = paceHtml + anomalyHtml + cashFlowHtml;
+  // ========== 자본 현황 카드 ==========
+  const capital = getCapitalSettings();
+  let capitalHtml = '';
+  if (capital && num(capital.amount) > 0) {
+    // 모든 마감 record의 monthPL 합 (월정산 기준) — 계산을 위해 모든 월 데이터 통합
+    const all = getAllRecords();
+    const months = new Set();
+    Object.keys(all).forEach(d => { if (/^\d{4}-\d{2}/.test(d)) months.add(d.slice(0,7)); });
+    let cumulativePL = 0;
+    Array.from(months).forEach(m => {
+      const md = computeMonthlyData(m);
+      if (md) cumulativePL += num(md.monthPL);
+    });
+    const initial = num(capital.amount);
+    const remaining = initial + cumulativePL;
+    const burnPct = initial > 0 ? Math.max(0, Math.min(100, (1 - remaining / initial) * 100)) : 0;
+    const remainColor = remaining < 0 ? 'var(--red)' : remaining < initial * 0.3 ? 'var(--orange)' : 'var(--green)';
+    capitalHtml = `
+      <div class="report-card" style="margin-bottom:16px;">
+        <div class="report-card-title">자본 현황 <span style="color:var(--text-3);font-weight:400;font-size:11px;margin-left:6px;">투입 ${capital.date}</span></div>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <div class="kpi-label">초기 자본금</div>
+            <div class="kpi-value">${fmt(initial)}</div>
+            <div class="kpi-delta flat">${capital.date} 통장 투입</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">누적 영업손익</div>
+            <div class="kpi-value" style="color:${cumulativePL < 0 ? 'var(--red)' : 'var(--green)'};">${fmt(Math.round(cumulativePL))}</div>
+            <div class="kpi-delta flat">${months.size}개월 누적</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">현재 잔존 자본</div>
+            <div class="kpi-value" style="color:${remainColor};">${fmt(Math.round(remaining))}</div>
+            <div class="kpi-delta flat">자본 소진율 ${burnPct.toFixed(1)}%</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">${cumulativePL < 0 ? '월평균 손실' : '월평균 이익'}</div>
+            <div class="kpi-value" style="color:${cumulativePL < 0 ? 'var(--red)' : 'var(--green)'};">${fmt(Math.round(cumulativePL / Math.max(months.size, 1)))}</div>
+            <div class="kpi-delta flat">${cumulativePL < 0 ? `현재 추세 ${Math.round(Math.abs(remaining) / Math.max(Math.abs(cumulativePL / months.size), 1))}개월 후 자본 소진` : '이익 누적 중'}</div>
+          </div>
+        </div>
+        ${remaining < 0 ? `<div style="margin-top:10px;padding:10px;background:var(--red-bg, #fef2f2);border-left:3px solid var(--red);border-radius:6px;font-size:12px;color:var(--red);">⚠ 자본 소진 — 추가 투입 또는 손익 개선 필요</div>` : ''}
+      </div>
+    `;
+  } else {
+    capitalHtml = `
+      <div class="report-card" style="margin-bottom:16px;">
+        <div class="report-card-title">자본 현황</div>
+        <div class="report-empty">
+          <p>초기 자본금 미설정 — <a href="javascript:void(0)" onclick="switchTab('monthly');setTimeout(() => { switchMonthlySubTab('settings'); document.getElementById('initialCapital').focus(); }, 300)" style="color:var(--text);text-decoration:underline;">설정하기</a></p>
+        </div>
+      </div>
+    `;
+  }
+
+  container.innerHTML = paceHtml + capitalHtml + anomalyHtml + cashFlowHtml;
 }
 
 function renderMonthlyReport(month) {
