@@ -7585,19 +7585,22 @@ function splitMonthlyGoal(monthStr, totalGoal, customRatio = null) {
   const [year, month] = monthStr.split('-').map(Number);
   const daysInMonth = new Date(year, month, 0).getDate();
 
-  let weekdayCount = 0, weekendCount = 0;
+  let weekdayCount = 0, weekendCount = 0, closedCount = 0;
   const dailyBreakdown = [];
 
   for (let d = 1; d <= daysInMonth; d++) {
     const date = new Date(year, month - 1, d);
     const wd = date.getDay();
+    const isClosed = FORECAST_CLOSED_DOW.includes(wd);  // 매주 화요일 휴무
     const isWeekend = wd === 0 || wd === 6;
-    if (isWeekend) weekendCount++;
+    if (isClosed) closedCount++;
+    else if (isWeekend) weekendCount++;
     else weekdayCount++;
     dailyBreakdown.push({
       date: `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`,
       weekday: wd,
-      isWeekend
+      isWeekend,
+      isClosed
     });
   }
 
@@ -7606,16 +7609,19 @@ function splitMonthlyGoal(monthStr, totalGoal, customRatio = null) {
   const isAutoRatio = customRatio === null;
   const hasEnoughData = pattern.wdDays >= 5 && pattern.weDays >= 2;
 
-  const weekdayDailyGoal = totalGoal / (weekdayCount + weekendCount * ratio);
+  const denom = weekdayCount + weekendCount * ratio;
+  const weekdayDailyGoal = denom > 0 ? totalGoal / denom : 0;
   const weekendDailyGoal = weekdayDailyGoal * ratio;
 
   dailyBreakdown.forEach(d => {
-    d.goal = d.isWeekend ? weekendDailyGoal : weekdayDailyGoal;
+    if (d.isClosed) d.goal = 0;  // 휴무일은 목표 0
+    else d.goal = d.isWeekend ? weekendDailyGoal : weekdayDailyGoal;
   });
 
   return {
     monthStr, totalGoal,
-    weekdayCount, weekendCount,
+    weekdayCount, weekendCount, closedCount,
+    businessDaysCount: weekdayCount + weekendCount,
     weekdayDailyGoal, weekendDailyGoal,
     ratio, isAutoRatio, hasEnoughData,
     daysInMonth,
@@ -7769,7 +7775,7 @@ function updateGoalPreview() {
 
   document.getElementById('goalPreview').innerHTML = `
     <div class="goal-preview-title">분배 미리보기</div>
-    <div class="goal-preview-row"><span>영업일 수</span><strong>${split.daysInMonth}일 (평일 ${split.weekdayCount} / 주말 ${split.weekendCount})</strong></div>
+    <div class="goal-preview-row"><span>영업일 수</span><strong>${split.businessDaysCount}일 (평일 ${split.weekdayCount} / 주말 ${split.weekendCount})${split.closedCount ? ` <span style="color:var(--text-3);font-weight:400;font-size:11px;">· 화요일 휴무 ${split.closedCount}일 제외</span>` : ''}</strong></div>
     <div class="goal-preview-row"><span>평일 일 목표</span><strong>${fmt(split.weekdayDailyGoal)}</strong></div>
     <div class="goal-preview-row"><span>주말 일 목표</span><strong>${fmt(split.weekendDailyGoal)}</strong></div>
     <div class="goal-preview-row"><span>주말 가중치</span><strong>${split.ratio.toFixed(2)}× ${split.isAutoRatio ? '(자동)' : '(수동)'}</strong></div>
