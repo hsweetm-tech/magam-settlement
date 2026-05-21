@@ -2074,9 +2074,18 @@ main {
 
     <div class="modal-actions" style="margin-top: 20px;">
       <button class="btn btn-small btn-danger-ghost" onclick="disconnectCloud()">연결 해제</button>
-      <div style="flex: 1;"></div>
-      <button class="btn btn-small" onclick="loadFromFile()" title="JSON 백업 파일에서 데이터 복원 (다른 PC에서 수동 옮길 때)">불러오기</button>
-      <button class="btn btn-small" onclick="exportAllData()" title="전체 데이터를 JSON 파일로 백업">백업 다운로드</button>
+      <div style="flex: 1;width:100%;border-top:1px solid var(--border);padding-top:12px;margin-top:6px;">
+        <div style="font-size:11px;color:var(--text-3);margin-bottom:8px;">
+          <strong>셋업 파일</strong> — 새 PC에서 클라우드 URL·토큰·고정비·분배비율을 한 번에 가져오기 (Antigravity·Claude에 "이 파일 보고 세팅해줘" 가능)
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button class="btn btn-small" onclick="exportSetupFile()" title="현재 셋업(클라우드/고정비/분배비율)을 SETUP.md로 다운로드 + 클라우드에도 업로드">셋업 내보내기 (MD)</button>
+          <button class="btn btn-small" onclick="document.getElementById('setupImportInput').click()" title="SETUP.md 또는 SETUP.json 파일에서 셋업 일괄 적용">셋업 가져오기</button>
+          <input type="file" id="setupImportInput" accept=".md,.json,.txt" style="display:none;" onchange="handleSetupImport(event)">
+          <button class="btn btn-small" onclick="loadFromFile()" title="전체 데이터(records) JSON 백업 파일에서 복원">데이터 불러오기</button>
+          <button class="btn btn-small" onclick="exportAllData()" title="전체 데이터를 JSON 파일로 백업">데이터 백업 다운로드</button>
+        </div>
+      </div>
       <button class="btn btn-small" onclick="document.getElementById('cloudModal').classList.remove('active')">닫기</button>
       <button class="btn btn-small" onclick="pullFromCloud()">지금 동기화</button>
       <button class="btn btn-small" onclick="testCloudConnection()">연결 테스트</button>
@@ -6326,6 +6335,152 @@ function resetAllData() {
   document.getElementById('serviceRate').value = 0;
   updateAll();
   toast('초기화 완료', 'ok');
+}
+
+/* ========================================================================
+   셋업 파일 (SETUP.md) — 새 PC에서 한 번에 세팅하기
+   - 내용: 클라우드 GAS URL/토큰, 고정비, 동업자 분배 비율, 컴프 토글
+   - record 데이터는 별도(별도 백업 파일)
+   - MD에 ```json 코드블록 임베드 → 사람도 읽기 좋고 시스템 파싱 가능
+   - 클라우드 sync 켜져 있으면 SETUP.md를 구글드라이브에도 자동 업로드
+   ======================================================================== */
+function _collectSetupData() {
+  const cs = (typeof getCloudSettings === 'function') ? getCloudSettings() : {};
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    storeName: '아스트라',
+    cloud: {
+      url: cs.url || '',
+      token: cs.token || '',
+      autoSync: cs.autoSync !== false,
+      autoClose: cs.autoClose !== false,
+      autoDaily: cs.autoDaily !== false
+    },
+    fixedExpenses: getFixedExpenses(),
+    partners: getPartners(),
+    distSubtractDiscounts: getDistSubtractDiscounts()
+  };
+}
+
+function _setupToMarkdown(data) {
+  const fxRows = (data.fixedExpenses || []).map(e =>
+    `| ${e.name} | ${e.category} | ${e.amount.toLocaleString()} | ${e.memo || ''} |`
+  ).join('\n');
+  const ptRows = (data.partners || []).map(p =>
+    `| ${p.name || ''} | ${p.ratio}% | ${p.memo || ''} |`
+  ).join('\n');
+  const jsonText = JSON.stringify(data, null, 2);
+  return `# 아스트라 매장 셋업 (${data.exportedAt.slice(0,10)})
+
+이 파일은 **새 PC에서 한 번에 세팅**하기 위한 셋업 파일입니다.
+일일정산.html → [클라우드] → [셋업 가져오기] 로 이 파일을 선택하면 즉시 적용됩니다.
+또는 Antigravity/Claude에 "이 SETUP.md 보고 세팅해줘"라고 요청해도 됩니다.
+
+## 클라우드 (구글 Apps Script)
+- URL: \`${data.cloud.url || '(미설정)'}\`
+- TOKEN: \`${data.cloud.token ? '****' + data.cloud.token.slice(-4) : '(미설정)'}\`
+- 자동 풀: ${data.cloud.autoSync ? '✓' : '✗'} · 마감 자동 업로드: ${data.cloud.autoClose ? '✓' : '✗'} · 마감 시 전체 백업: ${data.cloud.autoDaily ? '✓' : '✗'}
+
+## 고정비 (월 자동 반영)
+${fxRows ? '| 항목 | 분류 | 월금액 | 메모 |\n|---|---|---|---|\n' + fxRows : '(없음)'}
+
+## 동업자 정률 분배
+${ptRows ? '| 동업자 | 비율 | 메모 |\n|---|---|---|\n' + ptRows : '(미설정)'}
+- 할인·쿠폰(컴프)을 분배 전 공동비용 차감: ${data.distSubtractDiscounts ? '✓' : '✗'}
+
+---
+
+## 시스템 적용용 데이터 (자동 파싱)
+
+다음 JSON 블록은 [셋업 가져오기] 버튼이 읽는 부분입니다. 수정 시 형식을 유지하세요.
+
+\`\`\`json
+${jsonText}
+\`\`\`
+`;
+}
+
+async function exportSetupFile() {
+  const data = _collectSetupData();
+  const text = _setupToMarkdown(data);
+  const filename = `SETUP_아스트라_${data.exportedAt.slice(0,10)}.md`;
+  // 다운로드
+  const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+  toast('셋업 파일 다운로드: ' + filename, 'ok');
+  // 클라우드 연결 시 구글드라이브에도 자동 업로드 ('SETUP_아스트라.md' 고정명 → 항상 최신)
+  const cs = getCloudSettings();
+  if (cs.url && cs.autoSync !== false) {
+    try { await uploadToCloud('SETUP_아스트라.md', text, true); } catch {}
+  }
+}
+
+function _parseSetupFromText(text) {
+  // ```json ... ``` 코드블록 추출
+  const m = String(text || '').match(/```json\s*([\s\S]*?)\s*```/);
+  if (m) {
+    try { return JSON.parse(m[1]); } catch (e) { throw new Error('JSON 블록 파싱 실패: ' + e.message); }
+  }
+  // 또는 통째로 JSON
+  try { return JSON.parse(text); } catch (e) {
+    throw new Error('파일에서 셋업 데이터를 찾지 못했습니다. MD에 ```json 코드블록 또는 순수 JSON이 필요합니다.');
+  }
+}
+
+async function handleSetupImport(ev) {
+  const file = ev.target.files && ev.target.files[0];
+  ev.target.value = '';
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const data = _parseSetupFromText(text);
+    if (!data || typeof data !== 'object') throw new Error('형식이 올바르지 않습니다');
+    const summary = [
+      data.cloud && data.cloud.url ? '클라우드 URL/토큰' : null,
+      Array.isArray(data.fixedExpenses) ? `고정비 ${data.fixedExpenses.length}건` : null,
+      Array.isArray(data.partners) ? `동업자 ${data.partners.length}명` : null
+    ].filter(Boolean).join(' · ');
+    if (!confirm(`셋업 파일을 적용할까요?\n\n포함된 항목: ${summary}\n\n기존 설정은 덮어쓰여집니다.`)) return;
+    // 1) 클라우드 설정
+    if (data.cloud) {
+      const cur = getCloudSettings();
+      setCloudSettings({
+        url: data.cloud.url || cur.url || '',
+        token: data.cloud.token || cur.token || '',
+        autoSync: data.cloud.autoSync !== false,
+        autoClose: data.cloud.autoClose !== false,
+        autoDaily: data.cloud.autoDaily !== false
+      });
+      const urlEl = document.getElementById('cloudUrl');
+      const tokenEl = document.getElementById('cloudToken');
+      if (urlEl) urlEl.value = data.cloud.url || '';
+      if (tokenEl) tokenEl.value = data.cloud.token || '';
+      updateCloudBtn();
+      renderCloudStatus();
+    }
+    // 2) 고정비
+    if (Array.isArray(data.fixedExpenses)) saveFixedExpenses(data.fixedExpenses);
+    // 3) 동업자
+    if (Array.isArray(data.partners)) savePartners(data.partners);
+    // 4) 컴프 토글
+    if (data.distSubtractDiscounts != null) setDistSubtractDiscounts(!!data.distSubtractDiscounts);
+    // UI 갱신
+    if (typeof renderFixedExpenses === 'function') renderFixedExpenses();
+    if (typeof renderPartners === 'function') renderPartners();
+    const distChk = document.getElementById('distSubtractDiscounts');
+    if (distChk) distChk.checked = !!data.distSubtractDiscounts;
+    toast(`셋업 적용: ${summary}`, 'ok');
+    // 클라우드 연결됐으면 즉시 풀로 record 가져옴
+    if (data.cloud && data.cloud.url) {
+      setTimeout(() => { if (typeof pullFromCloud === 'function') pullFromCloud(false); }, 600);
+    }
+  } catch (err) {
+    toast('셋업 가져오기 실패: ' + err.message, 'danger');
+  }
 }
 
 function exportAllData() {
