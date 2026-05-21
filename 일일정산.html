@@ -3960,8 +3960,12 @@ function computeMonthlyData(month) {
   let sumSales = 0, sumSalesSupply = 0, sumSalesVat = 0;
   let sumPTotal = 0, sumPSupply = 0, sumPVat = 0, sumExtra = 0;
   let sumPayroll = 0, sumDiscounts = 0;
-  const byCategory = {};        // 부가세 포함 합계 (기존)
-  const bySupplyCategory = {};  // 공급가 기준 (신규 — 손익계산서·고정비 비교용)
+  // 과세/면세 분리 (vat > 0 = 과세, vat == 0 = 면세)
+  let sumTaxableSupply = 0, sumTaxableVat = 0, sumTaxableTotal = 0, sumExemptTotal = 0;
+  const byCategory = {};            // 부가세 포함 합계 (기존)
+  const bySupplyCategory = {};      // 공급가 기준 (손익계산서·고정비 비교용)
+  const taxableSupplyByCategory = {}; // 카테고리별 과세 공급가
+  const exemptByCategory = {};        // 카테고리별 면세 금액
   const dailyRows = [];
   for (const d of dates) {
     const rec = all[d];
@@ -3979,7 +3983,18 @@ function computeMonthlyData(month) {
     sumDiscounts += discounts;
     Object.entries(p.byCategory).forEach(([k, v]) => { byCategory[k] = (byCategory[k] || 0) + v; });
     (rec.purchaseRows || []).forEach(r => {
-      if (r.category) bySupplyCategory[r.category] = (bySupplyCategory[r.category] || 0) + num(r.supply);
+      const supply = num(r.supply);
+      const vat = num(r.vat);
+      const total = num(r.total) || (supply + vat);
+      if (r.category) bySupplyCategory[r.category] = (bySupplyCategory[r.category] || 0) + supply;
+      // 과세/면세 분리: vat가 있으면 과세, 없으면 면세
+      if (vat > 0) {
+        sumTaxableSupply += supply; sumTaxableVat += vat; sumTaxableTotal += total;
+        if (r.category) taxableSupplyByCategory[r.category] = (taxableSupplyByCategory[r.category] || 0) + supply;
+      } else {
+        sumExemptTotal += (supply || total);
+        if (r.category) exemptByCategory[r.category] = (exemptByCategory[r.category] || 0) + (supply || total);
+      }
     });
     dailyRows.push({
       date: d,
@@ -4008,6 +4023,8 @@ function computeMonthlyData(month) {
     month, dates, sumSales, sumSalesSupply, sumSalesVat,
     sumPTotal, sumPSupply, sumPVat, sumExtra, sumPayroll, sumDiscounts,
     sumFixedApplied,
+    sumTaxableSupply, sumTaxableVat, sumTaxableTotal, sumExemptTotal,
+    taxableSupplyByCategory, exemptByCategory,
     monthPL, payableVat, byCategory, bySupplyCategory, dailyRows,
     dist: computeMonthlyDistribution(monthPL, sumDiscounts),
     costRatios,
@@ -4049,7 +4066,10 @@ function renderMonthlyProfitContent(data) {
         <div class="m-card">
           <div class="m-card-label">매입·비용 (부가세 포함)</div>
           <div class="m-card-value">${fmt(Math.round(sumPTotal + sumExtra))}</div>
-          <div class="m-card-sub">공급가 ${fmt(Math.round(sumPSupply + sumExtra))}</div>
+          <div class="m-card-sub">
+            과세 ${fmt(Math.round(data.sumTaxableTotal))} (공급가 ${fmt(Math.round(data.sumTaxableSupply))} + VAT ${fmt(Math.round(data.sumTaxableVat))})<br>
+            면세 ${fmt(Math.round(data.sumExemptTotal))} · 기타비용 ${fmt(Math.round(sumExtra))}
+          </div>
         </div>
         <div class="m-card">
           <div class="m-card-label">인건비</div>
@@ -4103,15 +4123,42 @@ function renderMonthlyProfitContent(data) {
 
       ${Object.keys(byCategory).length ? `
         <div style="margin-bottom: 24px;">
-          <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">매입 분류별 합계 (부가세 포함)</div>
+          <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">매입 분류별 합계 <span style="color:var(--text-3);font-weight:400;font-size:11px;margin-left:6px;">과세·면세 분리</span></div>
           <table class="m-table">
-            <thead><tr><th>분류</th><th style="text-align:right;">합계</th></tr></thead>
+            <thead>
+              <tr>
+                <th>분류</th>
+                <th style="text-align:right;">과세 공급가</th>
+                <th style="text-align:right;">과세 VAT</th>
+                <th style="text-align:right;">면세</th>
+                <th style="text-align:right;">합계</th>
+              </tr>
+            </thead>
             <tbody>
-              ${Object.entries(byCategory).sort((a,b) => b[1] - a[1]).map(([k, v]) => `
-                <tr><td>${escapeHtml(k)}</td><td style="text-align:right;">${fmt(Math.round(v))}</td></tr>
-              `).join('')}
+              ${Object.entries(byCategory).sort((a,b) => b[1] - a[1]).map(([k, total]) => {
+                const taxSupply = num(data.taxableSupplyByCategory[k]);
+                const taxVat = taxSupply > 0 ? Math.round(total - num(data.exemptByCategory[k]) - taxSupply) : 0;
+                const exempt = num(data.exemptByCategory[k]);
+                return `<tr>
+                  <td>${escapeHtml(k)}</td>
+                  <td style="text-align:right;color:${taxSupply>0?'var(--text)':'var(--text-3)'};">${taxSupply > 0 ? fmt(Math.round(taxSupply)) : '-'}</td>
+                  <td style="text-align:right;color:${taxVat>0?'var(--text-2)':'var(--text-3)'};">${taxVat > 0 ? fmt(Math.round(taxVat)) : '-'}</td>
+                  <td style="text-align:right;color:${exempt>0?'var(--text)':'var(--text-3)'};">${exempt > 0 ? fmt(Math.round(exempt)) : '-'}</td>
+                  <td style="text-align:right;"><strong>${fmt(Math.round(total))}</strong></td>
+                </tr>`;
+              }).join('')}
+              <tr style="background:var(--hover);font-weight:600;">
+                <td>합계</td>
+                <td style="text-align:right;">${fmt(Math.round(data.sumTaxableSupply))}</td>
+                <td style="text-align:right;">${fmt(Math.round(data.sumTaxableVat))}</td>
+                <td style="text-align:right;">${fmt(Math.round(data.sumExemptTotal))}</td>
+                <td style="text-align:right;">${fmt(Math.round(data.sumPTotal))}</td>
+              </tr>
             </tbody>
           </table>
+          <div style="font-size:11px;color:var(--text-3);margin-top:4px;">
+            ※ 면세 = 매입행의 부가세=0인 거래(농산물·임대료·인건비 등). 매입세액공제 불가. 부가세 신고 시 별도 항목.
+          </div>
         </div>
       ` : ''}
     </div>`;
