@@ -1916,10 +1916,6 @@ main {
               <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               고정비 추가
             </button>
-            <button class="btn btn-small" onclick="addPayrollDefaults()" title="이정원·이용민·승현수 월급 + 4대보험 회사부담분 4개를 한번에 등록 (이미 있으면 스킵)">
-              <svg class="icon" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-              정직원 + 4대보험 일괄 등록
-            </button>
             <div style="margin-left:auto;font-size:11px;color:var(--text-3);">정직원=고정비 · 알바=일일정산 급여 섹션 (분리)</div>
           </div>
         </div>
@@ -2536,9 +2532,9 @@ function getPartners() {
     return arr.map(p => ({ name: String(p.name || ''), ratio: num(p.ratio), memo: String(p.memo || '') }));
   } catch { return []; }
 }
-function savePartners(arr) { localStorage.setItem(PARTNERS_KEY, JSON.stringify(arr)); }
+function savePartners(arr) { localStorage.setItem(PARTNERS_KEY, JSON.stringify(arr)); _queueSettingsCloudUpload(); }
 function getDistSubtractDiscounts() { return localStorage.getItem(DIST_DISCOUNT_KEY) === 'true'; }
-function setDistSubtractDiscounts(v) { localStorage.setItem(DIST_DISCOUNT_KEY, v ? 'true' : 'false'); }
+function setDistSubtractDiscounts(v) { localStorage.setItem(DIST_DISCOUNT_KEY, v ? 'true' : 'false'); _queueSettingsCloudUpload(); }
 
 function addPartner() {
   const list = getPartners();
@@ -2711,9 +2707,11 @@ function getHometaxData(month) {
 }
 function saveHometaxData(month, records) {
   localStorage.setItem(getHometaxKey(month), JSON.stringify(records));
+  _queueSettingsCloudUpload();
 }
 function clearHometaxData(month) {
   localStorage.removeItem(getHometaxKey(month));
+  _queueSettingsCloudUpload();
 }
 
 /**
@@ -2927,11 +2925,9 @@ function _levelColor(level) {
 /**
  * 1개 record 또는 record 배열에서 운영 KPI 계산
  * @param {object|object[]} recordsLike
- * @returns {{salesSupply, foodSupply, beverageSupply, foodCost, laborTotal, primeCost,
- *           foodCostRatio, foodOnlyRatio, beverageRatio, laborRatio, primeCostRatio}}
- *   (Ratio는 0~1 비율. 화면 표시 시 ×100)
+ * @param {{extraLabor?: number}} opts - extraLabor: 고정비로 등록된 인건비 (월정산은 그 달 적용분, 분석 탭은 기간 안분값)
  */
-function computeCostRatios(recordsLike) {
+function computeCostRatios(recordsLike, opts = {}) {
   const records = Array.isArray(recordsLike) ? recordsLike : [recordsLike];
   let salesSupply = 0;
   let foodSupply = 0, beverageSupply = 0, purchaseLabor = 0;
@@ -2948,19 +2944,44 @@ function computeCostRatios(recordsLike) {
     });
     payrollTotal += (rec.payrollRows || []).reduce((s, r) => s + num(r.amount), 0);
   }
-  const laborTotal = payrollTotal + purchaseLabor;
+  const extraLabor = num(opts.extraLabor || 0);
+  const laborTotal = payrollTotal + purchaseLabor + extraLabor;
   const foodCost = foodSupply + beverageSupply;
   const primeCost = foodCost + laborTotal;
   const ratio = (v) => salesSupply > 0 ? v / salesSupply : 0;
   return {
     salesSupply, foodSupply, beverageSupply, foodCost,
-    laborTotal, primeCost,
+    laborTotal, primeCost, extraLabor,
     foodCostRatio: ratio(foodCost),
     foodOnlyRatio: ratio(foodSupply),
     beverageRatio: ratio(beverageSupply),
     laborRatio: ratio(laborTotal),
     primeCostRatio: ratio(primeCost)
   };
+}
+
+/**
+ * 분석 탭용: 임의 기간에 해당하는 월별 고정비 인건비 안분 (월별 영업일수 기반)
+ * - 각 월의 fixedExpensesResolved.appliedByCategory['인건비']를 (그 월 record 수 in period / 그 월 전체 record 수)로 비례 배분
+ */
+function computeFixedLaborForPeriod(filteredRecords) {
+  if (!filteredRecords || !filteredRecords.length) return 0;
+  const byMonth = {};
+  filteredRecords.forEach(r => {
+    if (!r.date) return;
+    const m = String(r.date).slice(0, 7);
+    byMonth[m] = (byMonth[m] || 0) + 1;
+  });
+  let total = 0;
+  Object.entries(byMonth).forEach(([m, nInPeriod]) => {
+    const data = computeMonthlyData(m);
+    if (!data || !data.fixedExpensesResolved) return;
+    const appliedLabor = num(data.fixedExpensesResolved.appliedByCategory['인건비']);
+    if (!appliedLabor) return;
+    const allDays = data.dates.length || nInPeriod;
+    total += appliedLabor * (nInPeriod / allDays);
+  });
+  return total;
 }
 
 /* ========================================================================
@@ -2991,42 +3012,37 @@ function getFixedExpenses() {
     }));
   } catch { return []; }
 }
-function saveFixedExpenses(arr) { localStorage.setItem(FIXED_EXPENSES_KEY, JSON.stringify(arr)); }
+function saveFixedExpenses(arr) {
+  localStorage.setItem(FIXED_EXPENSES_KEY, JSON.stringify(arr));
+  _queueSettingsCloudUpload();
+}
+
+/**
+ * 설정류(고정비·동업자 비율·홈택스·컴프 토글) 변경 시 클라우드 자동 업로드.
+ * - 버그 fix: 새로고침 시 pullFromCloud가 옛날 cloud 데이터로 로컬을 덮어쓰는 문제 해결.
+ *   → 변경 직후 cloud를 최신 상태로 만들어서 다음 pull이 안전.
+ * - 1.5초 debounce: 빠른 연속 편집 시 한 번만 업로드.
+ * - cs.url 없거나 autoSync 꺼져있으면 no-op.
+ */
+let _settingsUploadTimer = null;
+function _queueSettingsCloudUpload() {
+  if (_settingsUploadTimer) clearTimeout(_settingsUploadTimer);
+  _settingsUploadTimer = setTimeout(() => {
+    _settingsUploadTimer = null;
+    try {
+      const cs = (typeof getCloudSettings === 'function') ? getCloudSettings() : null;
+      if (cs && cs.url && cs.autoSync !== false) {
+        uploadToCloud('전체백업_최신.json', buildFullBackupPayload(), true);
+      }
+    } catch {}
+  }, 1500);
+}
 function addFixedExpense() {
   const list = getFixedExpenses();
   list.push({ id: 'fx-' + Math.random().toString(36).slice(2, 8), name: '', amount: 0, category: '임대료', memo: '' });
   saveFixedExpenses(list);
   renderFixedExpenses();
   refreshMonthlyDistribution();
-}
-
-/**
- * 정직원 3인 + 4대보험 회사부담분을 고정비에 일괄 등록.
- * 같은 name이 이미 있으면 스킵. (매장 정책 2026-05-21 기준)
- */
-function addPayrollDefaults() {
-  const defaults = [
-    { name: '이정원 셰프 (월급)',   category: '인건비',   amount: 3610000, memo: '연 4,332만 / 월 환산, 4대보험' },
-    { name: '이용민 셰프 (월급)',   category: '인건비',   amount: 3750000, memo: '연 4,500만 / 월 환산, 외주→4대보험 전환' },
-    { name: '승현수 점장 (월급)',   category: '인건비',   amount: 4000000, memo: '월 400만 세전, 매월 발생주의 분개' },
-    { name: '4대보험 회사부담분',  category: '세금·공과', amount: 1136000, memo: '정직원 3인 월급 합 × 10% 추정' }
-  ];
-  const list = getFixedExpenses();
-  let added = 0, skipped = 0;
-  defaults.forEach(d => {
-    if (list.some(e => e.name === d.name)) { skipped++; return; }
-    list.push({ id: 'fx-' + Math.random().toString(36).slice(2, 8), ...d });
-    added++;
-  });
-  if (added > 0) {
-    saveFixedExpenses(list);
-    renderFixedExpenses();
-    refreshMonthlyDistribution();
-  }
-  const msg = added > 0
-    ? `정직원 + 4대보험 ${added}건 등록${skipped ? ` (${skipped}건은 이미 있음)` : ''}`
-    : '4개 항목 모두 이미 등록되어 있습니다';
-  toast(msg, added > 0 ? 'ok' : 'warn');
 }
 function deleteFixedExpense(i) {
   const list = getFixedExpenses();
@@ -3270,7 +3286,8 @@ function computeMonthlyData(month) {
   });
   const monthPL = sumSalesSupply - (sumPSupply + sumExtra + sumPayroll + sumFixedApplied);
   const payableVat = sumSalesVat - sumPVat;
-  const costRatios = computeCostRatios(dates.map(d => all[d]));
+  const fixedLaborForMonth = num(fixedResolved.appliedByCategory['인건비']);
+  const costRatios = computeCostRatios(dates.map(d => all[d]), { extraLabor: fixedLaborForMonth });
   return {
     month, dates, sumSales, sumSalesSupply, sumSalesVat,
     sumPTotal, sumPSupply, sumPVat, sumExtra, sumPayroll, sumDiscounts,
@@ -5431,7 +5448,9 @@ function renderReport() {
     </div>`;
 
   // 운영 KPI (식자재 원가율 · 인건비율 · Prime Cost)
-  const periodCostRatios = computeCostRatios(filtered);
+  // 고정비 인건비를 기간 안분해서 함께 반영 (월정산과 일관)
+  const fixedLaborForPeriod = computeFixedLaborForPeriod(filtered);
+  const periodCostRatios = computeCostRatios(filtered, { extraLabor: fixedLaborForPeriod });
   const costKpis = renderCostRatioCards(periodCostRatios, `${totalDays}일 합산`);
 
   // 환경 변수 (요일/공휴일 × 비/맑음 × 온도) 분석

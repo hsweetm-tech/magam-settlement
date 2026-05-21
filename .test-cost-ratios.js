@@ -97,4 +97,17 @@ check('7-b) null 섞임 → 에러 없이 0', cr.salesSupply === 0);
 cr = mod.computeCostRatios({ totals: { supply: 100000 } });
 check('8) 매입/급여 없음 → 분자 0', cr.foodCost === 0 && cr.laborTotal === 0 && cr.primeCostRatio === 0);
 
+// CASE 9: opts.extraLabor 옵션 (고정비 인건비)
+const baseRec = { totals: { supply: 10000000 }, purchaseRows: [{ category: '식자재', supply: 3000000 }], payrollRows: [{ amount: 500000 }] };
+cr = mod.computeCostRatios(baseRec, { extraLabor: 1200000 });
+check('9-a) extraLabor 적용', cr.extraLabor === 1200000);
+check('9-b) laborTotal = payroll + extra', cr.laborTotal === 500000 + 1200000);
+check('9-c) primeCost 포함', cr.primeCost === 3000000 + 500000 + 1200000);
+check('9-d) laborRatio = (500k+1200k)/10M = 17%', near(cr.laborRatio, 0.17));
+
+// CASE 10: opts 없으면 기존 동작 유지 (회귀 안전성)
+cr = mod.computeCostRatios(baseRec);
+check('10) opts 없음 → extraLabor=0', cr.extraLabor === 0);
+check('10) laborTotal payroll만', cr.laborTotal === 500000);
+
 if (!process.exitCode) console.log('\n전체 통과');
