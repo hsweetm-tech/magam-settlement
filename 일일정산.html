@@ -1783,10 +1783,6 @@ main {
               <button class="seg-btn" data-view="menu">메뉴믹스</button>
               <button class="seg-btn" data-view="heatmap">히트맵</button>
             </div>
-            <button class="btn btn-small" onclick="backfillWeatherAll()" title="강남역 과거 날씨를 모든 마감일에 채워넣기 (Open-Meteo)">
-              <svg class="icon" viewBox="0 0 24 24"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
-              날씨 가져오기
-            </button>
             <button class="btn btn-small" onclick="openGoalModal()" title="월 매출 목표 설정">
               <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
               목표설정
@@ -5468,9 +5464,9 @@ function renderWeatherAnalysisCard(records) {
   };
 
   const weatherNotice = a.hasWeatherCount === 0
-    ? `<div style="padding:14px;border:1px dashed var(--border);border-radius:8px;font-size:12px;color:var(--text-3);">날씨 데이터 없음 — 상단의 [날씨 가져오기] 버튼을 누르면 강남역 과거 날씨를 자동으로 채웁니다 (Open-Meteo, 키 불필요).</div>`
+    ? `<div style="padding:14px;border:1px dashed var(--border);border-radius:8px;font-size:12px;color:var(--text-3);">☁ 강남역 날씨를 백그라운드에서 받아오는 중… 잠시 후 자동으로 채워집니다 (Open-Meteo).</div>`
     : a.hasWeatherCount < a.totalCount
-      ? `<div style="font-size:11px;color:var(--text-3);margin-bottom:6px;">☁ 날씨 데이터 ${a.hasWeatherCount}/${a.totalCount}일 (나머지는 [날씨 가져오기] 버튼)</div>`
+      ? `<div style="font-size:11px;color:var(--text-3);margin-bottom:6px;">☁ 날씨 ${a.hasWeatherCount}/${a.totalCount}일 (나머지는 자동으로 채워지는 중)</div>`
       : `<div style="font-size:11px;color:var(--text-3);margin-bottom:6px;">☁ 모든 일자 날씨 데이터 적재 완료</div>`;
 
   const severeRows = a.severeDays.length
