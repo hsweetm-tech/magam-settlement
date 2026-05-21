@@ -3209,7 +3209,7 @@ function renderCostRatioCards(cr, subLabel) {
   const lLevel = _ratioLevel(laborPct, COST_RATIO_THRESHOLDS.labor);
   const pLevel = _ratioLevel(primePct, COST_RATIO_THRESHOLDS.prime);
   const statusText = (lv, tNorm) => lv === 'ok' ? '우수' : lv === 'normal' ? '양호' : lv === 'warn' ? '주의' : '위험';
-  const subFood = `식자재 ${(cr.foodOnlyRatio*100).toFixed(1)}% + 주류 ${(cr.beverageRatio*100).toFixed(1)}%`;
+  const subFood = `식자재+주류 ${fmt(Math.round(cr.foodCost))} <span style="color:var(--text-3);">(식 ${(cr.foodOnlyRatio*100).toFixed(1)}% + 주 ${(cr.beverageRatio*100).toFixed(1)}%)</span>`;
   return `
     <div style="margin-bottom: 24px;">
       <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">운영 KPI <span style="color:var(--text-3);font-weight:400;font-size:11px;margin-left:6px;">${escapeHtml(subLabel || '')}</span></div>
