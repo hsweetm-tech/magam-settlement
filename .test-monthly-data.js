@@ -108,10 +108,13 @@ check('5) row[0].date', d.dailyRows[0].date === '2026-05-18');
 check('5) row[0].discounts', d.dailyRows[0].discounts === 20000);
 check('5) row[0].pl', d.dailyRows[0].pl === 1000000 - 300000 - 50000 - 100000);
 
-// CASE 6: 데이터 없는 월
+// CASE 6: 마감 record 없는 월(미래) → 고정비만 자동반영된 빈 데이터 (사장님 요청 2026-05-21)
 mod.setSubtract(false);
 d = mod.computeMonthlyData('2026-06');
-check('6) 데이터 없음 → null', d === null);
+check('6) 데이터 없는 월 → 객체 반환', d !== null);
+check('6) 영업일 0', d.dates.length === 0);
+check('6) 매출 0', d.sumSales === 0);
+check('6) 빈 records라도 dailyRows=[]', Array.isArray(d.dailyRows) && d.dailyRows.length === 0);
 
 // CASE 7: month 미지정 → null
 d = mod.computeMonthlyData('');

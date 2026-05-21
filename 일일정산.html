@@ -4062,12 +4062,13 @@ function renderCostRatioCards(cr, subLabel) {
     </div>`;
 }
 
-/** 월정산 데이터 집계 — render/export 공용 */
+/** 월정산 데이터 집계 — render/export 공용
+ *  마감 record 없는 월(미래·미마감)도 고정비 자동반영을 반영해 손익 미리보기.
+ *  완전 빈 배열이면 for loop가 skip되고 모든 매출/매입 합은 0. 고정비만 적용. */
 function computeMonthlyData(month) {
   if (!month) return null;
   const all = getAllRecords();
   const dates = Object.keys(all).filter(d => d.startsWith(month)).sort();
-  if (!dates.length) return null;
   let sumSales = 0, sumSalesSupply = 0, sumSalesVat = 0;
   let sumPTotal = 0, sumPSupply = 0, sumPVat = 0, sumExtra = 0;
   let sumPayroll = 0, sumDiscounts = 0;
