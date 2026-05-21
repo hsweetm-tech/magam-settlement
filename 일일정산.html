@@ -1916,7 +1916,11 @@ main {
               <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               고정비 추가
             </button>
-            <div style="margin-left:auto;font-size:11px;color:var(--text-3);">예: 임대료 ₩3,000,000 · 관리비 ₩200,000 · 보험료 ₩150,000</div>
+            <button class="btn btn-small" onclick="addPayrollDefaults()" title="이정원·이용민·승현수 월급 + 4대보험 회사부담분 4개를 한번에 등록 (이미 있으면 스킵)">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              정직원 + 4대보험 일괄 등록
+            </button>
+            <div style="margin-left:auto;font-size:11px;color:var(--text-3);">정직원=고정비 · 알바=일일정산 급여 섹션 (분리)</div>
           </div>
         </div>
       </div>
@@ -2994,6 +2998,35 @@ function addFixedExpense() {
   saveFixedExpenses(list);
   renderFixedExpenses();
   refreshMonthlyDistribution();
+}
+
+/**
+ * 정직원 3인 + 4대보험 회사부담분을 고정비에 일괄 등록.
+ * 같은 name이 이미 있으면 스킵. (매장 정책 2026-05-21 기준)
+ */
+function addPayrollDefaults() {
+  const defaults = [
+    { name: '이정원 셰프 (월급)',   category: '인건비',   amount: 3610000, memo: '연 4,332만 / 월 환산, 4대보험' },
+    { name: '이용민 셰프 (월급)',   category: '인건비',   amount: 3750000, memo: '연 4,500만 / 월 환산, 외주→4대보험 전환' },
+    { name: '승현수 점장 (월급)',   category: '인건비',   amount: 4000000, memo: '월 400만 세전, 매월 발생주의 분개' },
+    { name: '4대보험 회사부담분',  category: '세금·공과', amount: 1136000, memo: '정직원 3인 월급 합 × 10% 추정' }
+  ];
+  const list = getFixedExpenses();
+  let added = 0, skipped = 0;
+  defaults.forEach(d => {
+    if (list.some(e => e.name === d.name)) { skipped++; return; }
+    list.push({ id: 'fx-' + Math.random().toString(36).slice(2, 8), ...d });
+    added++;
+  });
+  if (added > 0) {
+    saveFixedExpenses(list);
+    renderFixedExpenses();
+    refreshMonthlyDistribution();
+  }
+  const msg = added > 0
+    ? `정직원 + 4대보험 ${added}건 등록${skipped ? ` (${skipped}건은 이미 있음)` : ''}`
+    : '4개 항목 모두 이미 등록되어 있습니다';
+  toast(msg, added > 0 ? 'ok' : 'warn');
 }
 function deleteFixedExpense(i) {
   const list = getFixedExpenses();
