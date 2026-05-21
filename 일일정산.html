@@ -1904,14 +1904,42 @@ body.tab-summary main { grid-template-columns: 1fr; }
           <div id="proofResultContent" style="margin-top:20px;"></div>
         </div>
 
-        <!-- 설정 sub-panel: 고정비 설정 -->
+        <!-- 설정 sub-panel: 고정비 설정 (인건비 / 그 외 분리) -->
         <div class="msub-panel" id="msub-settings">
           <div class="msub-section-head">
-            <div class="msub-section-title">고정비 설정 (월 자동 반영)</div>
-            <div class="msub-section-note" id="fixedExpenseTotal">월 합계 ₩0</div>
+            <div class="msub-section-title">정직원 인건비 (월 자동 반영)</div>
+            <div class="msub-section-note" id="laborExpenseTotal">월 합계 ₩0</div>
           </div>
           <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
-            매월 정기 발생 비용(임대료·관리비·통신비·보험료 등) 1회 설정 → 모든 월 손익계산서에 자동 반영. 단, 해당 월에 같은 분류의 매입행이 1건이라도 있으면 <strong>매입행이 우선</strong>(설정값 무시) — 변동 시 매입·비용 섹션에서 그대로 입력하면 됨.
+            정직원 월급·4대보험 회사부담분 등 분류=<strong>인건비</strong>인 항목. 매월 손익계산서 인건비에 자동 합산. 알바는 일일정산 → 급여 섹션에서 별도 입력(payrollRows). 매입행에 인건비 카테고리가 있으면 그 달은 매입행 우선.
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>항목명</th>
+                  <th class="num-cell">월 금액 (원)</th>
+                  <th>메모</th>
+                  <th class="action-cell"></th>
+                </tr>
+              </thead>
+              <tbody id="laborExpenseTableBody"></tbody>
+            </table>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-small" onclick="addFixedExpense('인건비')">
+              <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              인건비 항목 추가
+            </button>
+            <div style="margin-left:auto;font-size:11px;color:var(--text-3);">예: 이정원 셰프 ₩3,610,000 · 4대보험 회사부담 ₩1,136,000</div>
+          </div>
+
+          <div class="msub-section-head" style="margin-top: 28px;">
+            <div class="msub-section-title">그 외 고정비 (월 자동 반영)</div>
+            <div class="msub-section-note" id="otherFixedExpenseTotal">월 합계 ₩0</div>
+          </div>
+          <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
+            임대료·관리비·통신비·보험료·기타 등 인건비 외 정기 비용. 매월 손익계산서 매입 카드의 "고정비 자동반영"에 합산. 매입행에 같은 분류가 있으면 그 달은 매입행 우선.
           </div>
           <div class="table-wrap">
             <table class="data-table">
@@ -1924,15 +1952,15 @@ body.tab-summary main { grid-template-columns: 1fr; }
                   <th class="action-cell"></th>
                 </tr>
               </thead>
-              <tbody id="fixedExpenseTableBody"></tbody>
+              <tbody id="otherFixedExpenseTableBody"></tbody>
             </table>
           </div>
           <div class="btn-row">
-            <button class="btn btn-small" onclick="addFixedExpense()">
+            <button class="btn btn-small" onclick="addFixedExpense('임대료')">
               <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               고정비 추가
             </button>
-            <div style="margin-left:auto;font-size:11px;color:var(--text-3);">정직원=고정비 · 알바=일일정산 급여 섹션 (분리)</div>
+            <div style="margin-left:auto;font-size:11px;color:var(--text-3);">예: 임대료 ₩6,000,000 · 캐치테이블 ₩2,200,000</div>
           </div>
         </div>
       </div>
@@ -3119,9 +3147,10 @@ function _queueCloudUpload() {
 }
 // 하위 호환: 기존 _queueSettingsCloudUpload 호출 그대로 살림 (별칭)
 const _queueSettingsCloudUpload = _queueCloudUpload;
-function addFixedExpense() {
+function addFixedExpense(defaultCategory) {
   const list = getFixedExpenses();
-  list.push({ id: 'fx-' + Math.random().toString(36).slice(2, 8), name: '', amount: 0, category: '임대료', memo: '' });
+  const cat = EXPENSE_CATEGORIES.includes(defaultCategory) ? defaultCategory : '임대료';
+  list.push({ id: 'fx-' + Math.random().toString(36).slice(2, 8), name: '', amount: 0, category: cat, memo: '' });
   saveFixedExpenses(list);
   renderFixedExpenses();
   refreshMonthlyDistribution();
@@ -3142,25 +3171,52 @@ function updateFixedExpense(i, key, value) {
   if (key === 'amount' || key === 'category') refreshMonthlyDistribution();
 }
 function renderFixedExpenses() {
-  const tbody = document.getElementById('fixedExpenseTableBody');
-  if (!tbody) return;
   const list = getFixedExpenses();
-  const totalEl = document.getElementById('fixedExpenseTotal');
-  const total = list.reduce((s, e) => s + num(e.amount), 0);
-  if (totalEl) totalEl.textContent = '월 합계 ' + fmt(total);
-  if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="5" style="padding:16px;text-align:center;color:var(--text-3);font-size:12px;">고정비를 추가하세요. 예: 임대료 ₩3,000,000 · 관리비 ₩200,000</td></tr>`;
-    return;
+  const laborTbody = document.getElementById('laborExpenseTableBody');
+  const otherTbody = document.getElementById('otherFixedExpenseTableBody');
+  const laborTotalEl = document.getElementById('laborExpenseTotal');
+  const otherTotalEl = document.getElementById('otherFixedExpenseTotal');
+
+  const laborSum = list.filter(e => e.category === '인건비').reduce((s, e) => s + num(e.amount), 0);
+  const otherSum = list.filter(e => e.category !== '인건비').reduce((s, e) => s + num(e.amount), 0);
+  if (laborTotalEl) laborTotalEl.textContent = '월 합계 ' + fmt(laborSum);
+  if (otherTotalEl) otherTotalEl.textContent = '월 합계 ' + fmt(otherSum);
+
+  // 인건비 표 (분류 컬럼 없음 — 항상 인건비)
+  if (laborTbody) {
+    const laborRows = list.map((e, i) => ({ e, i })).filter(x => x.e.category === '인건비');
+    if (!laborRows.length) {
+      laborTbody.innerHTML = `<tr><td colspan="4" style="padding:16px;text-align:center;color:var(--text-3);font-size:12px;">정직원 인건비 항목을 추가하세요. 예: 이정원 셰프 ₩3,610,000 · 4대보험 회사부담분 ₩1,136,000</td></tr>`;
+    } else {
+      laborTbody.innerHTML = laborRows.map(({ e, i }) => `
+        <tr>
+          <td><input value="${escapeHtml(e.name)}" placeholder="항목명 (예: 이정원 셰프 월급)" onchange="updateFixedExpense(${i},'name',this.value)"></td>
+          <td class="num-cell"><input type="number" class="num-cell" value="${e.amount||0}" onchange="updateFixedExpense(${i},'amount',this.value)"></td>
+          <td><input value="${escapeHtml(e.memo)}" placeholder="(메모)" onchange="updateFixedExpense(${i},'memo',this.value)"></td>
+          <td class="action-cell"><button class="delete-row" onclick="deleteFixedExpense(${i})">×</button></td>
+        </tr>
+      `).join('');
+    }
   }
-  tbody.innerHTML = list.map((e, i) => `
-    <tr>
-      <td><input value="${escapeHtml(e.name)}" placeholder="항목명 (예: 1층 임대료)" onchange="updateFixedExpense(${i},'name',this.value)"></td>
-      <td><select onchange="updateFixedExpense(${i},'category',this.value)">${EXPENSE_CATEGORIES.map(c => `<option ${e.category===c?'selected':''}>${c}</option>`).join('')}</select></td>
-      <td class="num-cell"><input type="number" class="num-cell" value="${e.amount||0}" onchange="updateFixedExpense(${i},'amount',this.value)"></td>
-      <td><input value="${escapeHtml(e.memo)}" placeholder="(메모)" onchange="updateFixedExpense(${i},'memo',this.value)"></td>
-      <td class="action-cell"><button class="delete-row" onclick="deleteFixedExpense(${i})">×</button></td>
-    </tr>
-  `).join('');
+
+  // 그 외 고정비 표
+  if (otherTbody) {
+    const otherRows = list.map((e, i) => ({ e, i })).filter(x => x.e.category !== '인건비');
+    if (!otherRows.length) {
+      otherTbody.innerHTML = `<tr><td colspan="5" style="padding:16px;text-align:center;color:var(--text-3);font-size:12px;">기타 고정비를 추가하세요. 예: 임대료 ₩6,000,000 · 관리비 ₩200,000 · 통신비 ₩100,000</td></tr>`;
+    } else {
+      const nonLaborCats = EXPENSE_CATEGORIES.filter(c => c !== '인건비');
+      otherTbody.innerHTML = otherRows.map(({ e, i }) => `
+        <tr>
+          <td><input value="${escapeHtml(e.name)}" placeholder="항목명 (예: 1층 임대료)" onchange="updateFixedExpense(${i},'name',this.value)"></td>
+          <td><select onchange="updateFixedExpense(${i},'category',this.value)">${nonLaborCats.map(c => `<option ${e.category===c?'selected':''}>${c}</option>`).join('')}</select></td>
+          <td class="num-cell"><input type="number" class="num-cell" value="${e.amount||0}" onchange="updateFixedExpense(${i},'amount',this.value)"></td>
+          <td><input value="${escapeHtml(e.memo)}" placeholder="(메모)" onchange="updateFixedExpense(${i},'memo',this.value)"></td>
+          <td class="action-cell"><button class="delete-row" onclick="deleteFixedExpense(${i})">×</button></td>
+        </tr>
+      `).join('');
+    }
+  }
 }
 
 /**
