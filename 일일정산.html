@@ -1428,15 +1428,7 @@ main {
         </button>
         <span class="date-status" id="dateStatus"></span>
       </div>
-      <button class="btn btn-small" onclick="loadFromFile()">
-        <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        불러오기
-      </button>
-      <button class="btn btn-small" onclick="exportAllData()">
-        <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-        백업
-      </button>
-      <button class="btn btn-small" id="cloudBtn" onclick="openCloudSettings()" title="클라우드 백업 설정">
+      <button class="btn btn-small" id="cloudBtn" onclick="openCloudSettings()" title="클라우드 백업 설정 · 수동 백업·복원">
         <svg class="icon" viewBox="0 0 24 24"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
         <span id="cloudBtnText">클라우드</span>
       </button>
@@ -2083,6 +2075,8 @@ main {
     <div class="modal-actions" style="margin-top: 20px;">
       <button class="btn btn-small btn-danger-ghost" onclick="disconnectCloud()">연결 해제</button>
       <div style="flex: 1;"></div>
+      <button class="btn btn-small" onclick="loadFromFile()" title="JSON 백업 파일에서 데이터 복원 (다른 PC에서 수동 옮길 때)">불러오기</button>
+      <button class="btn btn-small" onclick="exportAllData()" title="전체 데이터를 JSON 파일로 백업">백업 다운로드</button>
       <button class="btn btn-small" onclick="document.getElementById('cloudModal').classList.remove('active')">닫기</button>
       <button class="btn btn-small" onclick="pullFromCloud()">지금 동기화</button>
       <button class="btn btn-small" onclick="testCloudConnection()">연결 테스트</button>
