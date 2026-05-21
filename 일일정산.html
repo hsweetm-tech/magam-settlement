@@ -4190,6 +4190,26 @@ function computeMonthlyData(month) {
    - default 탭. 매일 앱 열면 가장 먼저 보임.
    ======================================================================== */
 
+// Feather Icons 스타일 단색 SVG (currentColor 상속)
+const _ICONS = {
+  alertTriangle: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  alertCircle: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>',
+  trendDown: '<polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/>',
+  trendUp: '<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>',
+  arrowDownCircle: '<circle cx="12" cy="12" r="10"/><polyline points="8 12 12 16 16 12"/><line x1="12" y1="8" x2="12" y2="16"/>',
+  arrowUpCircle: '<circle cx="12" cy="12" r="10"/><polyline points="16 12 12 8 8 12"/><line x1="12" y1="16" x2="12" y2="8"/>',
+  calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
+  cloudRain: '<line x1="16" y1="13" x2="16" y2="21"/><line x1="8" y1="13" x2="8" y2="21"/><line x1="12" y1="15" x2="12" y2="23"/><path d="M20 16.58A5 5 0 0 0 18 7h-1.26A8 8 0 1 0 4 15.25"/>',
+  thermometer: '<path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4 4 0 1 0 5 0z"/>',
+  dollar: '<line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>',
+  flame: '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>'
+};
+function _svgIcon(name, size = 16, stroke = 2) {
+  const path = _ICONS[name];
+  if (!path) return '';
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;">${path}</svg>`;
+}
+
 const CAPITAL_KEY = 'initial_capital_v1';
 function getCapitalSettings() {
   try { const r = localStorage.getItem(CAPITAL_KEY); return r ? JSON.parse(r) : null; }
@@ -4298,6 +4318,7 @@ function _detectAnomalies(monthStr) {
     if (overallCheck > 0 && recentCheck < overallCheck * 0.8) {
       alerts.push({
         level: 'warn',
+        icon: 'trendDown',
         title: '객단가 하락',
         detail: `최근 3일 평균 ${fmt(Math.round(recentCheck))} (전체 ${fmt(Math.round(overallCheck))} 대비 ${((recentCheck/overallCheck-1)*100).toFixed(1)}%)`
       });
@@ -4313,6 +4334,7 @@ function _detectAnomalies(monthStr) {
     if (bothLow && avg > 0) {
       alerts.push({
         level: 'danger',
+        icon: 'alertCircle',
         title: '매출 급락 2일 연속',
         detail: `최근 2일 ${last2.map(s=>fmt(Math.round(s))).join(' · ')} (평균 ${fmt(Math.round(avg))} 대비 -30% 이상)`
       });
@@ -4326,12 +4348,12 @@ function _detectAnomalies(monthStr) {
       const fcPct = md.costRatios.foodCostRatio * 100;
       const pcPct = md.costRatios.primeCostRatio * 100;
       if (fcPct > COST_RATIO_THRESHOLDS.food.danger) {
-        alerts.push({ level: 'danger', title: `식자재 원가율 ${fcPct.toFixed(1)}%`, detail: `목표 ≤${COST_RATIO_THRESHOLDS.food.warn}% · 한계치 ${COST_RATIO_THRESHOLDS.food.danger}% 초과` });
+        alerts.push({ level: 'danger', icon: 'flame', title: `식자재 원가율 ${fcPct.toFixed(1)}%`, detail: `목표 ≤${COST_RATIO_THRESHOLDS.food.warn}% · 한계치 ${COST_RATIO_THRESHOLDS.food.danger}% 초과` });
       } else if (fcPct > COST_RATIO_THRESHOLDS.food.warn) {
-        alerts.push({ level: 'warn', title: `식자재 원가율 ${fcPct.toFixed(1)}%`, detail: `목표 ≤${COST_RATIO_THRESHOLDS.food.warn}% 초과 — 추세 주의` });
+        alerts.push({ level: 'warn', icon: 'alertTriangle', title: `식자재 원가율 ${fcPct.toFixed(1)}%`, detail: `목표 ≤${COST_RATIO_THRESHOLDS.food.warn}% 초과 — 추세 주의` });
       }
       if (pcPct > COST_RATIO_THRESHOLDS.prime.danger) {
-        alerts.push({ level: 'danger', title: `Prime Cost ${pcPct.toFixed(1)}%`, detail: `목표 ≤${COST_RATIO_THRESHOLDS.prime.warn}% · 한계 ${COST_RATIO_THRESHOLDS.prime.danger}% 초과 — 흑자 어려움` });
+        alerts.push({ level: 'danger', icon: 'flame', title: `Prime Cost ${pcPct.toFixed(1)}%`, detail: `목표 ≤${COST_RATIO_THRESHOLDS.prime.warn}% · 한계 ${COST_RATIO_THRESHOLDS.prime.danger}% 초과 — 흑자 어려움` });
       }
     }
   } catch {}
@@ -4345,7 +4367,7 @@ function _detectAnomalies(monthStr) {
     const actual = num(e.actualCash);
     if (actual > 0 && Math.abs(actual - expected) > 5000) {
       const diff = actual - expected;
-      alerts.push({ level: 'warn', title: `${lastRec.date} 현금 시재 차이`, detail: `${diff > 0 ? '과잉' : '부족'} ${fmt(Math.abs(diff))} · 예상 ${fmt(expected)} vs 실제 ${fmt(actual)}` });
+      alerts.push({ level: 'warn', icon: 'dollar', title: `${lastRec.date} 현금 시재 차이`, detail: `${diff > 0 ? '과잉' : '부족'} ${fmt(Math.abs(diff))} · 예상 ${fmt(expected)} vs 실제 ${fmt(actual)}` });
     }
   }
 
@@ -4447,9 +4469,12 @@ function renderDashboard() {
       ${alerts.length === 0 ? `
         <div style="padding:14px;color:var(--text-3);font-size:12px;">객단가·매출·원가율·시재 모두 정상 범위.</div>
       ` : alerts.map(a => `
-        <div style="padding:10px 12px;background:${alertBg(a.level)};border-left:3px solid ${alertColor(a.level)};border-radius:6px;margin-bottom:6px;">
-          <div style="font-weight:600;font-size:13px;color:${alertColor(a.level)};">${escapeHtml(a.title)}</div>
-          <div style="font-size:12px;color:var(--text-2);margin-top:2px;">${a.detail}</div>
+        <div style="display:flex;gap:10px;padding:10px 12px;background:${alertBg(a.level)};border-left:3px solid ${alertColor(a.level)};border-radius:6px;margin-bottom:6px;">
+          <div style="color:${alertColor(a.level)};display:flex;align-items:flex-start;padding-top:1px;">${_svgIcon(a.icon || 'alertTriangle', 18)}</div>
+          <div style="flex:1;">
+            <div style="font-weight:600;font-size:13px;color:${alertColor(a.level)};">${escapeHtml(a.title)}</div>
+            <div style="font-size:12px;color:var(--text-2);margin-top:2px;">${a.detail}</div>
+          </div>
         </div>
       `).join('')}
     </div>
@@ -4463,13 +4488,13 @@ function renderDashboard() {
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <tbody>
           <tr style="background:var(--subtle);">
-            <td style="padding:8px 12px;font-weight:600;" colspan="3">들어옴 (Inflow)</td>
+            <td style="padding:8px 12px;font-weight:600;color:var(--green);" colspan="3"><span style="display:inline-flex;align-items:center;gap:6px;">${_svgIcon('arrowDownCircle', 14)} 들어옴 (Inflow)</span></td>
           </tr>
           <tr><td style="padding:6px 12px 6px 28px;">현금 매출 (POS)</td><td style="text-align:right;padding:6px 12px;font-family:JetBrains Mono,monospace;">${fmt(Math.round(cf.cashSalesIn))}</td><td style="width:60px;color:var(--text-3);font-size:11px;">즉시</td></tr>
           <tr><td style="padding:6px 12px 6px 28px;">카드 매출 (POS)</td><td style="text-align:right;padding:6px 12px;font-family:JetBrains Mono,monospace;color:var(--text-3);">${fmt(Math.round(cf.cardSalesIn))}</td><td style="width:60px;color:var(--text-3);font-size:11px;">익영업일</td></tr>
           <tr><td style="padding:6px 12px 6px 28px;">통장 입금</td><td style="text-align:right;padding:6px 12px;font-family:JetBrains Mono,monospace;">${fmt(Math.round(cf.bankIn))}</td><td></td></tr>
           <tr style="background:var(--subtle);">
-            <td style="padding:8px 12px;font-weight:600;" colspan="3">나감 (Outflow)</td>
+            <td style="padding:8px 12px;font-weight:600;color:var(--red);" colspan="3"><span style="display:inline-flex;align-items:center;gap:6px;">${_svgIcon('arrowUpCircle', 14)} 나감 (Outflow)</span></td>
           </tr>
           <tr><td style="padding:6px 12px 6px 28px;">현금 지출 (extras)</td><td style="text-align:right;padding:6px 12px;font-family:JetBrains Mono,monospace;color:var(--red);">-${fmt(Math.round(cf.cashExpenseOut))}</td><td></td></tr>
           <tr><td style="padding:6px 12px 6px 28px;">통장 출금</td><td style="text-align:right;padding:6px 12px;font-family:JetBrains Mono,monospace;color:var(--red);">-${fmt(Math.round(cf.bankOut))}</td><td></td></tr>
@@ -4543,7 +4568,150 @@ function renderDashboard() {
     `;
   }
 
-  container.innerHTML = paceHtml + capitalHtml + anomalyHtml + cashFlowHtml;
+  container.innerHTML = paceHtml + capitalHtml + anomalyHtml + cashFlowHtml + `<div id="weatherForecastSlot"></div>`;
+
+  // 주간 날씨 카드는 비동기 fetch
+  _renderWeeklyWeatherAsync();
+}
+
+/** 주간 날씨 카드 — 14일 forecast (오전/오후 분리, 1주 + 펼치면 다음주) */
+async function _renderWeeklyWeatherAsync() {
+  const slot = document.getElementById('weatherForecastSlot');
+  if (!slot) return;
+  slot.innerHTML = `
+    <div class="report-card" style="margin-bottom:16px;">
+      <div class="report-card-title">강남역 주간 날씨</div>
+      <div style="padding:14px;color:var(--text-3);font-size:12px;">예보 로딩 중…</div>
+    </div>`;
+  try {
+    const data = await _fetchWeeklyForecast(14);
+    slot.innerHTML = _weeklyWeatherCardHtml(data);
+  } catch (err) {
+    slot.innerHTML = `
+      <div class="report-card" style="margin-bottom:16px;">
+        <div class="report-card-title">강남역 주간 날씨</div>
+        <div style="padding:14px;color:var(--text-3);font-size:12px;">예보 로드 실패 (네트워크 확인)</div>
+      </div>`;
+  }
+}
+
+/** Open-Meteo 시간별 forecast (오전/오후 분할용 hourly) */
+async function _fetchWeeklyForecast(days) {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const end = new Date(today); end.setDate(end.getDate() + days - 1);
+  const startStr = today.toISOString().slice(0,10);
+  const endStr = end.toISOString().slice(0,10);
+  const url = `${OPEN_METEO_FORECAST}?latitude=${STORE_COORDS.lat}&longitude=${STORE_COORDS.lon}` +
+              `&hourly=temperature_2m,precipitation,weathercode` +
+              `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode` +
+              `&timezone=Asia/Seoul&start_date=${startStr}&end_date=${endStr}`;
+  const res = await fetch(url);
+  const j = await res.json();
+  if (!j.hourly || !j.hourly.time) throw new Error('no data');
+
+  // 일자별 + 오전(06~12)·오후(12~22) 집계
+  const byDate = {};
+  for (let i = 0; i < j.hourly.time.length; i++) {
+    const t = j.hourly.time[i];           // 'YYYY-MM-DDTHH:00'
+    const date = t.slice(0,10);
+    const hour = parseInt(t.slice(11,13));
+    const temp = j.hourly.temperature_2m[i];
+    const prcp = j.hourly.precipitation[i];
+    const code = j.hourly.weathercode[i];
+    if (!byDate[date]) byDate[date] = { date, am: [], pm: [] };
+    if (hour >= 6 && hour < 12) byDate[date].am.push({ hour, temp, prcp, code });
+    else if (hour >= 12 && hour < 22) byDate[date].pm.push({ hour, temp, prcp, code });
+  }
+  // 일별 평균/대표 weathercode
+  Object.keys(byDate).forEach(d => {
+    const o = byDate[d];
+    const summarize = (arr) => {
+      if (!arr.length) return null;
+      const codes = arr.map(x => x.code);
+      const codeMode = codes.sort((a,b) => codes.filter(c => c===b).length - codes.filter(c => c===a).length)[0];
+      const tMin = Math.min(...arr.map(x => x.temp));
+      const tMax = Math.max(...arr.map(x => x.temp));
+      const prcpSum = arr.reduce((s,x) => s + (x.prcp || 0), 0);
+      return { code: codeMode, tMin, tMax, prcpSum };
+    };
+    o.amSum = summarize(o.am);
+    o.pmSum = summarize(o.pm);
+  });
+  // daily totals 보강
+  const dailyByDate = {};
+  (j.daily.time || []).forEach((d, i) => {
+    dailyByDate[d] = {
+      tMax: j.daily.temperature_2m_max[i],
+      tMin: j.daily.temperature_2m_min[i],
+      prcp: j.daily.precipitation_sum[i],
+      code: j.daily.weathercode[i]
+    };
+  });
+  return {
+    days: Object.keys(byDate).sort().map(d => ({ ...byDate[d], daily: dailyByDate[d] }))
+  };
+}
+
+function _weeklyWeatherCardHtml(data) {
+  const wdNames = ['일','월','화','수','목','금','토'];
+  const renderDay = (d) => {
+    const date = new Date(d.date);
+    const w = date.getDay();
+    const wdCol = w === 0 ? 'var(--red)' : w === 6 ? 'var(--accent)' : 'var(--text-2)';
+    const am = d.amSum;
+    const pm = d.pmSum;
+    const amInfo = am ? getWeatherInfo(am.code) : null;
+    const pmInfo = pm ? getWeatherInfo(pm.code) : null;
+    const dailyInfo = d.daily ? getWeatherInfo(d.daily.code) : null;
+    const isToday = d.date === new Date().toISOString().slice(0,10);
+    return `
+      <div style="display:grid;grid-template-columns:60px 1fr 1fr 80px;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);align-items:center;font-size:12px;${isToday?'background:var(--subtle);':''}">
+        <div>
+          <div style="font-weight:600;font-size:13px;">${d.date.slice(5)}</div>
+          <div style="color:${wdCol};font-size:11px;">${wdNames[w]}${isToday ? ' · 오늘' : ''}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="color:var(--text-3);font-size:11px;width:24px;">오전</span>
+          ${am ? `
+            <span style="font-size:16px;">${amInfo.icon}</span>
+            <span>${amInfo.label}</span>
+            <span style="color:var(--text-3);">${am.tMin.toFixed(0)}~${am.tMax.toFixed(0)}°</span>
+            ${am.prcpSum >= 0.5 ? `<span style="color:var(--text-2);font-size:11px;">${am.prcpSum.toFixed(1)}mm</span>` : ''}
+          ` : '<span style="color:var(--text-3);">-</span>'}
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="color:var(--text-3);font-size:11px;width:24px;">오후</span>
+          ${pm ? `
+            <span style="font-size:16px;">${pmInfo.icon}</span>
+            <span>${pmInfo.label}</span>
+            <span style="color:var(--text-3);">${pm.tMin.toFixed(0)}~${pm.tMax.toFixed(0)}°</span>
+            ${pm.prcpSum >= 0.5 ? `<span style="color:var(--text-2);font-size:11px;">${pm.prcpSum.toFixed(1)}mm</span>` : ''}
+          ` : '<span style="color:var(--text-3);">-</span>'}
+        </div>
+        <div style="text-align:right;color:var(--text-3);font-size:11px;">
+          ${d.daily ? `일 최고 ${d.daily.tMax.toFixed(0)}°` : ''}
+        </div>
+      </div>`;
+  };
+
+  const week1 = data.days.slice(0, 7);
+  const week2 = data.days.slice(7, 14);
+
+  return `
+    <div class="report-card" style="margin-bottom:16px;">
+      <div class="report-card-title">강남역 주간 날씨 <span style="color:var(--text-3);font-weight:400;font-size:11px;margin-left:6px;">오전(06~12) / 오후(12~22)</span></div>
+      <div style="border-top:1px solid var(--border);">
+        ${week1.map(renderDay).join('')}
+      </div>
+      ${week2.length ? `
+        <details style="margin-top:0;">
+          <summary style="cursor:pointer;font-size:12px;color:var(--text-2);padding:10px 12px;border-top:1px solid var(--border);">다음 주 보기 (${week2.length}일)</summary>
+          <div>
+            ${week2.map(renderDay).join('')}
+          </div>
+        </details>
+      ` : ''}
+    </div>`;
 }
 
 function renderMonthlyReport(month) {
@@ -6964,17 +7132,17 @@ function renderWeatherAnalysisCard(records) {
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;margin-top:8px;">
         ${a.byDayType.length ? `
           <div>
-            <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-2);">요일 / 공휴일</div>
+            <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-2);display:flex;align-items:center;gap:6px;">${_svgIcon('calendar', 14)} 요일 / 공휴일</div>
             ${bars(a.byDayType)}
           </div>` : ''}
         ${a.byRain.length ? `
           <div>
-            <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-2);">강수 영향</div>
+            <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-2);display:flex;align-items:center;gap:6px;">${_svgIcon('cloudRain', 14)} 강수 영향</div>
             ${bars(a.byRain)}
           </div>` : ''}
         ${a.byTemp.length ? `
           <div>
-            <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-2);">기온 구간</div>
+            <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-2);display:flex;align-items:center;gap:6px;">${_svgIcon('thermometer', 14)} 기온 구간</div>
             ${bars(a.byTemp)}
           </div>` : ''}
       </div>
