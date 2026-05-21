@@ -2167,7 +2167,10 @@ const state = {
   extras: { actualCash: 0, openingCash: 0, expenses: 0, deposits: 0, discounts: 0, vatRate: 10, serviceRate: 0, memo: '' },
   issues: [],
   businessDate: new Date().toISOString().split('T')[0],
-  mapping: { type: null, raw: null }
+  mapping: { type: null, raw: null },
+  // 정리본 import 시 영수증 요약 totals 보존 (메뉴별 결제수단이 부정확할 수 있어
+  // 영수증 합계가 더 정확한 권위 값). null이면 method 합산 사용.
+  importedTotals: null
 };
 
 // 레스토랑 표준 비용분류 (앱에서 수정 가능)
@@ -4502,12 +4505,23 @@ function mergeJeongRecord(inc) {
 
 function computeTotals() {
   const posTotal = state.posRows.reduce((s, r) => s + (r.amount||0), 0);
-  const posCard = state.posRows.filter(r => r.method === '카드').reduce((s,r) => s + r.amount, 0);
-  const posCash = state.posRows.filter(r => r.method === '현금').reduce((s,r) => s + r.amount, 0);
-  const posEtc = state.posRows.filter(r => r.method !== '카드' && r.method !== '현금').reduce((s,r) => s + r.amount, 0);
+  const posCardByMethod = state.posRows.filter(r => r.method === '카드').reduce((s,r) => s + r.amount, 0);
+  const posCashByMethod = state.posRows.filter(r => r.method === '현금').reduce((s,r) => s + r.amount, 0);
+  const posEtcByMethod = state.posRows.filter(r => r.method !== '카드' && r.method !== '현금').reduce((s,r) => s + r.amount, 0);
   const cardTotal = state.cardRows.reduce((s, r) => s + (r.amount||0), 0);
   const vat = state.extras.vatRate > 0 ? posTotal * (state.extras.vatRate / 100) / (1 + state.extras.vatRate / 100) : 0;
-  return { posTotal, posCard, posCash, posEtc, cardTotal, vat, supply: posTotal - vat };
+  // 정리본 import 케이스: state.importedTotals.posCash/posCard가 정합(합=posTotal)되면 그걸 신뢰.
+  // (POS 일일마감 영수증엔 메뉴별 결제수단이 없어 method 합산이 부정확할 수 있음)
+  const it = state.importedTotals;
+  if (it && it.posCard != null && it.posCash != null) {
+    const itCard = Number(it.posCard) || 0;
+    const itCash = Number(it.posCash) || 0;
+    const itEtc  = Number(it.posEtc) || 0;
+    if (Math.abs((itCard + itCash + itEtc) - posTotal) <= 10) {
+      return { posTotal, posCard: itCard, posCash: itCash, posEtc: itEtc, cardTotal, vat, supply: posTotal - vat };
+    }
+  }
+  return { posTotal, posCard: posCardByMethod, posCash: posCashByMethod, posEtc: posEtcByMethod, cardTotal, vat, supply: posTotal - vat };
 }
 
 // computeTotals()의 레코드 버전: 마감 안 된/임포트된 레코드는 totals가 없을 수 있어
@@ -4521,8 +4535,9 @@ function computeTotalsFor(rec) {
   const computedPosCash = pos.filter(r => r.method === '현금').reduce((s, r) => s + amt(r), 0);
   const computedPosEtc = pos.filter(r => r.method !== '카드' && r.method !== '현금').reduce((s, r) => s + amt(r), 0);
   const cardTotal = card.reduce((s, r) => s + amt(r), 0);
-  // POS 일일정산내역 사진 import 케이스: posRows 없이 rec.totals가 권위 있음
   const tt = rec && rec.totals;
+
+  // POS 일일정산내역 사진 import 케이스: posRows 없이 rec.totals가 권위 있음
   if (tt && tt.posTotal != null && pos.length === 0) {
     const ttVat = tt.vat != null ? tt.vat : 0;
     return {
@@ -4535,6 +4550,31 @@ function computeTotalsFor(rec) {
       supply: tt.supply != null ? tt.supply : (tt.posTotal - ttVat)
     };
   }
+
+  // 정리본 import 케이스 (posRows + totals.posCash/posCard 둘 다 있음):
+  // POS 일일마감 영수증에는 결제수단 합계가 있지만 메뉴별 결제수단은 없음.
+  // → totals(영수증 요약, 정확) 와 posRows.method 합산이 다를 수 있음
+  // → totals의 (posCard+posCash+posEtc) 합이 posTotal과 ±10원 이내로 정합되면 totals 우선
+  // → posRows.method는 메뉴믹스 등 부수 통계에만 사용
+  if (tt && tt.posTotal != null && pos.length > 0
+      && tt.posCard != null && tt.posCash != null) {
+    const ttCard = Number(tt.posCard) || 0;
+    const ttCash = Number(tt.posCash) || 0;
+    const ttEtc  = Number(tt.posEtc) || 0;
+    const breakdownSum = ttCard + ttCash + ttEtc;
+    if (Math.abs(breakdownSum - tt.posTotal) <= 10
+        && Math.abs(tt.posTotal - computedPosTotal) <= 10) {
+      const ttVat = tt.vat != null ? tt.vat : 0;
+      return {
+        posTotal: tt.posTotal,
+        posCard: ttCard, posCash: ttCash, posEtc: ttEtc,
+        cardTotal,
+        vat: ttVat,
+        supply: tt.supply != null ? tt.supply : (tt.posTotal - ttVat)
+      };
+    }
+  }
+
   const vr = (rec && rec.extras && rec.extras.vatRate) || 0;
   const vat = vr > 0 ? computedPosTotal * (vr / 100) / (1 + vr / 100) : 0;
   return { posTotal: computedPosTotal, posCard: computedPosCard, posCash: computedPosCash, posEtc: computedPosEtc, cardTotal, vat, supply: computedPosTotal - vat };
@@ -4663,6 +4703,32 @@ function runValidation() {
         title: cashDiff > 0 ? `현금 과잉 ${fmt(Math.abs(cashDiff))}` : `현금 부족 ${fmt(Math.abs(cashDiff))}`,
         detail: `예상 <strong>${fmt(expectedCash)}</strong> &nbsp;=&nbsp; 이월 ${fmt(openingCash)} + 현금매출 ${fmt(t.posCash)} − 지출 ${fmt(state.extras.expenses)} − 입금 ${fmt(state.extras.deposits)}<br>실제 <strong>${fmt(actualCash)}</strong>`,
         action: '지출 영수증 누락이나 입금액 오기를 확인하세요'
+      });
+    }
+  }
+
+  // 4-B. 정리본 totals vs posRows method 합 불일치 (영수증 요약은 맞는데 메뉴별 method 추정이 어긋난 케이스)
+  if (state.importedTotals && state.posRows.length > 0) {
+    const it = state.importedTotals;
+    const methodCard = state.posRows.filter(r => r.method === '카드').reduce((s,r) => s + (r.amount||0), 0);
+    const methodCash = state.posRows.filter(r => r.method === '현금').reduce((s,r) => s + (r.amount||0), 0);
+    const methodEtc  = state.posRows.filter(r => r.method !== '카드' && r.method !== '현금').reduce((s,r) => s + (r.amount||0), 0);
+    const dCard = methodCard - (it.posCard || 0);
+    const dCash = methodCash - (it.posCash || 0);
+    const dEtc  = methodEtc  - (it.posEtc  || 0);
+    const maxDiff = Math.max(Math.abs(dCard), Math.abs(dCash), Math.abs(dEtc));
+    if (maxDiff > 10) {
+      issues.push({
+        level: 'warn',
+        title: '결제수단 분류 불일치 (영수증 요약 ≠ 메뉴 합)',
+        detail:
+          `정리본 영수증 요약(권위): 카드 <strong>${fmt(it.posCard||0)}</strong> · 현금 <strong>${fmt(it.posCash||0)}</strong> · 기타 <strong>${fmt(it.posEtc||0)}</strong><br>` +
+          `메뉴별 method 합산: 카드 ${fmt(methodCard)} · 현금 ${fmt(methodCash)} · 기타 ${fmt(methodEtc)}<br>` +
+          `차이: 카드 ${dCard>=0?'+':''}${fmt(dCard)} · 현금 ${dCash>=0?'+':''}${fmt(dCash)} · 기타 ${dEtc>=0?'+':''}${fmt(dEtc)}`,
+        action:
+          'POS 일일마감 영수증은 메뉴별 결제수단을 표시하지 않아 OCR 추정이 어긋날 수 있습니다. ' +
+          '시스템은 영수증 요약(권위)을 매출 KPI에 반영하므로 PnL은 정확합니다. ' +
+          '메뉴믹스의 카드/현금 분포가 정확하려면 일부 메뉴 행의 결제수단을 바꿔 합이 맞도록 수정하세요.'
       });
     }
   }
@@ -6066,6 +6132,8 @@ function reopenRecord(date) {
   state.payrollRows = r.payrollRows || [];
   state.bankRows = r.bankRows || [];
   state.extras = r.extras || state.extras;
+  // 정리본 import 후 method 합산이 부정확할 수 있어 totals를 권위 값으로 보존
+  state.importedTotals = (r.totals && r.totals.posCash != null && r.totals.posCard != null) ? r.totals : null;
   document.getElementById('businessDate').value = date;
 
   // Reset upload zones (closed records come from saved data, not new upload)
@@ -6106,13 +6174,14 @@ function deleteRecord(date) {
 }
 
 function saveDraft() {
-  const draft = { date: state.businessDate, posRows: state.posRows, cardRows: state.cardRows, purchaseRows: state.purchaseRows, payrollRows: state.payrollRows, bankRows: state.bankRows, extras: state.extras };
+  const draft = { date: state.businessDate, posRows: state.posRows, cardRows: state.cardRows, purchaseRows: state.purchaseRows, payrollRows: state.payrollRows, bankRows: state.bankRows, extras: state.extras, importedTotals: state.importedTotals };
   localStorage.setItem('draft_' + state.businessDate, JSON.stringify(draft));
 }
 
 function loadDraft() {
   const all = getAllRecords();
   if (all[state.businessDate]) { reopenRecord(state.businessDate); return; }
+  state.importedTotals = null;
   const raw = localStorage.getItem('draft_' + state.businessDate);
   if (!raw) {
     state.posRows = [];
@@ -6130,6 +6199,7 @@ function loadDraft() {
       state.payrollRows = d.payrollRows || [];
       state.bankRows = d.bankRows || [];
       state.extras = d.extras || state.extras;
+      state.importedTotals = d.importedTotals || null;
       // Sanitize: fix corrupted method values from older versions
       state.posRows.forEach(r => {
         if (!['카드','현금','간편결제','상품권'].includes(r.method)) {
