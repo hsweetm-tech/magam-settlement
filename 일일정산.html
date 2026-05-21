@@ -3480,6 +3480,11 @@ function computeMonthlyForecast(month, weatherForecast) {
   const actualExtra = monthData ? num(monthData.sumExtra) : 0;
   const actualFixedApplied = monthData ? num(monthData.sumFixedApplied) : 0;
   const actualOpProfit = monthData ? num(monthData.monthPL) : 0;
+  // 인건비 분해: 알바 + 고정비 인건비 자동반영 = 통합 인건비 (월정산 인건비 카드와 동일)
+  const actualFixedAppliedLabor = monthData && monthData.fixedExpensesResolved
+    ? num(monthData.fixedExpensesResolved.appliedByCategory['인건비']) : 0;
+  const actualFixedOtherApplied = actualFixedApplied - actualFixedAppliedLabor;
+  const actualLaborCombined = actualPayroll + actualFixedAppliedLabor;
 
   // 카테고리별 분해 (카드 sub에서 표시용)
   const foodSupplyActual = monthData ? num(monthData.bySupplyCategory['식자재']) : 0;
@@ -3517,6 +3522,7 @@ function computeMonthlyForecast(month, weatherForecast) {
     month, days, today: todayStr,
     actualSum, estimateSum, monthExpected, estSupply, estimateAddSupply,
     actualSalesSupply, actualPSupply, actualPayroll, actualExtra, actualFixedApplied,
+    actualFixedAppliedLabor, actualFixedOtherApplied, actualLaborCombined,
     actualOpProfit, actualTotalCost,
     estVariableCost, foodSupplyActual, beverageSupplyActual, estOtherPurchase,
     monthlyFixedLabor, monthlyFixedOther,
@@ -3643,7 +3649,7 @@ function _monthlyForecastCardHtml(data) {
         <div class="kpi-card">
           <div class="kpi-label">실제 발생 비용 (월 단위)</div>
           <div class="kpi-value" style="color:var(--text-2);">${fmtKRW(data.actualTotalCost)}</div>
-          <div class="kpi-delta flat">매입 ${fmtKRW(data.actualPSupply)} + 급여 ${fmtKRW(data.actualPayroll)} + 기타 ${fmtKRW(data.actualExtra)} + 고정 ${fmtKRW(data.actualFixedApplied)}</div>
+          <div class="kpi-delta flat">매입 ${fmtKRW(data.actualPSupply)} + 인건비 ${fmtKRW(data.actualLaborCombined)} + 기타비용 ${fmtKRW(data.actualExtra)} + 기타고정비 ${fmtKRW(data.actualFixedOtherApplied)}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">추정 매출 추가 (공급가)</div>
@@ -4063,24 +4069,36 @@ function renderMonthlyProfitContent(data) {
           <div class="m-card-value">${fmt(Math.round(sumSales))}</div>
           <div class="m-card-sub">공급가 ${fmt(Math.round(sumSalesSupply))}</div>
         </div>
+        ${(() => {
+          const appliedLabor = num(data.fixedExpensesResolved.appliedByCategory['인건비']);
+          const appliedOther = num(data.sumFixedApplied) - appliedLabor;  // 고정비 인건비 외 (임대료·관리비 등 자동반영)
+          const purchaseSupplyCombined = Math.round(sumPSupply + appliedOther);
+          const purchaseTotalCombined = Math.round(sumPTotal + appliedOther);
+          return `
         <div class="m-card">
-          <div class="m-card-label">매입·비용 (부가세 포함)</div>
-          <div class="m-card-value">${fmt(Math.round(sumPTotal + sumExtra))}</div>
+          <div class="m-card-label">매입 + 고정비 (부가세 포함)</div>
+          <div class="m-card-value">${fmt(purchaseTotalCombined)}</div>
           <div class="m-card-sub">
-            과세 ${fmt(Math.round(data.sumTaxableTotal))} (공급가 ${fmt(Math.round(data.sumTaxableSupply))} + VAT ${fmt(Math.round(data.sumTaxableVat))})<br>
-            면세 ${fmt(Math.round(data.sumExemptTotal))} · 기타비용 ${fmt(Math.round(sumExtra))}
+            매입행 ${fmt(Math.round(sumPTotal))} (공급가 ${fmt(Math.round(sumPSupply))} + VAT ${fmt(Math.round(sumPVat))})<br>
+            과세 ${fmt(Math.round(data.sumTaxableTotal))} · 면세 ${fmt(Math.round(data.sumExemptTotal))}${appliedOther > 0 ? ` · 고정비 자동반영 ${fmt(Math.round(appliedOther))}` : ''}
           </div>
         </div>
         <div class="m-card">
           <div class="m-card-label">인건비</div>
           <div class="m-card-value">${fmt(Math.round(data.costRatios.laborTotal))}</div>
-          <div class="m-card-sub">정직원 ${fmt(Math.round(data.costRatios.laborTotal - sumPayroll))} + 알바 ${fmt(Math.round(sumPayroll))}</div>
+          <div class="m-card-sub">정직원(고정비) ${fmt(Math.round(data.costRatios.laborTotal - sumPayroll))} + 알바 ${fmt(Math.round(sumPayroll))}</div>
+        </div>
+        <div class="m-card">
+          <div class="m-card-label">기타비용</div>
+          <div class="m-card-value">${fmt(Math.round(sumExtra))}</div>
+          <div class="m-card-sub">일일 현금 지출(extras.expenses)</div>
         </div>
         <div class="m-card">
           <div class="m-card-label">월 손익 (공급가 기준)</div>
           <div class="m-card-value" style="color: ${plColor};">${fmt(Math.round(monthPL))}</div>
-          <div class="m-card-sub">매출공급가 − 매입공급가 − 기타비용 − 인건비 − 고정비</div>
-        </div>
+          <div class="m-card-sub">매출공급가 ${fmt(Math.round(sumSalesSupply))} − 매입+고정비 ${fmt(purchaseSupplyCombined)} − 인건비 ${fmt(Math.round(data.costRatios.laborTotal))} − 기타비용 ${fmt(Math.round(sumExtra))}</div>
+        </div>`;
+        })()}
         <div class="m-card">
           <div class="m-card-label">납부세액 (추정)</div>
           <div class="m-card-value">${fmt(Math.round(payableVat))}</div>
