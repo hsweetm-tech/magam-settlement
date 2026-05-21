@@ -174,13 +174,21 @@ check('12) 표본 부족 → 자동 outlier 없음', !out4.set.has('2026-05-15')
 
 // computeMonthlyForecast 통합 — module 다시 재구성 (getAllRecords/computeMonthlyForecast 포함)
 const monthForecastFn = grab(/function computeMonthlyForecast[\s\S]*?\n\}/, 'computeMonthlyForecast');
+const purchaseFn = grab(/function computePurchaseFromRec[\s\S]*?\n\}/, 'computePurchaseFromRec');
+const resolveFx = grab(/function resolveFixedExpensesForMonth[\s\S]*?\n\}/, 'resolveFixedExpensesForMonth');
+const distFn = grab(/function computeMonthlyDistribution[\s\S]*?\n\}/, 'computeMonthlyDistribution');
+const monthDataFn = grab(/function computeMonthlyData[\s\S]*?\n\}/, 'computeMonthlyData');
 
 const src2 = `
   let _all = {};
   let _fixedExpenses = [];
+  let _partners = [];
+  let _subtract = false;
   function getAllRecords() { return _all; }
   function getFixedExpenses() { return _fixedExpenses; }
-  function computeTotalsFor(rec) { return rec.totals || { supply: 0, posTotal: 0 }; }
+  function getPartners() { return _partners; }
+  function getDistSubtractDiscounts() { return _subtract; }
+  function computeTotalsFor(rec) { return rec.totals || { supply: 0, posTotal: 0, vat: 0 }; }
   ${numFn}
   ${holConst}
   ${wxConst}
@@ -197,6 +205,10 @@ const src2 = `
   ${detectOutliers}
   ${wdBaseline}
   ${computeForecast}
+  ${purchaseFn}
+  ${resolveFx}
+  ${distFn}
+  ${monthDataFn}
   ${monthForecastFn}
   return {
     computeMonthlyForecast,
@@ -239,9 +251,10 @@ check('15) 변동비 식자재 200,000', m.foodSupplyActual === 200000);
 check('15) 변동비 주류 50,000', m.beverageSupplyActual === 50000);
 check('15) 변동비 합 250,000 (임대료 제외)', m.estVariableCost === 250000);
 
-// CASE 16: 영업이익 = 매출공급가 - 실제변동비 - 인건비 - 기타고정비
-const expectedProfit = m.estSupply - 250000 - 10000000 - 3000000;
-check('16) 영업이익 계산', m.estOpProfit === expectedProfit);
+// CASE 16: 영업이익 = 월정산 실제 영업이익 + 추정 매출 추가분
+check('16) 영업이익 = actualOpProfit + estimateAddSupply',
+  m.estOpProfit === m.actualOpProfit + m.estimateAddSupply);
+check('16) actualOpProfit은 monthData.monthPL과 동일', typeof m.actualOpProfit === 'number');
 
 // CASE 14: 잘못된 month → null 안전
 check('14) 잘못된 month', mod2.computeMonthlyForecast('not-a-month', []) === null);

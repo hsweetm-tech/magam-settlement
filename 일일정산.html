@@ -146,6 +146,12 @@ main {
   .sidebar { position: static !important; }
 }
 
+/* 집계 탭(마감내역/리포트/손익추정/월정산)에선 헤더 날짜 피커 + 사이드바 숨기고 메인 풀폭 */
+body.tab-summary .date-picker { display: none; }
+body.tab-summary header .btn-danger-ghost { display: none; }  /* 일일 입력값 초기화도 함께 숨김 */
+body.tab-summary aside.sidebar { display: none; }
+body.tab-summary main { grid-template-columns: 1fr; }
+
 /* ===== TABS ===== */
 .tabs {
   display: flex;
@@ -2502,6 +2508,9 @@ function init() {
   // Cloud button initial state
   updateCloudBtn();
 
+  // 기본 탭(input) → 사이드바 + 날짜 피커 노출
+  document.body.classList.add('tab-daily');
+
   // Auto-sync from cloud on app start (if connected and enabled)
   const cs = getCloudSettings();
   if (cs.url && cs.autoSync !== false) {
@@ -2513,6 +2522,10 @@ function init() {
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + name));
+  // 일일 작업 탭(input/validate)에서만 헤더 날짜 피커 + 사이드바(총매출/일손익/정산체크) 노출
+  const isDailyTab = (name === 'input' || name === 'validate');
+  document.body.classList.toggle('tab-daily', isDailyTab);
+  document.body.classList.toggle('tab-summary', !isDailyTab);
   if (name === 'history') renderHistory();
   if (name === 'validate') { runValidation(); renderHourly(); renderMenuTop(); }
   if (name === 'report') {
@@ -3443,34 +3456,40 @@ function computeMonthlyForecast(month, weatherForecast) {
   const monthExpected = actualSum + estimateSum;
   const estSupply = Math.round(monthExpected / 1.1);
 
-  // 변동비: 그 달 실제 발생한 식자재+주류 매입공급가만 (미래 추정 안 함, 보수적)
-  // 사장님 요청 (2026-05-21): 오픈 초기 재고 비축 등으로 원가율이 비정상이라
-  // 추정 매출 × 원가율 곱하지 말고 실비까지만.
-  let actualVariableCost = 0;
-  let foodSupplyActual = 0, beverageSupplyActual = 0;
-  for (let dt2 = new Date(firstDay); dt2 <= lastDay; dt2.setDate(dt2.getDate() + 1)) {
-    const ds = new Date(dt2).toISOString().slice(0,10);
-    const rec = all[ds];
-    if (rec && Array.isArray(rec.purchaseRows)) {
-      rec.purchaseRows.forEach(p => {
-        const s = num(p.supply);
-        if (p.category === '식자재') { foodSupplyActual += s; actualVariableCost += s; }
-        else if (p.category === '주류/음료') { beverageSupplyActual += s; actualVariableCost += s; }
-      });
-    }
-  }
-  const estVariableCost = actualVariableCost;
+  // 그 달 실제 발생 손익을 월정산과 동일하게 사용 (일관성 보장)
+  // → 매입(모든 카테고리) + payroll(알바) + 기타비용 + 고정비 자동반영 모두 차감된 monthPL
+  const monthData = computeMonthlyData(month);
+  const actualSalesSupply = monthData ? num(monthData.sumSalesSupply) : 0;
+  const actualPSupply = monthData ? num(monthData.sumPSupply) : 0;
+  const actualPayroll = monthData ? num(monthData.sumPayroll) : 0;
+  const actualExtra = monthData ? num(monthData.sumExtra) : 0;
+  const actualFixedApplied = monthData ? num(monthData.sumFixedApplied) : 0;
+  const actualOpProfit = monthData ? num(monthData.monthPL) : 0;
 
-  // 학습 원가율은 참고용으로만 (footnote에 표시)
+  // 카테고리별 분해 (카드 sub에서 표시용)
+  const foodSupplyActual = monthData ? num(monthData.bySupplyCategory['식자재']) : 0;
+  const beverageSupplyActual = monthData ? num(monthData.bySupplyCategory['주류/음료']) : 0;
+
+  // 추정 매출 추가분 (공급가) — 변동비 비례 추가 안 함 (사장님 요청 "실비까지만")
+  const estimateAddSupply = Math.round(estimateSum / 1.1);
+
+  // 손익 추정 = 월정산 실제 영업이익 + 추정 추가 매출 공급가
+  const estOpProfit = actualOpProfit + estimateAddSupply;
+
+  // 총 비용 (참고 표시용)
+  const actualTotalCost = actualPSupply + actualExtra + actualPayroll + actualFixedApplied;
+  const estVariableCost = foodSupplyActual + beverageSupplyActual; // 변동비 = 실제 식자재+주류만
+  const estOtherPurchase = actualPSupply - estVariableCost; // 그 외 매입 (공과금·통신비 등 매입행 입력분)
+
+  // 학습 원가율은 참고용
   const trainOut = trainRecords.filter(r => !outliers.set.has(r.date));
   const ratios = computeCostRatios(trainOut);
 
-  // 인건비·고정비는 월 전액
+  // 고정비 표시값 (월 전액 — actualFixedApplied 안에 이미 포함됐을 수 있음)
   const fixedExp = getFixedExpenses();
   const monthlyFixedLabor = fixedExp.filter(e => e.category === '인건비').reduce((s, e) => s + num(e.amount), 0);
   const monthlyFixedOther = fixedExp.filter(e => e.category !== '인건비').reduce((s, e) => s + num(e.amount), 0);
 
-  const estOpProfit = estSupply - estVariableCost - monthlyFixedLabor - monthlyFixedOther;
   const opMarginPct = estSupply > 0 ? (estOpProfit / estSupply * 100) : 0;
 
   // 추가 메타
@@ -3481,8 +3500,10 @@ function computeMonthlyForecast(month, weatherForecast) {
 
   return {
     month, days, today: todayStr,
-    actualSum, estimateSum, monthExpected, estSupply,
-    estVariableCost, foodSupplyActual, beverageSupplyActual,
+    actualSum, estimateSum, monthExpected, estSupply, estimateAddSupply,
+    actualSalesSupply, actualPSupply, actualPayroll, actualExtra, actualFixedApplied,
+    actualOpProfit, actualTotalCost,
+    estVariableCost, foodSupplyActual, beverageSupplyActual, estOtherPurchase,
     monthlyFixedLabor, monthlyFixedOther,
     estOpProfit, opMarginPct,
     actualDays, estimateDays, closedDays, missingDays,
@@ -3605,19 +3626,19 @@ function _monthlyForecastCardHtml(data) {
           <div class="kpi-delta flat">실제 ${fmtKRW(data.actualSum)} + 추정 ${fmtKRW(data.estimateSum)}</div>
         </div>
         <div class="kpi-card">
-          <div class="kpi-label">변동비 (실제 발생 매입)</div>
-          <div class="kpi-value" style="color:var(--text-2);">${fmtKRW(data.estVariableCost)}</div>
-          <div class="kpi-delta flat">식자재 ${fmtKRW(data.foodSupplyActual)} + 주류 ${fmtKRW(data.beverageSupplyActual)}</div>
+          <div class="kpi-label">실제 발생 비용 (월 단위)</div>
+          <div class="kpi-value" style="color:var(--text-2);">${fmtKRW(data.actualTotalCost)}</div>
+          <div class="kpi-delta flat">매입 ${fmtKRW(data.actualPSupply)} + 급여 ${fmtKRW(data.actualPayroll)} + 기타 ${fmtKRW(data.actualExtra)} + 고정 ${fmtKRW(data.actualFixedApplied)}</div>
         </div>
         <div class="kpi-card">
-          <div class="kpi-label">고정비 (월 전액)</div>
-          <div class="kpi-value" style="color:var(--text-2);">${fmtKRW(data.monthlyFixedLabor + data.monthlyFixedOther)}</div>
-          <div class="kpi-delta flat">인건 ${fmtKRW(data.monthlyFixedLabor)} · 기타 ${fmtKRW(data.monthlyFixedOther)}</div>
+          <div class="kpi-label">추정 매출 추가 (공급가)</div>
+          <div class="kpi-value" style="color:var(--text-2);">${fmtKRW(data.estimateAddSupply)}</div>
+          <div class="kpi-delta flat">잔여 ${data.estimateDays}일 추가 매출 · 변동비 추가 없음</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">예상 영업이익 (간이)</div>
           <div class="kpi-value" style="color:${profitColor};">${fmtKRW(data.estOpProfit)}</div>
-          <div class="kpi-delta flat">마진 ${data.opMarginPct.toFixed(1)}%</div>
+          <div class="kpi-delta flat">실제 ${fmtKRW(data.actualOpProfit)} + 추정 ${fmtKRW(data.estimateAddSupply)}</div>
         </div>
       </div>
 
@@ -3640,12 +3661,14 @@ function _monthlyForecastCardHtml(data) {
       </details>
 
       <div style="font-size:11px;color:var(--text-3);margin-top:10px;line-height:1.6;">
-        <strong>추정 가정:</strong>
-        실제 매출 ${data.actualDays}일 + 추정 ${data.estimateDays}일 + 휴무 ${data.closedDays}일 + 미마감 ${data.missingDays}일 ·
-        요일별 평균 baseline (표본 ${baseSamples}일${outArr.length ? `, 이벤트성 ${outArr.length}일 제외` : ''}) ·
-        비/눈 ${Math.round((1-FORECAST_RAIN_MULT)*100)}%↓ · 공휴일 ${Math.round((1-FORECAST_HOLIDAY_MULT)*100)}%↓ · 매주 화요일 휴무 ·
-        <strong>변동비 = 실제 발생 매입만</strong>(추정 매출 × 원가율 X, 오픈 초기 재고 비축으로 학습 원가율 ${((data.ratios.foodCostRatio+data.ratios.beverageRatio)*100).toFixed(1)}%이 비정상이라 미적용) ·
-        인건비 ${fmtKRW(data.monthlyFixedLabor)} + 기타 고정비 ${fmtKRW(data.monthlyFixedOther)} (월 전액 차감).
+        <strong>추정 방식:</strong>
+        예상 영업이익 = <strong>월정산 실제 영업이익</strong> (${fmtKRW(data.actualOpProfit)}) + 잔여기간 추정 매출 공급가 (${fmtKRW(data.estimateAddSupply)}).
+        실제 비용은 월정산과 동일 — 매입(모든 카테고리) + 급여 + 기타비용 + 고정비 자동반영.
+        추정 매출 추가분에는 변동비 비례 추가하지 않음 (사장님 요청 "실비까지만").
+        <br>
+        <strong>추정 일자:</strong> 실제 ${data.actualDays}일 + 추정 ${data.estimateDays}일 + 휴무 ${data.closedDays}일 + 미마감 ${data.missingDays}일 ·
+        baseline 표본 ${baseSamples}일${outArr.length ? ` (이벤트성 ${outArr.length}일 제외)` : ''} ·
+        비/눈 ${Math.round((1-FORECAST_RAIN_MULT)*100)}%↓ · 공휴일 ${Math.round((1-FORECAST_HOLIDAY_MULT)*100)}%↓ · 매주 화요일 휴무.
         영업외손익·법인세·부가세 미반영.
       </div>
     </div>`;
@@ -4012,8 +4035,8 @@ function renderMonthlyProfitContent(data) {
         </div>
         <div class="m-card">
           <div class="m-card-label">인건비</div>
-          <div class="m-card-value">${fmt(Math.round(sumPayroll))}</div>
-          <div class="m-card-sub">면세 · 손익에 차감</div>
+          <div class="m-card-value">${fmt(Math.round(data.costRatios.laborTotal))}</div>
+          <div class="m-card-sub">정직원 ${fmt(Math.round(data.costRatios.laborTotal - sumPayroll))} + 알바 ${fmt(Math.round(sumPayroll))}</div>
         </div>
         <div class="m-card">
           <div class="m-card-label">월 손익 (공급가 기준)</div>
