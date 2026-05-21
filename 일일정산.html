@@ -2423,7 +2423,7 @@ async function backfillWeatherAll(opts = {}) {
     return;
   }
   _weatherBackfillRunning = true;
-  if (!silent) toast(`☁ 강남역 날씨 ${need.length}일치 가져오는 중...`, '');
+  if (!silent) toast(`강남역 날씨 ${need.length}일치 가져오는 중...`, '');
   try {
     const start = need[0], end = need[need.length - 1];
     const list = await fetchWeatherForRange(start, end);
@@ -3671,7 +3671,7 @@ async function _fetchForecastWeatherForMonth(month) {
 async function renderMonthlyForecast(month) {
   const container = document.getElementById('forecastContent');
   if (!container || !month) return;
-  container.innerHTML = `<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">☁ 강남역 날씨 예보 + baseline 계산 중…</div>`;
+  container.innerHTML = `<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">강남역 날씨 예보 + baseline 계산 중…</div>`;
   const wx = await _fetchForecastWeatherForMonth(month);
   const data = computeMonthlyForecast(month, wx);
   if (!data) {
@@ -3738,7 +3738,7 @@ function _monthlyForecastCardHtml(data) {
   const manualSet = data.outliers.manual || new Set();
   const outlierBox = outArr.length ? `
     <div style="margin-top:10px;padding:10px 12px;background:var(--orange-bg, var(--subtle));border:1px solid var(--orange);border-radius:8px;font-size:12px;">
-      <div style="font-weight:600;color:var(--orange);margin-bottom:4px;">⚠ baseline에서 제외된 이벤트성 매출 ${outArr.length}일</div>
+      <div style="font-weight:600;color:var(--orange);margin-bottom:4px;">baseline 제외된 이벤트성 매출 ${outArr.length}일</div>
       <div style="color:var(--text-2);">${outArr.map(d => {
         const isManual = manualSet.has(d);
         return `${d}${isManual ? ' (수동)' : ` (median × ${FORECAST_OUTLIER_MULT} 초과)`}`;
@@ -3863,7 +3863,7 @@ function renderForecastPlaceholder(historicalRecords) {
     <div class="report-card" style="margin-bottom:16px;" id="forecastCardContainer">
       <div class="report-card-title">손익 추정 <span style="color:var(--text-3);font-weight:400;font-size:11px;margin-left:6px;">미래 매출·비용·영업이익 예측</span></div>
       <div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">
-        ☁ 강남역 날씨 예보 + 과거 데이터로 추정 중…
+        강남역 날씨 예보 + 과거 데이터로 추정 중…
       </div>
     </div>`;
 }
@@ -3954,7 +3954,7 @@ function _forecastCardHtml(data, currentDays, defaultDays) {
   const manualSet = data.outliers.manual || new Set();
   const outlierBox = outArr.length ? `
     <div style="margin-top:10px;padding:10px 12px;background:var(--orange-bg, var(--subtle));border:1px solid var(--orange);border-radius:8px;font-size:12px;">
-      <div style="font-weight:600;color:var(--orange);margin-bottom:4px;">⚠ baseline에서 제외된 이벤트성 매출 ${outArr.length}일</div>
+      <div style="font-weight:600;color:var(--orange);margin-bottom:4px;">baseline 제외된 이벤트성 매출 ${outArr.length}일</div>
       <div style="color:var(--text-2);">${outArr.map(d => {
         const isManual = manualSet.has(d);
         return `${d}${isManual ? ' (수동)' : ` (median × ${FORECAST_OUTLIER_MULT} = ${fmtKRW(data.outliers.threshold)} 초과)`}`;
@@ -4298,7 +4298,6 @@ function _detectAnomalies(monthStr) {
     if (overallCheck > 0 && recentCheck < overallCheck * 0.8) {
       alerts.push({
         level: 'warn',
-        icon: '📉',
         title: '객단가 하락',
         detail: `최근 3일 평균 ${fmt(Math.round(recentCheck))} (전체 ${fmt(Math.round(overallCheck))} 대비 ${((recentCheck/overallCheck-1)*100).toFixed(1)}%)`
       });
@@ -4314,7 +4313,6 @@ function _detectAnomalies(monthStr) {
     if (bothLow && avg > 0) {
       alerts.push({
         level: 'danger',
-        icon: '⚠️',
         title: '매출 급락 2일 연속',
         detail: `최근 2일 ${last2.map(s=>fmt(Math.round(s))).join(' · ')} (평균 ${fmt(Math.round(avg))} 대비 -30% 이상)`
       });
@@ -4328,12 +4326,12 @@ function _detectAnomalies(monthStr) {
       const fcPct = md.costRatios.foodCostRatio * 100;
       const pcPct = md.costRatios.primeCostRatio * 100;
       if (fcPct > COST_RATIO_THRESHOLDS.food.danger) {
-        alerts.push({ level: 'danger', icon: '🔥', title: `식자재 원가율 ${fcPct.toFixed(1)}%`, detail: `목표 ≤${COST_RATIO_THRESHOLDS.food.warn}% · 한계치 ${COST_RATIO_THRESHOLDS.food.danger}% 초과` });
+        alerts.push({ level: 'danger', title: `식자재 원가율 ${fcPct.toFixed(1)}%`, detail: `목표 ≤${COST_RATIO_THRESHOLDS.food.warn}% · 한계치 ${COST_RATIO_THRESHOLDS.food.danger}% 초과` });
       } else if (fcPct > COST_RATIO_THRESHOLDS.food.warn) {
-        alerts.push({ level: 'warn', icon: '🟡', title: `식자재 원가율 ${fcPct.toFixed(1)}%`, detail: `목표 ≤${COST_RATIO_THRESHOLDS.food.warn}% 초과 — 추세 주의` });
+        alerts.push({ level: 'warn', title: `식자재 원가율 ${fcPct.toFixed(1)}%`, detail: `목표 ≤${COST_RATIO_THRESHOLDS.food.warn}% 초과 — 추세 주의` });
       }
       if (pcPct > COST_RATIO_THRESHOLDS.prime.danger) {
-        alerts.push({ level: 'danger', icon: '🔥', title: `Prime Cost ${pcPct.toFixed(1)}%`, detail: `목표 ≤${COST_RATIO_THRESHOLDS.prime.warn}% · 한계 ${COST_RATIO_THRESHOLDS.prime.danger}% 초과 — 흑자 어려움` });
+        alerts.push({ level: 'danger', title: `Prime Cost ${pcPct.toFixed(1)}%`, detail: `목표 ≤${COST_RATIO_THRESHOLDS.prime.warn}% · 한계 ${COST_RATIO_THRESHOLDS.prime.danger}% 초과 — 흑자 어려움` });
       }
     }
   } catch {}
@@ -4347,7 +4345,7 @@ function _detectAnomalies(monthStr) {
     const actual = num(e.actualCash);
     if (actual > 0 && Math.abs(actual - expected) > 5000) {
       const diff = actual - expected;
-      alerts.push({ level: 'warn', icon: '💵', title: `${lastRec.date} 현금 시재 차이`, detail: `${diff > 0 ? '과잉' : '부족'} ${fmt(Math.abs(diff))} · 예상 ${fmt(expected)} vs 실제 ${fmt(actual)}` });
+      alerts.push({ level: 'warn', title: `${lastRec.date} 현금 시재 차이`, detail: `${diff > 0 ? '과잉' : '부족'} ${fmt(Math.abs(diff))} · 예상 ${fmt(expected)} vs 실제 ${fmt(actual)}` });
     }
   }
 
@@ -4447,14 +4445,11 @@ function renderDashboard() {
     <div class="report-card" style="margin-bottom:16px;">
       <div class="report-card-title">이상 신호 ${alerts.length > 0 ? `<span style="color:var(--red);font-weight:600;margin-left:6px;">${alerts.length}건</span>` : `<span style="color:var(--green);font-weight:400;font-size:11px;margin-left:6px;">정상 (최근 ${samples}일 분석)</span>`}</div>
       ${alerts.length === 0 ? `
-        <div style="padding:14px;color:var(--text-3);font-size:12px;">✓ 객단가·매출·원가율·시재 모두 정상 범위. 계속 좋습니다.</div>
+        <div style="padding:14px;color:var(--text-3);font-size:12px;">객단가·매출·원가율·시재 모두 정상 범위.</div>
       ` : alerts.map(a => `
-        <div style="display:flex;gap:10px;padding:10px 12px;background:${alertBg(a.level)};border-left:3px solid ${alertColor(a.level)};border-radius:6px;margin-bottom:6px;">
-          <div style="font-size:18px;">${a.icon}</div>
-          <div style="flex:1;">
-            <div style="font-weight:600;font-size:13px;color:${alertColor(a.level)};">${escapeHtml(a.title)}</div>
-            <div style="font-size:12px;color:var(--text-2);margin-top:2px;">${a.detail}</div>
-          </div>
+        <div style="padding:10px 12px;background:${alertBg(a.level)};border-left:3px solid ${alertColor(a.level)};border-radius:6px;margin-bottom:6px;">
+          <div style="font-weight:600;font-size:13px;color:${alertColor(a.level)};">${escapeHtml(a.title)}</div>
+          <div style="font-size:12px;color:var(--text-2);margin-top:2px;">${a.detail}</div>
         </div>
       `).join('')}
     </div>
@@ -4468,13 +4463,13 @@ function renderDashboard() {
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <tbody>
           <tr style="background:var(--subtle);">
-            <td style="padding:8px 12px;font-weight:600;" colspan="3">💰 들어옴 (Inflow)</td>
+            <td style="padding:8px 12px;font-weight:600;" colspan="3">들어옴 (Inflow)</td>
           </tr>
           <tr><td style="padding:6px 12px 6px 28px;">현금 매출 (POS)</td><td style="text-align:right;padding:6px 12px;font-family:JetBrains Mono,monospace;">${fmt(Math.round(cf.cashSalesIn))}</td><td style="width:60px;color:var(--text-3);font-size:11px;">즉시</td></tr>
           <tr><td style="padding:6px 12px 6px 28px;">카드 매출 (POS)</td><td style="text-align:right;padding:6px 12px;font-family:JetBrains Mono,monospace;color:var(--text-3);">${fmt(Math.round(cf.cardSalesIn))}</td><td style="width:60px;color:var(--text-3);font-size:11px;">익영업일</td></tr>
           <tr><td style="padding:6px 12px 6px 28px;">통장 입금</td><td style="text-align:right;padding:6px 12px;font-family:JetBrains Mono,monospace;">${fmt(Math.round(cf.bankIn))}</td><td></td></tr>
           <tr style="background:var(--subtle);">
-            <td style="padding:8px 12px;font-weight:600;" colspan="3">💸 나감 (Outflow)</td>
+            <td style="padding:8px 12px;font-weight:600;" colspan="3">나감 (Outflow)</td>
           </tr>
           <tr><td style="padding:6px 12px 6px 28px;">현금 지출 (extras)</td><td style="text-align:right;padding:6px 12px;font-family:JetBrains Mono,monospace;color:var(--red);">-${fmt(Math.round(cf.cashExpenseOut))}</td><td></td></tr>
           <tr><td style="padding:6px 12px 6px 28px;">통장 출금</td><td style="text-align:right;padding:6px 12px;font-family:JetBrains Mono,monospace;color:var(--red);">-${fmt(Math.round(cf.bankOut))}</td><td></td></tr>
@@ -4534,7 +4529,7 @@ function renderDashboard() {
             <div class="kpi-delta flat">${cumulativePL < 0 ? `현재 추세 ${Math.round(Math.abs(remaining) / Math.max(Math.abs(cumulativePL / months.size), 1))}개월 후 자본 소진` : '이익 누적 중'}</div>
           </div>
         </div>
-        ${remaining < 0 ? `<div style="margin-top:10px;padding:10px;background:var(--red-bg, #fef2f2);border-left:3px solid var(--red);border-radius:6px;font-size:12px;color:var(--red);">⚠ 자본 소진 — 추가 투입 또는 손익 개선 필요</div>` : ''}
+        ${remaining < 0 ? `<div style="margin-top:10px;padding:10px;background:var(--red-bg, #fef2f2);border-left:3px solid var(--red);border-radius:6px;font-size:12px;color:var(--red);font-weight:600;">자본 소진 — 추가 투입 또는 손익 개선 필요</div>` : ''}
       </div>
     `;
   } else {
@@ -4866,7 +4861,7 @@ function renderHometaxReconciliation(month) {
 
       ${oh > 0 ? `
         <div style="margin-bottom: 14px;">
-          <div style="font-weight: 500; font-size: 12px; color: var(--orange); margin-bottom: 6px;">⚠ 홈택스에만 있음 (입력 누락 의심) · ${oh}건</div>
+          <div style="font-weight: 600; font-size: 12px; color: var(--orange); margin-bottom: 6px;">홈택스에만 있음 (입력 누락 의심) · ${oh}건</div>
           <table class="m-table">
             <thead><tr><th>일자</th><th>거래처</th><th>사업자번호</th><th style="text-align:right;">공급가</th><th style="text-align:right;">세액</th><th style="text-align:right;">합계</th><th>종류</th></tr></thead>
             <tbody>
@@ -4888,7 +4883,7 @@ function renderHometaxReconciliation(month) {
 
       ${oa > 0 ? `
         <div>
-          <div style="font-weight: 500; font-size: 12px; color: var(--orange); margin-bottom: 6px;">⚠ 입력만 있음 (홈택스에 없음 — 간이영수증 등) · ${oa}건</div>
+          <div style="font-weight: 600; font-size: 12px; color: var(--orange); margin-bottom: 6px;">입력만 있음 (홈택스에 없음 — 간이영수증 등) · ${oa}건</div>
           <table class="m-table">
             <thead><tr><th>일자</th><th>거래처</th><th style="text-align:right;">공급가</th><th style="text-align:right;">세액</th><th style="text-align:right;">합계</th><th>종류</th></tr></thead>
             <tbody>
@@ -6732,7 +6727,7 @@ function renderHistory() {
     if (warns) tags.push(`<span style="color: var(--orange);">주의 ${warns}</span>`);
     if (!dangers && !warns && oks) tags.push(`<span style="color: var(--green);">정상</span>`);
     const isEvent = r._meta && r._meta.excludeFromForecast === true;
-    if (isEvent) tags.push(`<span style="color: var(--orange);" title="단체예약·행사 등 — 추정 baseline에서 제외">⛔ 이벤트(추정 제외)</span>`);
+    if (isEvent) tags.push(`<span style="color: var(--orange);font-weight:600;" title="단체예약·행사 등 — 추정 baseline에서 제외">이벤트(추정 제외)</span>`);
     const issueMeta = tags.length ? ' · ' + tags.join(' · ') : '';
     return `
       <div class="history-item">
@@ -6942,14 +6937,14 @@ function renderWeatherAnalysisCard(records) {
   };
 
   const weatherNotice = a.hasWeatherCount === 0
-    ? `<div style="padding:14px;border:1px dashed var(--border);border-radius:8px;font-size:12px;color:var(--text-3);">☁ 강남역 날씨를 백그라운드에서 받아오는 중… 잠시 후 자동으로 채워집니다 (Open-Meteo).</div>`
+    ? `<div style="padding:14px;border:1px dashed var(--border);border-radius:8px;font-size:12px;color:var(--text-3);">강남역 날씨를 백그라운드에서 받아오는 중… 잠시 후 자동으로 채워집니다 (Open-Meteo).</div>`
     : a.hasWeatherCount < a.totalCount
-      ? `<div style="font-size:11px;color:var(--text-3);margin-bottom:6px;">☁ 날씨 ${a.hasWeatherCount}/${a.totalCount}일 (나머지는 자동으로 채워지는 중)</div>`
-      : `<div style="font-size:11px;color:var(--text-3);margin-bottom:6px;">☁ 모든 일자 날씨 데이터 적재 완료</div>`;
+      ? `<div style="font-size:11px;color:var(--text-3);margin-bottom:6px;">날씨 ${a.hasWeatherCount}/${a.totalCount}일 (나머지는 자동으로 채워지는 중)</div>`
+      : `<div style="font-size:11px;color:var(--text-3);margin-bottom:6px;">모든 일자 날씨 데이터 적재 완료</div>`;
 
   const severeRows = a.severeDays.length
     ? `<div style="margin-top:14px;">
-         <div style="font-size:12px;color:var(--orange);font-weight:600;margin-bottom:6px;">⚠ 이상기상 일자 (${a.severeDays.length}일)</div>
+         <div style="font-size:12px;color:var(--orange);font-weight:600;margin-bottom:6px;">이상기상 일자 (${a.severeDays.length}일)</div>
          <table class="mini-table">
            <thead><tr><th>날짜</th><th>요일</th><th>날씨</th><th class="num">매출</th></tr></thead>
            <tbody>
@@ -6969,17 +6964,17 @@ function renderWeatherAnalysisCard(records) {
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;margin-top:8px;">
         ${a.byDayType.length ? `
           <div>
-            <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-2);">📅 요일 / 공휴일</div>
+            <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-2);">요일 / 공휴일</div>
             ${bars(a.byDayType)}
           </div>` : ''}
         ${a.byRain.length ? `
           <div>
-            <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-2);">🌧 강수 영향</div>
+            <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-2);">강수 영향</div>
             ${bars(a.byRain)}
           </div>` : ''}
         ${a.byTemp.length ? `
           <div>
-            <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-2);">🌡 기온 구간</div>
+            <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-2);">기온 구간</div>
             ${bars(a.byTemp)}
           </div>` : ''}
       </div>
@@ -8603,7 +8598,7 @@ async function uploadToCloud(filename, content, silent = false) {
       delete s.lastErrorAt;
       setCloudSettings(s);
       updateCloudBtn();
-      if (!silent) toast('☁ 구글드라이브 업로드 완료', 'ok');
+      if (!silent) toast('구글드라이브 업로드 완료', 'ok');
       cleanup();
       resolve(true);
     };
@@ -8630,7 +8625,7 @@ async function uploadToCloud(filename, content, silent = false) {
       delete s.lastErrorAt;
       setCloudSettings(s);
       updateCloudBtn();
-      if (!silent) toast('☁ 업로드 전송됨 (확인: 구글드라이브)', 'ok');
+      if (!silent) toast('업로드 전송됨 (확인: 구글드라이브)', 'ok');
       cleanup();
       resolve(true);
     }, 15000);
@@ -8668,7 +8663,7 @@ async function pullFromCloud(silent = false) {
   }
 
   try {
-    if (!silent) toast('☁ 구글드라이브에서 동기화 중...', 'ok');
+    if (!silent) toast('구글드라이브에서 동기화 중...', 'ok');
 
     const tokenParam = s.token ? '&token=' + encodeURIComponent(s.token) : '';
     const res = await fetch(s.url + '?action=sync' + tokenParam, { method: 'GET' });
