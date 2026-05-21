@@ -1774,7 +1774,9 @@ body.tab-summary main { grid-template-columns: 1fr; }
               <button class="seg-btn" data-range="30">30일</button>
               <button class="seg-btn" data-range="90">90일</button>
               <button class="seg-btn" data-range="all">전체</button>
+              <button class="seg-btn" data-range="month">월별</button>
             </div>
+            <input type="month" id="reportMonth" style="display:none;padding:6px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;background:var(--bg);color:var(--text);">
             <div class="seg-control">
               <button class="seg-btn active" data-view="daily">일별</button>
               <button class="seg-btn" data-view="monthly">월별</button>
@@ -2481,7 +2483,7 @@ function init() {
   document.getElementById('loadFileInput').addEventListener('change', handleLoadFile);
 
   // Report segment controls
-  state.reportConfig = { range: '7', view: 'daily' };
+  state.reportConfig = { range: '7', view: 'daily', month: new Date().toISOString().slice(0,7) };
   document.querySelectorAll('#tab-report .seg-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       const group = btn.closest('.seg-control');
@@ -2489,8 +2491,21 @@ function init() {
       btn.classList.add('active');
       if (btn.dataset.range) state.reportConfig.range = btn.dataset.range;
       if (btn.dataset.view) state.reportConfig.view = btn.dataset.view;
+      // 월별 모드일 때만 month input 노출
+      const mi = document.getElementById('reportMonth');
+      if (mi) {
+        const isMonth = state.reportConfig.range === 'month';
+        mi.style.display = isMonth ? 'inline-block' : 'none';
+        if (isMonth && !mi.value) mi.value = state.reportConfig.month;
+      }
       renderReport();
     });
+  });
+  // 월 입력 변경 핸들러
+  const reportMonthEl = document.getElementById('reportMonth');
+  if (reportMonthEl) reportMonthEl.addEventListener('change', (e) => {
+    state.reportConfig.month = e.target.value || new Date().toISOString().slice(0,7);
+    renderReport();
   });
 
   loadDraft();
@@ -3732,7 +3747,10 @@ function _getFilteredReportRecords() {
   const allDates = Object.keys(all).sort();
   let filtered = allDates.map(d => ({ date: d, ...all[d] }));
   const range = (state.reportConfig && state.reportConfig.range) || '30';
-  if (range !== 'all') {
+  if (range === 'month') {
+    const month = (state.reportConfig && state.reportConfig.month) || new Date().toISOString().slice(0,7);
+    filtered = filtered.filter(r => r.date.startsWith(month));
+  } else if (range !== 'all') {
     const days = parseInt(range);
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - days + 1);
@@ -6140,7 +6158,10 @@ function renderReport() {
 
   // Filter records by range
   let filtered = allDates.map(d => ({ date: d, ...all[d] }));
-  if (range !== 'all') {
+  const selMonth = (state.reportConfig && state.reportConfig.month) || new Date().toISOString().slice(0,7);
+  if (range === 'month') {
+    filtered = filtered.filter(r => r.date.startsWith(selMonth));
+  } else if (range !== 'all') {
     const days = parseInt(range);
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - days + 1);
@@ -6163,9 +6184,20 @@ function renderReport() {
   const avgDaily = totalSales / totalDays;
   const avgTx = totalSales / Math.max(totalTx, 1);
 
-  // 이전 기간과 비교 (직전 동일 기간)
+  // 이전 기간과 비교 (직전 동일 기간 또는 지난 달)
   let deltaPct = null;
-  if (range !== 'all') {
+  if (range === 'month') {
+    // 지난 달 같은 기간
+    const [yr, mo] = selMonth.split('-').map(Number);
+    let prevYr = yr, prevMo = mo - 1;
+    if (prevMo < 1) { prevMo = 12; prevYr -= 1; }
+    const prevMonth = `${prevYr}-${String(prevMo).padStart(2,'0')}`;
+    const prev = allDates.filter(d => d.startsWith(prevMonth)).map(d => all[d]);
+    if (prev.length) {
+      const prevTotal = prev.reduce((s, r) => s + r.totals.posTotal, 0);
+      if (prevTotal > 0) deltaPct = ((totalSales - prevTotal) / prevTotal) * 100;
+    }
+  } else if (range !== 'all') {
     const days = parseInt(range);
     const prevCutoffEnd = new Date();
     prevCutoffEnd.setDate(prevCutoffEnd.getDate() - days);
@@ -6191,13 +6223,15 @@ function renderReport() {
   const worstDay = ranked[ranked.length - 1];
 
   // KPI HTML
+  const deltaLabel = range === 'month' ? '지난 달 대비' : '이전 기간 대비';
+  const deltaEmpty = range === 'month' ? '지난 달 데이터 없음' : '이전 기간 데이터 없음';
   const deltaHtml = deltaPct === null
-    ? '<span class="kpi-delta flat">이전 기간 데이터 없음</span>'
+    ? `<span class="kpi-delta flat">${deltaEmpty}</span>`
     : deltaPct > 0.5
-      ? `<span class="kpi-delta up">▲ ${deltaPct.toFixed(1)}% 이전 기간 대비</span>`
+      ? `<span class="kpi-delta up">▲ ${deltaPct.toFixed(1)}% ${deltaLabel}</span>`
       : deltaPct < -0.5
-        ? `<span class="kpi-delta down">▼ ${Math.abs(deltaPct).toFixed(1)}% 이전 기간 대비</span>`
-        : '<span class="kpi-delta flat">전기 대비 변동 없음</span>';
+        ? `<span class="kpi-delta down">▼ ${Math.abs(deltaPct).toFixed(1)}% ${deltaLabel}</span>`
+        : `<span class="kpi-delta flat">${deltaLabel} 변동 없음</span>`;
 
   const kpis = `
     <div class="kpi-grid">
