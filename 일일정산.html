@@ -1456,6 +1456,7 @@ body.tab-summary main { grid-template-columns: 1fr; }
       <button class="tab" data-tab="report">리포트 분석</button>
       <button class="tab" data-tab="forecast">손익 추정</button>
       <button class="tab" data-tab="monthly">월정산</button>
+      <button class="tab" data-tab="costs">비용</button>
     </div>
 
     <div class="tab-panel active" id="tab-dashboard">
@@ -1960,6 +1961,7 @@ body.tab-summary main { grid-template-columns: 1fr; }
                   <th>분류</th>
                   <th class="num-cell">월 금액 (원)</th>
                   <th>메모</th>
+                  <th title="자동반영 OFF 월 (YYYY-MM, 콤마구분). 예: 2026-05">OFF 월</th>
                   <th class="action-cell"></th>
                 </tr>
               </thead>
@@ -1987,6 +1989,27 @@ body.tab-summary main { grid-template-columns: 1fr; }
             <input type="date" id="capitalDate" placeholder="투입일" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
             <button class="btn btn-small" onclick="saveCapitalSettings()">저장</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="tab-costs">
+      <div class="section">
+        <div class="section-head">
+          <div class="section-title">비용 상세</div>
+          <div class="section-note" style="display:flex;gap:8px;align-items:center;">
+            <input type="month" id="costsMonth" style="padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-family: inherit; background: var(--bg); color: var(--text);">
+            <button class="btn btn-small" onclick="exportCostsExcel()" title="현재 선택된 월의 비용 상세를 엑셀(.xlsx)로 저장">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              엑셀
+            </button>
+          </div>
+        </div>
+        <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
+          매입(분류별) + 기타비용(현금 지출) + 인건비(알바·일급)를 일자별로 펼쳐 봅니다. 행을 클릭하면 해당 일 영수증 상세가 펼쳐집니다. 월별 고정비는 [월정산 → 설정]에 등록된 항목이 별도 합산으로 표시됩니다.
+        </div>
+        <div id="costsContent" style="padding: 40px 20px; text-align: center; color: var(--text-3); font-size: 13px;">
+          월을 선택하면 비용 상세가 여기에 표시됩니다.
         </div>
       </div>
     </div>
@@ -2498,15 +2521,38 @@ function init() {
     saveDraft();
     state.businessDate = newDate;
     loadDraft();
+    // 현재 탭은 그대로 유지하되, 검증결과 탭이면 새 날짜 기준으로 데이터 재검증·재렌더
+    const activeTab = document.querySelector('.tab.active');
+    if (activeTab && activeTab.dataset.tab === 'validate') {
+      runValidation();
+      if (typeof renderHourly === 'function') renderHourly();
+      if (typeof renderMenuTop === 'function') renderMenuTop();
+    }
     toast(`${newDate} 영업일로 전환됨`, 'ok');
   };
   document.getElementById('businessDate').addEventListener('change', onDateChange);
   document.getElementById('businessDate').addEventListener('input', onDateChange);
   document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+  // 손익추정·월정산·비용 탭의 month picker 3개를 모두 동기화 + 현재 활성 탭만 렌더 (사장님 요청 2026-06-01)
   const monthlyMonthEl = document.getElementById('monthlyMonth');
-  if (monthlyMonthEl) monthlyMonthEl.addEventListener('change', (e) => { renderMonthlyReport(e.target.value); updateHometaxStatus(); });
   const forecastMonthEl = document.getElementById('forecastMonth');
-  if (forecastMonthEl) forecastMonthEl.addEventListener('change', (e) => renderMonthlyForecast(e.target.value));
+  const costsMonthEl = document.getElementById('costsMonth');
+  function syncSelectedMonth(month) {
+    if (!month) return;
+    localStorage.setItem('selected_month_v1', month);
+    if (monthlyMonthEl && monthlyMonthEl.value !== month) monthlyMonthEl.value = month;
+    if (forecastMonthEl && forecastMonthEl.value !== month) forecastMonthEl.value = month;
+    if (costsMonthEl && costsMonthEl.value !== month) costsMonthEl.value = month;
+    const active = document.querySelector('.tab.active');
+    const tabName = active ? active.dataset.tab : '';
+    if (tabName === 'monthly') { renderMonthlyReport(month); if (typeof updateHometaxStatus === 'function') updateHometaxStatus(); }
+    else if (tabName === 'forecast') { renderMonthlyForecast(month); }
+    else if (tabName === 'costs') { renderCostsTab(month); }
+  }
+  window.syncSelectedMonth = syncSelectedMonth;
+  if (monthlyMonthEl) monthlyMonthEl.addEventListener('change', (e) => syncSelectedMonth(e.target.value));
+  if (forecastMonthEl) forecastMonthEl.addEventListener('change', (e) => syncSelectedMonth(e.target.value));
+  if (costsMonthEl) costsMonthEl.addEventListener('change', (e) => syncSelectedMonth(e.target.value));
   // 월정산 sub-tab navigation
   document.querySelectorAll('.msub-btn').forEach(btn => {
     btn.addEventListener('click', () => switchMonthlySubTab(btn.dataset.msub));
@@ -2611,18 +2657,30 @@ function switchTab(name) {
     // 분석 탭 진입 시 누락된 날씨 silent backfill (이미 다 있으면 즉시 종료)
     if (typeof backfillWeatherAll === 'function') backfillWeatherAll({ silent: true });
   }
-  if (name === 'monthly') {
-    const mm = document.getElementById('monthlyMonth');
-    if (mm && !mm.value) mm.value = new Date().toISOString().slice(0, 7);
-    if (mm) renderMonthlyReport(mm.value);
-    if (typeof backfillWeatherAll === 'function') backfillWeatherAll({ silent: true });
-    if (typeof loadCapitalSettings === 'function') loadCapitalSettings();
-  }
-  if (name === 'forecast') {
-    const fm = document.getElementById('forecastMonth');
-    if (fm && !fm.value) fm.value = new Date().toISOString().slice(0, 7);
-    if (fm) renderMonthlyForecast(fm.value);
-    if (typeof backfillWeatherAll === 'function') backfillWeatherAll({ silent: true });
+  // 손익추정/월정산/비용 탭은 month picker 연동 — 저장된 월 또는 가장 최근 records 월 또는 현재 월
+  if (name === 'monthly' || name === 'forecast' || name === 'costs') {
+    const stored = localStorage.getItem('selected_month_v1');
+    let month = stored;
+    if (!month) {
+      // 가장 최근 record 일자에서 월 추출 (없으면 현재 월)
+      try {
+        const all = getAllRecords();
+        const keys = Object.keys(all).sort();
+        if (keys.length) month = keys[keys.length - 1].slice(0, 7);
+      } catch {}
+      if (!month) month = new Date().toISOString().slice(0, 7);
+    }
+    if (typeof syncSelectedMonth === 'function') syncSelectedMonth(month);
+    else {
+      // 폴백 (초기 init 전): 활성 탭 picker만 채움
+      const el = document.getElementById(name === 'monthly' ? 'monthlyMonth' : name === 'forecast' ? 'forecastMonth' : 'costsMonth');
+      if (el) { el.value = month; }
+      if (name === 'monthly') renderMonthlyReport(month);
+      else if (name === 'forecast') renderMonthlyForecast(month);
+      else if (name === 'costs') renderCostsTab(month);
+    }
+    if (name !== 'costs' && typeof backfillWeatherAll === 'function') backfillWeatherAll({ silent: true });
+    if (name === 'monthly' && typeof loadCapitalSettings === 'function') loadCapitalSettings();
   }
 }
 
@@ -3030,12 +3088,12 @@ function reconcileHometax(month) {
 
 /* ========================================================================
    운영 KPI: 식자재 원가율 · 인건비율 · Prime Cost (식당 핵심 지표)
-   - 식자재 원가율 = (식자재 + 주류/음료 매입공급가) / 매출공급가, 목표 ≤ 35%
+   - 식자재 원가율 = (식자재 + 주류/음료 매입공급가) / 매출공급가, 목표 ≤ 30%
    - 인건비율     = (payroll + 매입카테고리 인건비) / 매출공급가, 목표 ≤ 30%
    - Prime Cost % = (식자재 + 인건비) / 매출공급가, 목표 ≤ 60%
    ======================================================================== */
 const COST_RATIO_THRESHOLDS = {
-  food:   { ok: 30, warn: 35, danger: 40 },   // %
+  food:   { ok: 28, warn: 30, danger: 35 },   // % (아스트라 다이닝 기준 — 사장님 결정 2026-06-01)
   labor:  { ok: 25, warn: 30, danger: 35 },
   prime:  { ok: 55, warn: 60, danger: 65 }
 };
@@ -3137,7 +3195,8 @@ function getFixedExpenses() {
       name: String(e.name || ''),
       amount: num(e.amount),
       category: EXPENSE_CATEGORIES.includes(e.category) ? e.category : '임대료',
-      memo: String(e.memo || '')
+      memo: String(e.memo || ''),
+      skipMonths: String(e.skipMonths || '')
     }));
   } catch { return []; }
 }
@@ -3209,7 +3268,7 @@ function updateFixedExpense(i, key, value) {
   if (key === 'amount') list[i][key] = num(value);
   else list[i][key] = String(value || '');
   saveFixedExpenses(list);
-  if (key === 'amount' || key === 'category') refreshMonthlyDistribution();
+  if (key === 'amount' || key === 'category' || key === 'skipMonths') refreshMonthlyDistribution();
 }
 function renderFixedExpenses() {
   const list = getFixedExpenses();
@@ -3244,7 +3303,7 @@ function renderFixedExpenses() {
   if (otherTbody) {
     const otherRows = list.map((e, i) => ({ e, i })).filter(x => x.e.category !== '인건비');
     if (!otherRows.length) {
-      otherTbody.innerHTML = `<tr><td colspan="5" style="padding:16px;text-align:center;color:var(--text-3);font-size:12px;">기타 고정비를 추가하세요. 예: 임대료 ₩6,000,000 · 관리비 ₩200,000 · 통신비 ₩100,000</td></tr>`;
+      otherTbody.innerHTML = `<tr><td colspan="6" style="padding:16px;text-align:center;color:var(--text-3);font-size:12px;">기타 고정비를 추가하세요. 예: 임대료 ₩6,000,000 · 관리비 ₩200,000 · 통신비 ₩100,000</td></tr>`;
     } else {
       const nonLaborCats = EXPENSE_CATEGORIES.filter(c => c !== '인건비');
       otherTbody.innerHTML = otherRows.map(({ e, i }) => `
@@ -3253,6 +3312,7 @@ function renderFixedExpenses() {
           <td><select onchange="updateFixedExpense(${i},'category',this.value)">${nonLaborCats.map(c => `<option ${e.category===c?'selected':''}>${c}</option>`).join('')}</select></td>
           <td class="num-cell"><input type="number" class="num-cell" value="${e.amount||0}" onchange="updateFixedExpense(${i},'amount',this.value)"></td>
           <td><input value="${escapeHtml(e.memo)}" placeholder="(메모)" onchange="updateFixedExpense(${i},'memo',this.value)"></td>
+          <td><input value="${escapeHtml(e.skipMonths || '')}" placeholder="2026-05" title="자동반영 OFF 월 (YYYY-MM, 콤마구분)" style="width:120px;font-family:JetBrains Mono,monospace;font-size:11px;" onchange="updateFixedExpense(${i},'skipMonths',this.value)"></td>
           <td class="action-cell"><button class="delete-row" onclick="deleteFixedExpense(${i})">×</button></td>
         </tr>
       `).join('');
@@ -3265,21 +3325,29 @@ function renderFixedExpenses() {
  * 규칙: 해당 월에 그 카테고리의 매입공급가 합계가 0이면 설정값 적용. 0보다 크면 무시.
  * @returns {{ items: [{name, amount, category, applied: boolean, reason: string}], appliedByCategory: {cat: amount} }}
  */
-function resolveFixedExpensesForMonth(monthCategoryActuals) {
+function resolveFixedExpensesForMonth(monthCategoryActuals, month) {
   const list = getFixedExpenses();
   const appliedByCategory = {};
   const items = list.map(e => {
     const actual = num(monthCategoryActuals[e.category]);
-    const applied = num(e.amount) > 0 && actual === 0;
+    const skipList = (e.skipMonths || '').split(',').map(s => s.trim()).filter(Boolean);
+    const skipped = month && skipList.includes(month);
+    const applied = num(e.amount) > 0 && actual === 0 && !skipped;
     if (applied) {
       appliedByCategory[e.category] = (appliedByCategory[e.category] || 0) + num(e.amount);
     }
+    let reason;
+    if (skipped) reason = `${month} 자동반영 OFF (사장님 설정)`;
+    else if (!e.amount) reason = '금액 0';
+    else if (actual > 0) reason = `해당 월에 ${e.category} 매입행 있음 (₩${Math.round(actual).toLocaleString()})`;
+    else reason = '월 매입행 없음 — 설정값 적용';
     return {
       name: e.name || '(이름없음)',
       category: e.category,
       amount: num(e.amount),
       applied,
-      reason: !e.amount ? '금액 0' : actual > 0 ? `해당 월에 ${e.category} 매입행 있음 (₩${Math.round(actual).toLocaleString()})` : '월 매입행 없음 — 설정값 적용'
+      skipped,
+      reason
     };
   });
   return { items, appliedByCategory };
@@ -3620,11 +3688,11 @@ function computeMonthlyForecast(month, weatherForecast) {
   // 고정비 = 인건비(전체) + 기타고정비(자동반영) + 기타비용
   // 변동비율 시나리오 2종:
   //   (1) 실제 비율 = 현재까지 식자재+주류 매입공급가 / 현재 매출공급가
-  //   (2) 목표 비율 = 식자재 원가율 목표 35% (업계 평균)
+  //   (2) 목표 비율 = 식자재 원가율 목표 30% (아스트라 다이닝 기준)
   const bepFixedCost = actualLaborCombined + actualFixedOtherApplied + actualExtra;
   const cogsActualSupply = foodSupplyActual + beverageSupplyActual;
   const ratioActual = actualSalesSupply > 0 ? cogsActualSupply / actualSalesSupply : 0;
-  const ratioTarget = 0.35; // 식자재+주류 목표
+  const ratioTarget = 0.30; // 식자재+주류 목표 (아스트라 다이닝 기준)
   const _bep = (vr) => (vr < 1 ? bepFixedCost / (1 - vr) : 0);
   const bepActualSupply = _bep(ratioActual);
   const bepTargetSupply = _bep(ratioTarget);
@@ -3656,6 +3724,108 @@ function computeMonthlyForecast(month, weatherForecast) {
   };
 }
 
+/* ========================================================================
+   매출 목표 · 일일 필요량 계산기 (사장님 요청 2026-05-21)
+   ======================================================================== */
+const GOAL_CALC_KEY = 'goal_calc_v1';
+
+/** 해당 월의 영업가능일 (휴무요일 제외, 매장 오픈 여부 무관) */
+function calcMonthOpenDays(month) {
+  if (!month) return 0;
+  const [yr, mo] = month.split('-').map(Number);
+  const lastDay = new Date(yr, mo, 0).getDate();
+  const closedDow = (typeof FORECAST_CLOSED_DOW !== 'undefined') ? FORECAST_CLOSED_DOW : [];
+  let count = 0;
+  for (let d = 1; d <= lastDay; d++) {
+    const wd = new Date(yr, mo - 1, d).getDay();
+    if (!closedDow.includes(wd)) count++;
+  }
+  return count;
+}
+function getGoalCalc() {
+  try {
+    const v = JSON.parse(localStorage.getItem(GOAL_CALC_KEY) || '{}');
+    return {
+      monthlyTarget: num(v.monthlyTarget) || 30000000,
+      avgTicket: num(v.avgTicket) || 50000,
+      tableCount: num(v.tableCount) || 10,
+      openHours: num(v.openHours) || 6,
+      businessDays: num(v.businessDays) || 0  // 0 = 자동(시스템 계산값 사용)
+    };
+  } catch {
+    return { monthlyTarget: 30000000, avgTicket: 50000, tableCount: 10, openHours: 6, businessDays: 0 };
+  }
+}
+function saveGoalCalc(s) {
+  localStorage.setItem(GOAL_CALC_KEY, JSON.stringify(s));
+  _queueCloudUpload();
+}
+function renderGoalCalculatorBox(data) {
+  const g = getGoalCalc();
+  return `
+    <div style="margin-bottom:16px;padding:14px 16px;background:var(--subtle);border-radius:10px;border:1px solid var(--border);">
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px;">매출 목표 · 일일 필요량 계산기</div>
+      <div style="font-size:11px;color:var(--text-3);margin-bottom:12px;">목표 매출을 입력하면 일평균 매출, 손님 수, 회전율로 환산해서 보여줍니다.</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px;">
+        <label style="display:block;font-size:11px;color:var(--text-2);">목표 월 매출 (원)
+          <input id="goalMonthlyTarget" type="number" value="${g.monthlyTarget}" oninput="recalcGoalCalc(${data.monthBusinessDays})" style="display:block;width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-family:JetBrains Mono,monospace;font-size:12px;">
+        </label>
+        <label style="display:block;font-size:11px;color:var(--text-2);">평균 객단가 (원/인)
+          <input id="goalAvgTicket" type="number" value="${g.avgTicket}" oninput="recalcGoalCalc(${data.monthBusinessDays})" style="display:block;width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-family:JetBrains Mono,monospace;font-size:12px;">
+        </label>
+        <label style="display:block;font-size:11px;color:var(--text-2);">테이블 수
+          <input id="goalTableCount" type="number" value="${g.tableCount}" oninput="recalcGoalCalc(${data.monthBusinessDays})" style="display:block;width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-family:JetBrains Mono,monospace;font-size:12px;">
+        </label>
+        <label style="display:block;font-size:11px;color:var(--text-2);">일 영업시간 (시간)
+          <input id="goalOpenHours" type="number" step="0.5" value="${g.openHours}" oninput="recalcGoalCalc(${data.monthBusinessDays})" style="display:block;width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-family:JetBrains Mono,monospace;font-size:12px;">
+        </label>
+        <label style="display:block;font-size:11px;color:var(--text-2);">영업일수 (월)
+          <input id="goalBusinessDays" type="number" value="${g.businessDays || calcMonthOpenDays(data.month)}" oninput="recalcGoalCalc(${calcMonthOpenDays(data.month)})" placeholder="자동 ${calcMonthOpenDays(data.month)}" style="display:block;width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-family:JetBrains Mono,monospace;font-size:12px;">
+          <span style="font-size:10px;color:var(--text-3);">자동: ${data.month} 휴무요일 제외 ${calcMonthOpenDays(data.month)}일</span>
+        </label>
+      </div>
+      <div id="goalCalcResult" data-business-days="${data.monthBusinessDays}" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;"></div>
+      <div style="font-size:11px;color:var(--text-3);margin-top:10px;line-height:1.6;" id="goalCalcHint"></div>
+    </div>
+  `;
+}
+function recalcGoalCalc(systemBusinessDays) {
+  const tEl = document.getElementById('goalMonthlyTarget');
+  const aEl = document.getElementById('goalAvgTicket');
+  const cEl = document.getElementById('goalTableCount');
+  const hEl = document.getElementById('goalOpenHours');
+  const dEl = document.getElementById('goalBusinessDays');
+  const resEl = document.getElementById('goalCalcResult');
+  const hintEl = document.getElementById('goalCalcHint');
+  if (!tEl || !resEl) return;
+  const monthlyTarget = num(tEl.value);
+  const avgTicket = num(aEl.value);
+  const tableCount = num(cEl.value);
+  const openHours = num(hEl.value);
+  const inputDays = dEl ? num(dEl.value) : 0;
+  saveGoalCalc({ monthlyTarget, avgTicket, tableCount, openHours, businessDays: inputDays });
+  const days = inputDays || num(systemBusinessDays) || 22;
+  const dailyTarget = days > 0 ? monthlyTarget / days : 0;
+  const dailyCustomers = avgTicket > 0 ? dailyTarget / avgTicket : 0;
+  const turnover = tableCount > 0 ? dailyCustomers / tableCount : 0;
+  const hourlyCustomers = openHours > 0 ? dailyCustomers / openHours : 0;
+  const card = (label, val, sub) => `
+    <div style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);">
+      <div style="font-size:11px;color:var(--text-3);">${label}</div>
+      <div style="font-size:18px;font-weight:600;margin-top:2px;font-family:JetBrains Mono,monospace;">${val}</div>
+      ${sub ? `<div style="font-size:10px;color:var(--text-3);margin-top:2px;">${sub}</div>` : ''}
+    </div>`;
+  resEl.innerHTML =
+    card('필요 일평균 매출', '₩' + fmt(Math.round(dailyTarget)), `${days}일 영업 기준`) +
+    card('필요 일평균 손님', Math.ceil(dailyCustomers) + '명', `객단가 ₩${fmt(avgTicket)} 기준`) +
+    card('필요 테이블 회전율', turnover.toFixed(2) + '회', `테이블 ${tableCount}개 기준`) +
+    card('시간당 필요 손님', hourlyCustomers.toFixed(1) + '명', `영업 ${openHours}시간 기준`);
+  if (hintEl) {
+    const ratioPerHour = (openHours > 0 && tableCount > 0) ? (dailyCustomers / tableCount / openHours).toFixed(2) : '0';
+    hintEl.innerHTML = `해석: 테이블 <strong>${tableCount}개</strong>를 영업 <strong>${openHours}시간</strong> 동안 시간당 <strong>${ratioPerHour}회 회전</strong>시키면 월 ₩${fmt(monthlyTarget)} 달성. 회전율이 너무 높으면 ① 객단가 인상(메뉴 가격 ↑ 또는 사이드 추가 유도) ② 테이블 추가 ③ 영업시간 연장 ④ 목표 하향 중 선택.`;
+  }
+}
+
 async function _fetchForecastWeatherForMonth(month) {
   const [yr, mo] = month.split('-').map(Number);
   const lastDay = new Date(yr, mo, 0);
@@ -3679,6 +3849,8 @@ async function renderMonthlyForecast(month) {
     return;
   }
   container.innerHTML = _monthlyForecastCardHtml(data);
+  // 동적 삽입된 계산기 초기 렌더 (innerHTML로 들어간 <script>는 실행 안 되므로 명시적 호출)
+  if (typeof recalcGoalCalc === 'function') recalcGoalCalc(data.monthBusinessDays);
 }
 
 function _monthlyForecastCardHtml(data) {
@@ -3796,7 +3968,7 @@ function _monthlyForecastCardHtml(data) {
             <div style="font-size:11px;color:var(--text-3);">일 평균 ${fmtKRW(data.bepActualDaily)} · ${data.bepGapActual > 0 ? `<span style="color:var(--red);">부족 ${fmtKRW(data.bepGapActual)}</span>` : `<span style="color:var(--green);">달성 +${fmtKRW(-data.bepGapActual)}</span>`}</div>
           </div>
           <div>
-            <div style="font-size:11px;color:var(--text-3);">목표 변동비율 기준 (${(data.ratioTarget*100).toFixed(0)}% — 업계 평균)</div>
+            <div style="font-size:11px;color:var(--text-3);">목표 변동비율 기준 (${(data.ratioTarget*100).toFixed(0)}% — 아스트라 다이닝)</div>
             <div style="font-size:18px;font-weight:600;margin:2px 0;">${fmtKRW(data.bepTargetSupply)} <span style="font-size:11px;color:var(--text-3);font-weight:400;">/ 월 공급가</span></div>
             <div style="font-size:11px;color:var(--text-3);">일 평균 ${fmtKRW(data.bepTargetDaily)} · ${data.bepGapTarget > 0 ? `<span style="color:var(--red);">부족 ${fmtKRW(data.bepGapTarget)}</span>` : `<span style="color:var(--green);">달성 +${fmtKRW(-data.bepGapTarget)}</span>`}</div>
           </div>
@@ -3805,9 +3977,11 @@ function _monthlyForecastCardHtml(data) {
           BEP 매출공급가 = 월 고정비 ${fmtKRW(data.bepFixedCost)} ÷ (1 − 변동비율) ·
           영업 ${data.monthBusinessDays}일로 나누면 일 평균 BEP.
           <strong>현재 변동비율 ${(data.ratioActual*100).toFixed(1)}%</strong>는 오픈 초기 재고 비축으로 비정상적으로 높음 — 운영 안정화되면
-          <strong>목표 35%</strong> 시나리오가 현실적 목표.
+          <strong>목표 30%</strong> 시나리오가 아스트라 본궤도 목표 (오픈 초기 35% → 안정화 32% → 본궤도 30%).
         </div>
       </div>
+
+      ${renderGoalCalculatorBox(data)}
 
       ${legend}
 
@@ -4047,7 +4221,10 @@ function computeAvgCheckTrend(records) {
   return (records || [])
     .filter(r => r && r.date)
     .map(r => {
-      const count = (r.posRows || []).length;
+      // 영수증 건수 우선순위: totals.txnCount (정확) > cardRows.length (카드사 합산이라 부정확하지만 메뉴수보다 나음) > posRows.length (메뉴 수 — 최후 폴백)
+      let count = num(r.totals && r.totals.txnCount);
+      if (!count) count = (r.cardRows || []).length;
+      if (!count) count = (r.posRows || []).length;
       const sales = num((r.totals && r.totals.posTotal) || 0);
       return { date: r.date, sales, count, avgCheck: count > 0 ? sales / count : 0 };
     })
@@ -4161,7 +4338,7 @@ function computeMonthlyData(month) {
     });
   }
   // 고정비 자동 반영: 해당 월에 그 카테고리 매입행이 없을 때만
-  const fixedResolved = resolveFixedExpensesForMonth(bySupplyCategory);
+  const fixedResolved = resolveFixedExpensesForMonth(bySupplyCategory, month);
   const sumFixedApplied = Object.values(fixedResolved.appliedByCategory).reduce((s, v) => s + v, 0);
   // 적용된 고정비를 카테고리별로 합산에 반영 (display·계산용)
   Object.entries(fixedResolved.appliedByCategory).forEach(([k, v]) => {
@@ -4732,6 +4909,320 @@ function renderMonthlyReport(month) {
   if (proofEl) proofEl.innerHTML = renderHometaxReconciliation(month);
 }
 
+/* ========================================================================
+   비용 탭 — 일자×분류 매트릭스 + 일별 상세 펼침
+   ======================================================================== */
+function renderCostsTab(month) {
+  const content = document.getElementById('costsContent');
+  if (!content) return;
+  if (!month) {
+    content.innerHTML = '<div style="padding:40px 20px;text-align:center;color:var(--text-3);font-size:13px;">월을 선택하세요.</div>';
+    return;
+  }
+  const data = computeMonthlyData(month);
+  const allRecs = getAllRecords();
+  const dates = Object.keys(allRecs).filter(d => d.startsWith(month)).sort();
+
+  if (dates.length === 0) {
+    const fixedApplied = (data && data.fixedExpensesResolved && data.fixedExpensesResolved.appliedByCategory) || {};
+    const sumFixed = Object.values(fixedApplied).reduce((s, v) => s + v, 0);
+    if (sumFixed === 0) {
+      content.innerHTML = `<div style="padding:40px 20px;text-align:center;color:var(--text-3);font-size:13px;">${month} 영업·매입 데이터 없음</div>`;
+      return;
+    }
+  }
+
+  const CAT_ORDER = ['식자재', '소모품', '주류/음료', '임대료', '인건비', '세금·공과', '기타'];
+  const matrix = {};
+  const totalByCat = {};
+  const totalByDate = {};
+  dates.forEach(d => {
+    matrix[d] = {};
+    totalByDate[d] = 0;
+    const rec = allRecs[d];
+    (rec.purchaseRows || []).forEach(r => {
+      const cat = r.category || '미분류';
+      const t = num(r.total) || (num(r.supply) + num(r.vat));
+      matrix[d][cat] = (matrix[d][cat] || 0) + t;
+      totalByCat[cat] = (totalByCat[cat] || 0) + t;
+      totalByDate[d] += t;
+    });
+    const payroll = (rec.payrollRows || []).reduce((s, r) => s + num(r.amount), 0);
+    if (payroll > 0) {
+      matrix[d]['인건비(알바)'] = (matrix[d]['인건비(알바)'] || 0) + payroll;
+      totalByCat['인건비(알바)'] = (totalByCat['인건비(알바)'] || 0) + payroll;
+      totalByDate[d] += payroll;
+    }
+    const exp = num(rec.extras && rec.extras.expenses);
+    if (exp > 0) {
+      matrix[d]['기타비용'] = (matrix[d]['기타비용'] || 0) + exp;
+      totalByCat['기타비용'] = (totalByCat['기타비용'] || 0) + exp;
+      totalByDate[d] += exp;
+    }
+  });
+
+  const allCats = Object.keys(totalByCat);
+  allCats.sort((a, b) => {
+    const ia = CAT_ORDER.indexOf(a);
+    const ib = CAT_ORDER.indexOf(b);
+    if (ia >= 0 && ib >= 0) return ia - ib;
+    if (ia >= 0) return -1;
+    if (ib >= 0) return 1;
+    return a.localeCompare(b);
+  });
+
+  const fixedApplied = (data && data.fixedExpensesResolved && data.fixedExpensesResolved.appliedByCategory) || {};
+  const fixedItems = (data && data.fixedExpensesResolved && data.fixedExpensesResolved.items) || [];
+  const sumFixedApplied = Object.values(fixedApplied).reduce((s, v) => s + v, 0);
+  const sumTotal = Object.values(totalByDate).reduce((s, v) => s + v, 0);
+  const grandTotal = sumTotal + sumFixedApplied;
+
+  const fmtZero = (n) => n === 0 ? '<span style="color:var(--text-3);">−</span>' : fmt(n);
+
+  let html = '';
+  html += `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:18px;">`;
+  html += `<div style="padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--bg);"><div style="font-size:11px;color:var(--text-3);">총 비용 (월)</div><div style="font-size:20px;font-weight:600;margin-top:4px;">${fmt(grandTotal)}</div><div style="font-size:10px;color:var(--text-3);margin-top:2px;">실비 ${fmt(sumTotal)} + 자동반영 ${fmt(sumFixedApplied)}</div></div>`;
+  allCats.forEach(cat => {
+    html += `<div style="padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--bg);"><div style="font-size:11px;color:var(--text-3);">${cat}</div><div style="font-size:18px;font-weight:600;margin-top:4px;">${fmt(totalByCat[cat] || 0)}</div></div>`;
+  });
+  if (sumFixedApplied > 0) {
+    const applied = fixedItems.filter(i => i.applied).map(i => `${i.name} ${fmt(i.amount)}`).join(' · ');
+    html += `<div style="padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--bg);"><div style="font-size:11px;color:var(--text-3);">고정비 자동반영</div><div style="font-size:18px;font-weight:600;margin-top:4px;">${fmt(sumFixedApplied)}</div><div style="font-size:10px;color:var(--text-3);margin-top:2px;">${applied}</div></div>`;
+  }
+  html += `</div>`;
+
+  html += `<div class="table-wrap"><table class="data-table">`;
+  html += `<thead><tr><th style="white-space:nowrap;">일자</th>`;
+  allCats.forEach(c => html += `<th class="num-cell">${c}</th>`);
+  html += `<th class="num-cell">일 합계</th></tr></thead><tbody>`;
+  dates.forEach(d => {
+    const dow = new Date(d + 'T00:00:00').getDay();
+    const dowLabel = ['일','월','화','수','목','금','토'][dow];
+    html += `<tr style="cursor:pointer;" onclick="toggleCostDayDetail('${d}')"><td style="white-space:nowrap;">${d.slice(8)}일 (${dowLabel})</td>`;
+    allCats.forEach(c => html += `<td class="num-cell">${fmtZero(matrix[d][c] || 0)}</td>`);
+    html += `<td class="num-cell" style="font-weight:600;">${fmtZero(totalByDate[d] || 0)}</td></tr>`;
+    html += `<tr id="cost-detail-${d}" style="display:none;"><td colspan="${allCats.length + 2}" style="background:var(--hover);padding:12px 16px;">${renderCostDayDetail(allRecs[d])}</td></tr>`;
+  });
+  html += `<tr style="font-weight:600;background:var(--hover);"><td>월 실비 합계</td>`;
+  allCats.forEach(c => html += `<td class="num-cell">${fmt(totalByCat[c] || 0)}</td>`);
+  html += `<td class="num-cell">${fmt(sumTotal)}</td></tr>`;
+  if (sumFixedApplied > 0) {
+    html += `<tr style="color:var(--text-3);"><td>+ 고정비 자동반영</td>`;
+    allCats.forEach(c => html += `<td class="num-cell">${fmtZero(fixedApplied[c] || 0)}</td>`);
+    html += `<td class="num-cell">${fmt(sumFixedApplied)}</td></tr>`;
+    html += `<tr style="font-weight:700;background:var(--hover);border-top:2px solid var(--border);"><td>총 비용</td>`;
+    for (let i = 0; i < allCats.length; i++) html += `<td></td>`;
+    html += `<td class="num-cell">${fmt(grandTotal)}</td></tr>`;
+  }
+  html += `</tbody></table></div>`;
+
+  content.innerHTML = html;
+}
+
+function toggleCostDayDetail(date) {
+  const row = document.getElementById('cost-detail-' + date);
+  if (!row) return;
+  row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+
+function renderCostDayDetail(rec) {
+  if (!rec) return '<span style="color:var(--text-3);font-size:11px;">데이터 없음</span>';
+  let html = '';
+  if (rec.purchaseRows && rec.purchaseRows.length > 0) {
+    html += `<div style="font-weight:600;margin-bottom:6px;font-size:11px;color:var(--text-2);">매입행 (${rec.purchaseRows.length}건)</div>`;
+    html += `<table style="width:100%;font-size:11px;border-collapse:collapse;margin-bottom:8px;"><thead><tr style="color:var(--text-3);"><th style="text-align:left;padding:2px 6px;">분류</th><th style="text-align:left;padding:2px 6px;">거래처</th><th style="text-align:right;padding:2px 6px;">공급가</th><th style="text-align:right;padding:2px 6px;">부가세</th><th style="text-align:right;padding:2px 6px;">합계</th><th style="text-align:left;padding:2px 6px;">결제</th><th style="text-align:left;padding:2px 6px;">메모</th></tr></thead><tbody>`;
+    rec.purchaseRows.forEach(r => {
+      html += `<tr><td style="padding:2px 6px;">${r.category || '-'}</td><td style="padding:2px 6px;">${r.vendor || '-'}</td><td style="padding:2px 6px;text-align:right;font-family:JetBrains Mono,monospace;">${fmt(num(r.supply))}</td><td style="padding:2px 6px;text-align:right;font-family:JetBrains Mono,monospace;">${fmt(num(r.vat))}</td><td style="padding:2px 6px;text-align:right;font-weight:600;font-family:JetBrains Mono,monospace;">${fmt(num(r.total))}</td><td style="padding:2px 6px;">${r.method || '-'}</td><td style="padding:2px 6px;color:var(--text-3);">${(r.memo || '').slice(0, 60)}</td></tr>`;
+    });
+    html += `</tbody></table>`;
+  }
+  if (rec.payrollRows && rec.payrollRows.length > 0) {
+    html += `<div style="font-weight:600;margin:8px 0 6px;font-size:11px;color:var(--text-2);">인건비(알바) (${rec.payrollRows.length}건)</div>`;
+    html += `<table style="width:100%;font-size:11px;border-collapse:collapse;margin-bottom:8px;"><thead><tr style="color:var(--text-3);"><th style="text-align:left;padding:2px 6px;">이름</th><th style="text-align:right;padding:2px 6px;">금액</th><th style="text-align:left;padding:2px 6px;">메모</th></tr></thead><tbody>`;
+    rec.payrollRows.forEach(r => {
+      html += `<tr><td style="padding:2px 6px;">${r.name || '-'}</td><td style="padding:2px 6px;text-align:right;font-weight:600;font-family:JetBrains Mono,monospace;">${fmt(num(r.amount))}</td><td style="padding:2px 6px;color:var(--text-3);">${r.memo || ''}</td></tr>`;
+    });
+    html += `</tbody></table>`;
+  }
+  if (rec.extras && num(rec.extras.expenses) > 0) {
+    html += `<div style="margin-top:6px;font-size:11px;"><span style="color:var(--text-2);font-weight:600;">기타비용:</span> <strong style="font-family:JetBrains Mono,monospace;">${fmt(num(rec.extras.expenses))}</strong> <span style="color:var(--text-3);">${rec.extras.memo || ''}</span></div>`;
+  }
+  if (!html) html = '<span style="color:var(--text-3);font-size:11px;">매입/인건비/기타비용 없음</span>';
+  return html;
+}
+
+/** 한글 폭 고려한 시트 자동 열너비 — 글자수 기반 + 최소·최대 클램프 */
+function _autoColWidths(rows) {
+  if (!rows || !rows.length) return [];
+  const cols = Math.max(...rows.map(r => (r || []).length));
+  const widths = new Array(cols).fill(8);
+  rows.forEach(row => {
+    (row || []).forEach((cell, i) => {
+      const s = String(cell == null ? '' : cell);
+      let len = 0;
+      for (const ch of s) {
+        len += /[ㄱ-힝가-힣]/.test(ch) ? 2.2 : (/[0-9.,\-]/.test(ch) ? 1.1 : 1);
+      }
+      if (len > widths[i]) widths[i] = len;
+    });
+  });
+  return widths.map(w => ({ wch: Math.min(Math.max(Math.ceil(w) + 2, 8), 80) }));
+}
+function _addSheet(wb, rows, name) {
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = _autoColWidths(rows);
+  XLSX.utils.book_append_sheet(wb, ws, name);
+}
+
+function exportCostsExcel() {
+  const cm = document.getElementById('costsMonth');
+  if (!cm || !cm.value) { toast('월을 먼저 선택하세요', 'warn'); return; }
+  const month = cm.value;
+  const data = computeMonthlyData(month);
+  const allRecs = getAllRecords();
+  const dates = Object.keys(allRecs).filter(d => d.startsWith(month)).sort();
+  if (!dates.length) { toast(`${month} 데이터 없음`, 'warn'); return; }
+
+  // 1) 매입행 상세 (사장님 요청 핵심 — 일자×업체명×분류×금액×메모)
+  const detailRows = [['일자', '요일', '거래처', '분류', '문서', '공급가', '부가세', '합계', '결제', '사업자번호', '메모']];
+  const wdNames = ['일','월','화','수','목','금','토'];
+  dates.forEach(d => {
+    const rec = allRecs[d];
+    const wd = wdNames[new Date(d + 'T00:00:00').getDay()];
+    (rec.purchaseRows || []).forEach(r => {
+      detailRows.push([
+        d, wd,
+        r.vendor || '',
+        r.category || '',
+        r.docType || '',
+        num(r.supply),
+        num(r.vat),
+        num(r.total) || (num(r.supply) + num(r.vat)),
+        r.method || '',
+        r.bizNo || '',
+        r.memo || ''
+      ]);
+    });
+  });
+  // 매입 합계 행
+  const sumSupply = detailRows.slice(1).reduce((s, r) => s + r[5], 0);
+  const sumVat = detailRows.slice(1).reduce((s, r) => s + r[6], 0);
+  const sumTotal = detailRows.slice(1).reduce((s, r) => s + r[7], 0);
+  detailRows.push(['', '', '매입 합계', '', '', sumSupply, sumVat, sumTotal, '', '', `${detailRows.length - 1}건`]);
+
+  // 2) 인건비(알바) 상세
+  const payrollRows = [['일자', '요일', '이름', '금액', '메모']];
+  dates.forEach(d => {
+    const rec = allRecs[d];
+    const wd = wdNames[new Date(d + 'T00:00:00').getDay()];
+    (rec.payrollRows || []).forEach(r => {
+      payrollRows.push([d, wd, r.name || r.employee || '', num(r.amount), r.memo || '']);
+    });
+  });
+  if (payrollRows.length > 1) {
+    const sumPayroll = payrollRows.slice(1).reduce((s, r) => s + r[3], 0);
+    payrollRows.push(['', '', '인건비(알바) 합계', sumPayroll, `${payrollRows.length - 1}건`]);
+  }
+
+  // 3) 기타비용 (현금 지출)
+  const extraRows = [['일자', '요일', '금액', '메모']];
+  dates.forEach(d => {
+    const rec = allRecs[d];
+    const extras = rec.extras || {};
+    const exp = num(extras.expenses);
+    if (exp > 0) {
+      const wd = wdNames[new Date(d + 'T00:00:00').getDay()];
+      extraRows.push([d, wd, exp, extras.memo || '']);
+    }
+  });
+  if (extraRows.length > 1) {
+    const sumExtra = extraRows.slice(1).reduce((s, r) => s + r[2], 0);
+    extraRows.push(['', '기타비용 합계', sumExtra, `${extraRows.length - 1}건`]);
+  }
+
+  // 4) 일자×분류 매트릭스
+  const CAT_ORDER = ['식자재', '소모품', '주류/음료', '임대료', '인건비', '세금·공과', '기타'];
+  const matrix = {};
+  const totalByCat = {};
+  const totalByDate = {};
+  dates.forEach(d => {
+    matrix[d] = {};
+    totalByDate[d] = 0;
+    const rec = allRecs[d];
+    (rec.purchaseRows || []).forEach(r => {
+      const cat = r.category || '미분류';
+      const t = num(r.total) || (num(r.supply) + num(r.vat));
+      matrix[d][cat] = (matrix[d][cat] || 0) + t;
+      totalByCat[cat] = (totalByCat[cat] || 0) + t;
+      totalByDate[d] += t;
+    });
+    const payroll = (rec.payrollRows || []).reduce((s, r) => s + num(r.amount), 0);
+    if (payroll > 0) {
+      matrix[d]['인건비(알바)'] = payroll;
+      totalByCat['인건비(알바)'] = (totalByCat['인건비(알바)'] || 0) + payroll;
+      totalByDate[d] += payroll;
+    }
+    const exp = num(rec.extras && rec.extras.expenses);
+    if (exp > 0) {
+      matrix[d]['기타비용'] = exp;
+      totalByCat['기타비용'] = (totalByCat['기타비용'] || 0) + exp;
+      totalByDate[d] += exp;
+    }
+  });
+  const allCats = Object.keys(totalByCat).sort((a, b) => {
+    const ia = CAT_ORDER.indexOf(a), ib = CAT_ORDER.indexOf(b);
+    if (ia >= 0 && ib >= 0) return ia - ib;
+    if (ia >= 0) return -1;
+    if (ib >= 0) return 1;
+    return a.localeCompare(b);
+  });
+  const matrixRows = [['일자', '요일', ...allCats, '일 합계']];
+  dates.forEach(d => {
+    const wd = wdNames[new Date(d + 'T00:00:00').getDay()];
+    matrixRows.push([d, wd, ...allCats.map(c => matrix[d][c] || 0), totalByDate[d] || 0]);
+  });
+  const sumByDate = Object.values(totalByDate).reduce((s, v) => s + v, 0);
+  matrixRows.push(['월 실비 합계', '', ...allCats.map(c => totalByCat[c] || 0), sumByDate]);
+
+  // 5) 자동반영 고정비
+  const fixedItems = (data && data.fixedExpensesResolved && data.fixedExpensesResolved.items) || [];
+  const fixedRows = [['항목명', '분류', '월 금액', '적용 여부', '사유']];
+  fixedItems.forEach(i => {
+    fixedRows.push([i.name, i.category, i.amount, i.applied ? '적용' : '제외', i.reason || '']);
+  });
+  const sumFixed = fixedItems.filter(i => i.applied).reduce((s, i) => s + num(i.amount), 0);
+  fixedRows.push(['자동반영 적용 합계', '', sumFixed, '', '']);
+
+  // 6) 월 요약
+  const summary = [
+    [`${month} 비용 요약`],
+    [],
+    ['항목', '금액'],
+    ['총 매입 합계', sumTotal],
+    ['├ 매입 공급가', sumSupply],
+    ['└ 매입 부가세', sumVat],
+    ['알바 인건비 합계', payrollRows.length > 1 ? payrollRows[payrollRows.length - 1][3] : 0],
+    ['기타비용 합계', extraRows.length > 1 ? extraRows[extraRows.length - 1][2] : 0],
+    ['고정비 자동반영 합계', sumFixed],
+    [],
+    ['총 비용 (월)', sumByDate + sumFixed],
+    [],
+    ['분류별 합계 (실비)'],
+    ...allCats.map(c => [c, totalByCat[c] || 0])
+  ];
+
+  const wb = XLSX.utils.book_new();
+  _addSheet(wb, summary, '요약');
+  _addSheet(wb, detailRows, '매입 상세');
+  if (payrollRows.length > 1) _addSheet(wb, payrollRows, '알바 인건비');
+  if (extraRows.length > 1) _addSheet(wb, extraRows, '기타비용');
+  _addSheet(wb, matrixRows, '일자×분류 매트릭스');
+  _addSheet(wb, fixedRows, '고정비 자동반영');
+
+  XLSX.writeFile(wb, `비용상세_${month}.xlsx`);
+  toast(`✓ 비용상세_${month}.xlsx 저장`, 'ok');
+}
+
 /** 손익 sub-panel HTML: KPI 카드 + 일자별 + 운영 KPI + 손익계산서 + 매입분류 */
 function renderMonthlyProfitContent(data) {
   const { dates, sumSales, sumSalesSupply, sumSalesVat, sumPTotal, sumPSupply, sumPVat,
@@ -4773,6 +5264,38 @@ function renderMonthlyProfitContent(data) {
           <div class="m-card-value">${fmt(Math.round(payableVat))}</div>
           <div class="m-card-sub">매출VAT ${fmt(Math.round(sumSalesVat))} − 매입VAT ${fmt(Math.round(sumPVat))}</div>
         </div>
+        ${(() => {
+          const foodSupply = num(data.bySupplyCategory['식자재']);
+          const beverageSupply = num(data.bySupplyCategory['주류/음료']);
+          const cogsActual = foodSupply + beverageSupply;
+          const ratioActual = sumSalesSupply > 0 ? cogsActual / sumSalesSupply : 0;
+          const ratioTarget = 0.30;
+          if (monthPL >= 0) {
+            return `<div class="m-card">
+              <div class="m-card-label">손익 0 도달</div>
+              <div class="m-card-value" style="color:var(--green);">달성 +${fmt(Math.round(monthPL))}</div>
+              <div class="m-card-sub">이미 흑자 — 추가 매출 없이 손익 ≥ 0</div>
+            </div>`;
+          }
+          const need = -monthPL;
+          const _addSupply = (vr) => (vr < 1 ? need / (1 - vr) : Infinity);
+          const addSupplyActual = _addSupply(ratioActual);
+          const addSupplyTarget = _addSupply(ratioTarget);
+          const addTotalActual = isFinite(addSupplyActual) ? addSupplyActual * 1.1 : 0;
+          const addTotalTarget = isFinite(addSupplyTarget) ? addSupplyTarget * 1.1 : 0;
+          return `<div class="m-card">
+            <div class="m-card-label">손익 0 도달까지 필요 추가 매출</div>
+            <div class="m-card-value" style="color:var(--red);font-size:16px;line-height:1.3;">
+              ${isFinite(addTotalActual) ? '₩' + fmt(Math.round(addTotalActual)) : '∞'}
+              <span style="font-size:11px;font-weight:400;color:var(--text-3);">현재 비율 ${(ratioActual*100).toFixed(1)}%</span>
+            </div>
+            <div class="m-card-sub" style="line-height:1.5;">
+              현재 변동비율 기준: 추가매출 <strong>${isFinite(addTotalActual) ? '₩' + fmt(Math.round(addTotalActual)) : '도달 불가'}</strong> (공급가 ${isFinite(addSupplyActual) ? '₩' + fmt(Math.round(addSupplyActual)) : '∞'})<br>
+              목표 30% 기준: 추가매출 <strong>${isFinite(addTotalTarget) ? '₩' + fmt(Math.round(addTotalTarget)) : '∞'}</strong> (공급가 ${isFinite(addSupplyTarget) ? '₩' + fmt(Math.round(addSupplyTarget)) : '∞'})<br>
+              <span style="color:var(--text-3);">손익 ${fmt(Math.round(monthPL))} ÷ (1 − 변동비율)</span>
+            </div>
+          </div>`;
+        })()}
       </div>
 
       ${renderCostRatioCards(data.costRatios, '월 평균 (영업일 ' + dates.length + '일)')}
@@ -5112,7 +5635,7 @@ function exportMonthlyExcel() {
     ['월 손익 (공급가 기준)', Math.round(data.monthPL), '매출공급가 − 매입공급가 − 기타비용 − 인건비 − 고정비'],
     ['납부세액 (추정)', Math.round(data.payableVat), '매출세액 − 매입세액']
   ];
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), '요약');
+  _addSheet(wb, summary, '요약');
 
   // Sheet 1-B: 손익계산서 (수직 PnL)
   const salesSupply = Math.round(data.sumSalesSupply);
@@ -5146,7 +5669,7 @@ function exportMonthlyExcel() {
   isSheet.push(['영업이익', opIncome, pct(opIncome)]);
   isSheet.push(['(-) 부가가치세 납부(추정)', -payableVat, pct(payableVat)]);
   isSheet.push(['당기순이익(간이)', netIncome, pct(netIncome)]);
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(isSheet), '손익계산서');
+  _addSheet(wb, isSheet, '손익계산서');
 
   // Sheet 2: 일자별
   const daily = [['날짜', '매출', '매입', '인건비', '할인·쿠폰', '기타비용', '일 손익', '상태']];
@@ -5161,7 +5684,7 @@ function exportMonthlyExcel() {
     data.dailyRows.reduce((s,r)=>s+r.pl,0),
     ''
   ]);
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(daily), '일자별');
+  _addSheet(wb, daily, '일자별');
 
   // Sheet 3: 매입 분류별
   const cats = Object.entries(data.byCategory).sort((a,b) => b[1] - a[1]);
@@ -5169,7 +5692,7 @@ function exportMonthlyExcel() {
     const catSheet = [['분류', '합계(부가세 포함)']];
     cats.forEach(([k, v]) => catSheet.push([k, Math.round(v)]));
     catSheet.push(['합계', Math.round(cats.reduce((s,[,v])=>s+v,0))]);
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(catSheet), '매입분류');
+    _addSheet(wb, catSheet, '매입분류');
   }
 
   // Sheet 4: 정률 분배
@@ -5189,7 +5712,7 @@ function exportMonthlyExcel() {
       ''
     ]);
   }
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(distSheet), '정률분배');
+  _addSheet(wb, distSheet, '정률분배');
 
   // Sheet 5: 홈택스 대사 (있을 때만)
   const rec = reconcileHometax(data.month);
@@ -5214,7 +5737,7 @@ function exportMonthlyExcel() {
       hSheet.push(['일자','거래처','공급가','세액','합계','종류']);
       rec.orphanApp.forEach(i => { const a = rec.appRows[i]; hSheet.push([a.date, a.vendor, a.supply, a.vat, a.total, a.docType]); });
     }
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(hSheet), '홈택스대사');
+    _addSheet(wb, hSheet, '홈택스대사');
   }
 
   XLSX.writeFile(wb, `월정산_${data.month}.xlsx`);
@@ -6815,6 +7338,7 @@ function confirmCloseDay() {
   all[state.businessDate] = record;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
   localStorage.removeItem('draft_' + state.businessDate); // clean up draft after close
+  _queueCloudUpload();  // 마감 즉시 클라우드 자동 백업
   document.getElementById('closeModal').classList.remove('active');
   document.getElementById('sbCloseStatus').textContent = '마감완료';
   updateDateStatus();
@@ -6900,16 +7424,25 @@ function renderHistory() {
     return `
       <div class="history-item">
         <div class="history-date-col">
-          <div class="history-date">${d}</div>
+          <div class="history-date">${d} <span style="color:var(--text-3);font-weight:400;font-size:11px;">(${['일','월','화','수','목','금','토'][new Date(d + 'T00:00:00').getDay()]})</span></div>
           <div class="history-time">${new Date(r.closedAt).toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit'})}</div>
         </div>
         <div class="history-info">
           <div>매출 <span class="amt">${fmt(r.totals.posTotal)}</span> · 카드 ${fmt(r.totals.posCard)} · 현금 ${fmt(r.totals.posCash)}</div>
+          <div>매입 <span class="amt">${fmt((r.purchaseRows || []).reduce((s, p) => s + num(p.total) || (num(p.supply) + num(p.vat)), 0))}</span> · ${(r.purchaseRows || []).length}건${(() => {
+            const byCat = {};
+            (r.purchaseRows || []).forEach(p => {
+              const t = num(p.total) || (num(p.supply) + num(p.vat));
+              if (p.category) byCat[p.category] = (byCat[p.category] || 0) + t;
+            });
+            const cats = Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${fmt(v)}`).join(' · ');
+            return cats ? ' · ' + cats : '';
+          })()}</div>
           <div class="history-meta">POS ${r.posRows.length}건 · 전표 ${r.cardRows.length}건${issueMeta}</div>
         </div>
         <div class="history-actions">
           <button class="btn btn-small btn-ghost" onclick="toggleEventDay('${d}')" title="단체예약·행사로 인한 이상 매출 표시 — 추정에서 제외">${isEvent ? '이벤트 해제' : '이벤트 표시'}</button>
-          <button class="btn btn-small btn-ghost" onclick="reopenRecord('${d}')">열기</button>
+          <button class="btn btn-small btn-ghost" onclick="reopenRecord('${d}');switchTab('input')">열기</button>
           <button class="btn btn-small btn-ghost btn-danger-ghost" onclick="deleteRecord('${d}')">삭제</button>
         </div>
       </div>
@@ -7196,7 +7729,7 @@ function renderDailyChart(records) {
     const fillCol = isPeak ? 'var(--text)' : (wd === 0 || wd === 6 ? 'var(--accent)' : 'var(--text-2)');
     const op = isPeak ? '1' : '0.65';
 
-    bars += `<g class="bar-group" style="cursor:pointer;" onclick="reopenRecord('${r.date}')">
+    bars += `<g class="bar-group" style="cursor:pointer;" onclick="reopenRecord('${r.date}');switchTab('input')">
       <rect x="${x}" y="${y}" width="${w}" height="${barH}" fill="${fillCol}" opacity="${op}" rx="2">
         <title>${r.date} (${['일','월','화','수','목','금','토'][wd]})&#10;매출 ${fmt(v)}&#10;주문 ${r.posRows.length}건</title>
       </rect>
@@ -7589,9 +8122,11 @@ function renderAvgCheckTrendCard(items) {
 
   let dots = '';
   validItems.forEach((x, i) => {
-    dots += `<circle cx="${xAt(i)}" cy="${yAt(x.avgCheck)}" r="2.5" fill="var(--text)">
-      <title>${x.date}&#10;객단가 ${fmt(Math.round(x.avgCheck))}&#10;매출 ${fmt(x.sales)} · 영수증 ${x.count}건</title>
-    </circle>`;
+    const cx = xAt(i), cy = yAt(x.avgCheck);
+    // 시각용 점은 적당히, 호버 hitbox는 크게 — 마우스 올리기 쉽게
+    dots += `<circle cx="${cx}" cy="${cy}" r="4" fill="var(--text)" pointer-events="none"/>` +
+      `<circle cx="${cx}" cy="${cy}" r="12" fill="transparent" style="cursor:pointer;">` +
+      `<title>${x.date}&#10;객단가 ${fmt(Math.round(x.avgCheck))}&#10;매출 ${fmt(x.sales)} · 영수증 ${x.count}건</title></circle>`;
   });
 
   // y축 라벨
@@ -7683,7 +8218,8 @@ function reopenRecord(date) {
 
   updateDateStatus();
   updateAll();
-  switchTab('input');
+  // 탭 전환은 명시적 호출자(마감내역 "열기" 버튼, 차트 클릭, 파일 import)에 위임.
+  // 헤더 날짜 피커로 인한 loadDraft 호출 시에는 현재 탭(검증결과 등) 그대로 유지.
   toast(`${date} 불러왔습니다`, 'ok');
 }
 
@@ -8046,6 +8582,7 @@ async function handleSingleLoad(file) {
       state.businessDate = data.date;
       document.getElementById('businessDate').value = data.date;
       reopenRecord(data.date);
+      switchTab('input');
       renderHistory();
       toast(`${data.date} 복원됨`, 'ok');
       _queueCloudUpload();
@@ -8075,6 +8612,7 @@ async function handleBatchLoad(files) {
   }
   localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
   importedDates.forEach(d => unmarkDateDeleted(d));  // 의도적 복원 → tombstone 제거
+  _queueCloudUpload();  // 일괄 import 후 클라우드 자동 백업
   renderHistory();
   let msg = `일괄 import: ${added}개 추가, ${replaced}개 덮어씀`;
   if (failed > 0) msg += ` · ${failed}개 실패(${failedNames.join(', ')})`;
