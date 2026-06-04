@@ -7438,6 +7438,22 @@ function renderHistory() {
             const cats = Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${fmt(v)}`).join(' · ');
             return cats ? ' · ' + cats : '';
           })()}</div>
+          ${(() => {
+            const ex = r.extras || {};
+            const actual = num(ex.actualCash);
+            const opening = num(ex.openingCash);
+            const expenses = num(ex.expenses);
+            const posCash = num(r.totals && r.totals.posCash);
+            if (!actual && !opening && !posCash && !expenses) return '';
+            const delta = actual - opening;
+            const deltaStr = delta > 0 ? `<span style="color:var(--green);">+${fmt(delta)}</span>` :
+                             delta < 0 ? `<span style="color:var(--red);">${fmt(delta)}</span>` : '±0';
+            const parts = [];
+            if (posCash > 0) parts.push(`현금매출 +${fmt(posCash)}`);
+            if (expenses > 0) parts.push(`지출 -${fmt(expenses)}`);
+            const breakdown = parts.length ? ` (${parts.join(' · ')})` : '';
+            return `<div>매장 시재 <span class="amt">${fmt(actual)}</span> · 전일 이월 ${fmt(opening)} → 당일 ${deltaStr}${breakdown}</div>`;
+          })()}
           <div class="history-meta">POS ${r.posRows.length}건 · 전표 ${r.cardRows.length}건${issueMeta}</div>
         </div>
         <div class="history-actions">
