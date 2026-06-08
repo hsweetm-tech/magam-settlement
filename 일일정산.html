@@ -2833,12 +2833,12 @@ function computeMonthlyDistribution(monthPL, sumDiscounts) {
    ======================================================================== */
 const HOMETAX_COLUMNS = {
   date:   ['작성일자','거래일자','공급일자','결제일자','일자','거래년월일','승인일자','승인일시'],
-  vendor: ['상호','거래처','공급자','공급자상호','가맹점','가맹점명','상호명','공급자명'],
-  bizNo:  ['사업자번호','사업자등록번호','공급자등록번호','등록번호','가맹점사업자번호','공급자사업자등록번호'],
-  representative: ['대표자명','대표자','대표명','공급자대표자명','공급자대표','가맹점대표자명'],
+  vendor: ['공급자상호','공급자명','공급자','상호','거래처','가맹점','가맹점명','상호명'],
+  bizNo:  ['공급자사업자등록번호','공급자등록번호','사업자등록번호','사업자번호','등록번호','가맹점사업자번호'],
+  representative: ['공급자대표자명','공급자대표','대표자명','대표자','대표명','가맹점대표자명'],
   supply: ['공급가액','공급가','공급가(원)'],
   vat:    ['세액','부가세','매입세액','부가가치세','부가세액','부가세(원)','세액(원)'],
-  total:  ['합계','합계금액','총액','거래금액','총거래금액','금액','승인금액','승인금액(원)','거래금액(원)']
+  total:  ['합계금액','합계','총액','거래금액','총거래금액','금액','승인금액','승인금액(원)','거래금액(원)']
 };
 
 function detectHometaxDocType(rows, filename) {
@@ -6487,12 +6487,48 @@ function renderHometaxReconciliation(month) {
   const diff = sumHometaxTotal - sumAppTotal;
   const statusColor = (oh === 0 && oa === 0) ? 'var(--green)' : 'var(--orange)';
 
+  // 사업자번호 → 상호 룩업 (입력 매입 + 전체 record purchaseRows + contacts에서 수집)
+  // 홈택스 export에 상호 누락된 경우 보강용
+  const bizToVendor = {};
+  const _isBizNoLike = s => /^\d{3}-?\d{2}-?\d{5}$/.test(String(s||'').trim()) || /^\d{10}$/.test(String(s||'').trim());
+  const _putBiz = (bizNo, vendor) => {
+    const b = _normalizeBizNo(bizNo);
+    const v = String(vendor||'').trim();
+    if (!b || !v || _isBizNoLike(v)) return;
+    if (!bizToVendor[b]) bizToVendor[b] = v;
+  };
+  // 1) 이번 달 매입 입력행에서
+  rec.appRows.forEach(a => _putBiz(a.bizNo, a.vendor));
+  // 2) 전체 record(다른 월 포함)의 purchaseRows에서도 — 한 번 입력된 상호는 재활용
+  try {
+    const allRec = getAllRecords();
+    Object.values(allRec).forEach(r => (r.purchaseRows||[]).forEach(p => _putBiz(p.bizNo, p.vendor)));
+  } catch(e) {}
+  // 3) 홈택스 본인 다른 행에서 상호가 정상인 것
+  rec.hometaxRows.forEach(h => _putBiz(h.bizNo, h.vendor));
+
   // 홈택스 각 행이 매칭됐는지 표시 — orphanHometax 인덱스 set 만들고 매칭상태 컬럼 추가
+  // + 상호가 비었거나 사업자번호 형태면 룩업으로 진짜 상호 보강
   const orphanSet = new Set(rec.orphanHometax);
   const allHometaxRows = rec.hometaxRows.map((h, i) => {
     const matchedItem = rec.matched.find(m => m.hometaxIdx === i);
-    return { ...h, _matched: !orphanSet.has(i), _matchedApp: matchedItem };
+    let vendor = h.vendor;
+    if (!vendor || _isBizNoLike(vendor)) {
+      const looked = bizToVendor[_normalizeBizNo(h.bizNo)];
+      if (looked) vendor = looked;
+    }
+    return { ...h, vendor, _matched: !orphanSet.has(i), _matchedApp: matchedItem };
   }).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  // orphanHometax 섹션 표시용으로도 같은 보강 적용
+  const orphanHtEnriched = rec.orphanHometax.map(i => {
+    const h = rec.hometaxRows[i];
+    let vendor = h.vendor;
+    if (!vendor || _isBizNoLike(vendor)) {
+      const looked = bizToVendor[_normalizeBizNo(h.bizNo)];
+      if (looked) vendor = looked;
+    }
+    return { ...h, vendor, _origIdx: i };
+  });
 
   return `
     <div style="margin-top: 24px;">
@@ -6549,7 +6585,7 @@ function renderHometaxReconciliation(month) {
           <table class="m-table">
             <thead><tr><th>일자</th><th>상호 (업체명)</th><th>대표자명</th><th>사업자번호</th><th style="text-align:right;">공급가</th><th style="text-align:right;">세액</th><th style="text-align:right;">합계</th><th>종류</th></tr></thead>
             <tbody>
-              ${rec.orphanHometax.slice(0, 30).map(i => { const h = rec.hometaxRows[i]; return `
+              ${orphanHtEnriched.slice(0, 30).map(h => `
                 <tr>
                   <td>${escapeHtml(h.date || '-')}</td>
                   <td><strong>${escapeHtml(h.vendor || '-')}</strong></td>
@@ -6559,7 +6595,7 @@ function renderHometaxReconciliation(month) {
                   <td style="text-align:right;">${fmt(num(h.vat))}</td>
                   <td style="text-align:right;"><strong>${fmt(num(h.total))}</strong></td>
                   <td>${escapeHtml(h.docType || '-')}</td>
-                </tr>`; }).join('')}
+                </tr>`).join('')}
             </tbody>
           </table>
           ${oh > 30 ? `<div style="font-size:11px;color:var(--text-3);margin-top:4px;">외 ${oh - 30}건 더</div>` : ''}
@@ -6832,12 +6868,21 @@ async function parseExcelAutoHeader(file, headerKeywords) {
     return XLSX.utils.sheet_to_json(ws, { defval: '' });
   }
   const headers = aoa[bestIdx].map(h => String(h).trim());
+  // 중복 헤더 처리: 홈택스 양식의 '상호'/'대표자명'은 G/H (공급자) + L/M (공급받는자=우리회사)에 중복 등장
+  // 첫 번째(공급자=매입처) 우선 사용, 이후 중복은 무시
+  const seenHeaders = new Set();
+  const effectiveHeaders = headers.map(h => {
+    if (!h) return null;
+    if (seenHeaders.has(h)) return null; // 중복 — 공급받는자 정보 무시
+    seenHeaders.add(h);
+    return h;
+  });
   const out = [];
   for (let i = bestIdx + 1; i < aoa.length; i++) {
     const row = aoa[i];
     if (!row || row.every(c => c === '' || c == null)) continue;
     const obj = {};
-    headers.forEach((h, j) => {
+    effectiveHeaders.forEach((h, j) => {
       if (h) obj[h] = row[j] !== undefined ? row[j] : '';
     });
     out.push(obj);
