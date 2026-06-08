@@ -6368,6 +6368,14 @@ function renderHometaxReconciliation(month) {
   const sumAppTotal = rec.appRows.reduce((s, r) => s + num(r.total), 0);
   const diff = sumHometaxTotal - sumAppTotal;
   const statusColor = (oh === 0 && oa === 0) ? 'var(--green)' : 'var(--orange)';
+
+  // 홈택스 각 행이 매칭됐는지 표시 — orphanHometax 인덱스 set 만들고 매칭상태 컬럼 추가
+  const orphanSet = new Set(rec.orphanHometax);
+  const allHometaxRows = rec.hometaxRows.map((h, i) => {
+    const matchedItem = rec.matched.find(m => m.hometaxIdx === i);
+    return { ...h, _matched: !orphanSet.has(i), _matchedApp: matchedItem };
+  }).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
   return `
     <div style="margin-top: 24px;">
       <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">홈택스 적격증빙 대사</div>
@@ -6377,6 +6385,45 @@ function renderHometaxReconciliation(month) {
         <div class="m-card"><div class="m-card-label">일치</div><div class="m-card-value" style="color:var(--green);">${m}건</div></div>
         <div class="m-card"><div class="m-card-label">홈택스만 / 입력만</div><div class="m-card-value" style="color:${statusColor};">${oh} / ${oa}</div><div class="m-card-sub">차이 ${fmt(Math.round(diff))}</div></div>
       </div>
+
+      <details open style="margin-bottom: 20px;">
+        <summary style="cursor:pointer;font-weight:600;font-size:13px;margin-bottom:8px;">홈택스 전체 적재 내역 (${total}건)</summary>
+        <div class="table-wrap"><table class="data-table" style="font-size:12px;">
+          <thead><tr>
+            <th>작성일</th>
+            <th>상호 (업체명)</th>
+            <th>대표자명</th>
+            <th style="font-family:monospace;">사업자번호</th>
+            <th class="num-cell">공급가</th>
+            <th class="num-cell">세액</th>
+            <th class="num-cell">합계</th>
+            <th>종류</th>
+            <th>매칭 상태</th>
+          </tr></thead>
+          <tbody>
+            ${allHometaxRows.map(h => {
+              const statusBadge = h._matched
+                ? `<span style="color:var(--green);font-weight:600;font-size:11px;">✓ 매칭</span>`
+                : `<span style="color:var(--orange);font-weight:600;font-size:11px;">⚠ 입력 누락</span>`;
+              const matchedAppInfo = h._matchedApp && h._matchedApp.appIdx != null
+                ? `<span style="font-size:10px;color:var(--text-3);" title="${escapeHtml(rec.appRows[h._matchedApp.appIdx].vendor || '')}">→ 입력행 #${h._matchedApp.appIdx + 1}</span>`
+                : '';
+              return `
+                <tr ${h._matched ? '' : 'style="background:var(--orange-bg, #fff4e6);"'}>
+                  <td>${escapeHtml(h.date || '-')}</td>
+                  <td><strong>${escapeHtml(h.vendor || '-')}</strong></td>
+                  <td>${escapeHtml(h.representative || '-')}</td>
+                  <td style="font-family:monospace;font-size:11px;">${escapeHtml(h.bizNo || '-')}</td>
+                  <td class="num-cell">${fmt(num(h.supply))}</td>
+                  <td class="num-cell">${fmt(num(h.vat))}</td>
+                  <td class="num-cell"><strong>${fmt(num(h.total))}</strong></td>
+                  <td><span style="font-size:11px;color:var(--text-3);">${escapeHtml(h.docType || '세금계산서')}</span></td>
+                  <td>${statusBadge} ${matchedAppInfo}</td>
+                </tr>`;
+            }).join('')}
+          </tbody>
+        </table></div>
+      </details>
 
       ${oh > 0 ? `
         <div style="margin-bottom: 14px;">
