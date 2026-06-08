@@ -1843,6 +1843,7 @@ body.tab-summary main { grid-template-columns: 1fr; }
         <div class="msub-nav">
           <button class="msub-btn active" data-msub="profit">손익</button>
           <button class="msub-btn" data-msub="dist">분배</button>
+          <button class="msub-btn" data-msub="bank">통장</button>
           <button class="msub-btn" data-msub="proof">증빙</button>
           <button class="msub-btn" data-msub="settings">설정</button>
         </div>
@@ -1887,6 +1888,33 @@ body.tab-summary main { grid-template-columns: 1fr; }
             </label>
           </div>
           <div id="distResultContent" style="margin-top:20px;"></div>
+        </div>
+
+        <!-- 통장 sub-panel: KB 월 엑셀 업로드 + 자동 대사 (2026-06-02 추가) -->
+        <div class="msub-panel" id="msub-bank">
+          <div class="msub-section-head">
+            <div class="msub-section-title">국민은행 통장내역 (월 엑셀 업로드)</div>
+            <div class="msub-section-note" id="bankMonthlyCount">0건</div>
+          </div>
+          <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
+            국민은행 인터넷뱅킹에서 "조회기간: 1일~말일" 옵션으로 다운로드한 <code>.xls</code> 파일을 업로드하면 자동으로 일자별로 분배되어 각 마감 record의 통장내역에 들어갑니다. 동시에 카드매출 입금·매입 출금·인건비 출금·고정비 출금을 시스템과 자동 대사합니다.
+          </div>
+          <div class="upload-grid">
+            <div class="upload-zone" id="kbBankUpload">
+              <input type="file" id="kbBankFile" accept=".xls,.xlsx,.csv" style="display:none;">
+              <svg class="icon icon-lg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              <div class="upload-label">KB 통장 월 엑셀 업로드</div>
+              <div class="upload-hint">국민은행 .xls / .xlsx</div>
+            </div>
+            <div class="upload-zone" style="cursor:default;border-style:solid;">
+              <div style="font-size:11px;color:var(--text-3);">현재 월 적재된 통장 거래</div>
+              <div style="font-size:18px;font-weight:600;margin:4px 0;" id="kbBankLoadedCount">0건</div>
+              <div style="display:flex;gap:6px;justify-content:center;">
+                <button class="btn btn-small" onclick="clearKbBankCurrentMonth()" style="font-size:11px;">초기화</button>
+              </div>
+            </div>
+          </div>
+          <div id="bankReconcileContent" style="margin-top:20px;"></div>
         </div>
 
         <!-- 증빙 sub-panel: 홈택스 업로드 + 대사 결과 -->
@@ -2550,7 +2578,7 @@ function init() {
     else if (tabName === 'costs') { renderCostsTab(month); }
   }
   window.syncSelectedMonth = syncSelectedMonth;
-  if (monthlyMonthEl) monthlyMonthEl.addEventListener('change', (e) => syncSelectedMonth(e.target.value));
+  if (monthlyMonthEl) monthlyMonthEl.addEventListener('change', (e) => { syncSelectedMonth(e.target.value); if (typeof updateKbBankStatus === 'function') updateKbBankStatus(); if (typeof renderBankReconcile === 'function') renderBankReconcile(e.target.value); });
   if (forecastMonthEl) forecastMonthEl.addEventListener('change', (e) => syncSelectedMonth(e.target.value));
   if (costsMonthEl) costsMonthEl.addEventListener('change', (e) => syncSelectedMonth(e.target.value));
   // 월정산 sub-tab navigation
@@ -2567,6 +2595,7 @@ function init() {
   }
   // 홈택스 업로드 init
   setupHometaxUpload();
+  setupKbBankUpload();
   updateHometaxStatus();
   setupUpload('posFile', 'posUpload', 'pos');
   setupUpload('cardFile', 'cardUpload', 'card');
@@ -2974,6 +3003,293 @@ function updateHometaxStatus() {
   if (c2) c2.textContent = `${count}건`;
 }
 
+/* ========================================================================
+   국민은행 통장 월 엑셀 업로드 + 자동 일자별 분배 + 자동 대사 (2026-06-02)
+   ======================================================================== */
+const KB_BANK_KEY = 'kb_bank_v1';
+function getKbBankData(month) {
+  try {
+    const all = JSON.parse(localStorage.getItem(KB_BANK_KEY) || '{}');
+    return all[month] || [];
+  } catch { return []; }
+}
+function saveKbBankData(month, rows) {
+  try {
+    const all = JSON.parse(localStorage.getItem(KB_BANK_KEY) || '{}');
+    all[month] = rows;
+    localStorage.setItem(KB_BANK_KEY, JSON.stringify(all));
+    _queueCloudUpload();
+  } catch {}
+}
+function clearKbBankCurrentMonth() {
+  const mm = document.getElementById('monthlyMonth');
+  if (!mm || !mm.value) { toast('월을 먼저 선택하세요', 'warn'); return; }
+  if (!confirm(`${mm.value}월 적재된 통장 데이터를 모두 지울까요? (각 record의 bankRows도 비웁니다)`)) return;
+  const month = mm.value;
+  saveKbBankData(month, []);
+  // 각 record bankRows 비우기 (KB 자동 분배분만)
+  const all = getAllRecords();
+  Object.keys(all).filter(d => d.startsWith(month)).forEach(d => {
+    all[d].bankRows = (all[d].bankRows || []).filter(b => !b._fromKb);
+  });
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+  _queueCloudUpload();
+  updateKbBankStatus();
+  renderBankReconcile(month);
+  toast(`${month} 통장 데이터 초기화`, 'ok');
+}
+function updateKbBankStatus() {
+  const mm = document.getElementById('monthlyMonth');
+  const month = mm ? mm.value : '';
+  const count = month ? getKbBankData(month).length : 0;
+  const c1 = document.getElementById('bankMonthlyCount');
+  const c2 = document.getElementById('kbBankLoadedCount');
+  if (c1) c1.textContent = month ? `${month} · ${count}건` : '0건';
+  if (c2) c2.textContent = `${count}건`;
+}
+
+/**
+ * KB 통장 엑셀 행 → 표준화된 거래 객체 배열
+ * KB 양식: 첫 7행 헤더, 8행부터 데이터 (A=No, B=거래일시, C=보낸분/받는분, D=출금액, E=입금액, F=잔액, G=내통장표시, H=메모, I=적요, J=처리점, K=구분)
+ */
+function parseKbBankRows(file) {
+  return file.arrayBuffer().then(buf => {
+    const wb = XLSX.read(buf, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    // 헤더 행 찾기 (A 컬럼이 'No'인 행)
+    let headerRowIdx = -1;
+    for (let i = 0; i < aoa.length; i++) {
+      const first = String(aoa[i][0] || '').trim();
+      if (first === 'No' || first === '번호' || first === 'no') { headerRowIdx = i; break; }
+    }
+    if (headerRowIdx < 0) return [];
+    const out = [];
+    for (let i = headerRowIdx + 1; i < aoa.length; i++) {
+      const row = aoa[i];
+      if (!row || !row[1]) continue;
+      const datetime = String(row[1]).trim();
+      const dateMatch = datetime.match(/(\d{4})[.\-](\d{2})[.\-](\d{2})/);
+      if (!dateMatch) continue;
+      const date = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+      const time = (datetime.split(' ')[1] || '').slice(0, 5);
+      const desc = String(row[2] || '').trim();
+      const withdraw = num(String(row[3]).replace(/[,\s]/g, '')) || 0;
+      const deposit = num(String(row[4]).replace(/[,\s]/g, '')) || 0;
+      const balance = num(String(row[5]).replace(/[,\s]/g, '')) || 0;
+      const memo = String(row[6] || '').trim();
+      const memo2 = String(row[7] || '').trim();
+      const summary = String(row[8] || '').trim();
+      const branch = String(row[9] || '').trim();
+      out.push({
+        date, time, desc, withdraw, deposit, balance,
+        memo: [memo, memo2].filter(Boolean).join(' / '),
+        summary, branch,
+        kind: inferBankKind(desc, summary, withdraw, deposit),
+        _fromKb: true
+      });
+    }
+    return out;
+  });
+}
+
+/** 거래 종류 자동 추론 — kind 분류 */
+function inferBankKind(desc, summary, withdraw, deposit) {
+  const d = (desc || '') + ' ' + (summary || '');
+  if (deposit > 0) {
+    // 입금 — 카드사 정산 / 매장 자체 입금
+    if (/카드|BC|국민|삼성|신한|하나|롯데|우리|현대|NH|비씨|가맹/.test(d)) return '카드입금';
+    if (/에비뉴|아스트라|매장/.test(d)) return '매장입금';
+    return '기타입금';
+  }
+  // 출금
+  if (/카드|체크/.test(summary) && /카드|체크/.test(d) === false && /^KB/.test(summary) === false) return '카드출금';
+  if (/CMS|FBS|자동이체/.test(summary)) {
+    if (/임대|관리|월세/.test(d)) return '임대료';
+    if (/전기|한전/.test(d)) return '공과금';
+    if (/KT|통신|SK|LG/.test(d)) return '통신비';
+    if (/세무|회계/.test(d)) return '세무비';
+    return '자동이체';
+  }
+  if (/인건비|급여|월급/.test(d)) return '인건비';
+  if (/단지푸드|쉐프스푸드|에스피드레이딩|파머스|동방제지|한국프라임미트/.test(d)) return '매입송금';
+  return '기타출금';
+}
+
+/** 통장 행을 일자별로 각 record의 bankRows에 분배 (기존 _fromKb는 제거 후 재적재) */
+function distributeKbRowsToRecords(rows, month) {
+  const all = getAllRecords();
+  // 1. 기존 KB 자동분배분 제거
+  Object.keys(all).filter(d => d.startsWith(month)).forEach(d => {
+    all[d].bankRows = (all[d].bankRows || []).filter(b => !b._fromKb);
+  });
+  // 2. 각 row를 해당 일자 record에 추가 (없으면 그 일자 record 생성)
+  rows.forEach(r => {
+    if (!all[r.date]) {
+      all[r.date] = { date: r.date, totals: {}, posRows: [], cardRows: [], purchaseRows: [], payrollRows: [], bankRows: [], extras: {}, issues: [], status: 'draft' };
+    }
+    if (!all[r.date].bankRows) all[r.date].bankRows = [];
+    all[r.date].bankRows.push({
+      date: r.date,
+      time: r.time,
+      desc: r.desc,
+      withdraw: r.withdraw,
+      deposit: r.deposit,
+      memo: r.memo,
+      kind: r.kind,
+      _fromKb: true
+    });
+  });
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+  _queueCloudUpload();
+}
+
+/** KB 통장 vs 시스템 자동 대사 4종 */
+function reconcileKbBank(month) {
+  const rows = getKbBankData(month);
+  if (!rows.length) return null;
+  const all = getAllRecords();
+  const dates = Object.keys(all).filter(d => d.startsWith(month)).sort();
+
+  // 1. 카드 입금 대사 — cardRows 합 vs 통장 카드입금 합 (월 단위, 일자별 매칭은 정산일 시차 있어 어려움)
+  const sysCardSales = dates.reduce((s, d) => s + (all[d].cardRows || []).reduce((ss, c) => ss + num(c.amount), 0), 0);
+  const bankCardIn = rows.filter(r => r.kind === '카드입금').reduce((s, r) => s + r.deposit, 0);
+
+  // 2. 매입 송금 대사 — 거래처별 매칭
+  const sysVendorOutflow = {};
+  dates.forEach(d => {
+    (all[d].purchaseRows || []).filter(p => p.method === '계좌이체').forEach(p => {
+      const v = (p.vendor || '').replace(/\(주\)|주식회사|\s/g, '');
+      sysVendorOutflow[v] = (sysVendorOutflow[v] || 0) + num(p.total);
+    });
+  });
+  const bankVendorOutflow = {};
+  rows.filter(r => r.kind === '매입송금').forEach(r => {
+    const v = (r.desc || '').replace(/\(주\)|주식회사|\s/g, '');
+    bankVendorOutflow[v] = (bankVendorOutflow[v] || 0) + r.withdraw;
+  });
+
+  // 3. 인건비 대사 — 시스템 인건비(고정비+payrollRows) vs 통장 인건비 출금
+  const sysLabor = dates.reduce((s, d) => s + (all[d].payrollRows || []).reduce((ss, p) => ss + num(p.amount), 0), 0);
+  const fixedLabor = getFixedExpenses().filter(e => e.category === '인건비').reduce((s, e) => s + num(e.amount), 0);
+  const bankLabor = rows.filter(r => r.kind === '인건비').reduce((s, r) => s + r.withdraw, 0);
+
+  // 4. 고정비 출금 — 임대료/공과금/통신비
+  const bankFixed = {};
+  rows.filter(r => ['임대료', '공과금', '통신비', '세무비', '자동이체'].includes(r.kind)).forEach(r => {
+    bankFixed[r.kind] = (bankFixed[r.kind] || 0) + r.withdraw;
+  });
+  const sysFixedByCat = {};
+  getFixedExpenses().forEach(e => {
+    if (e.category !== '인건비') sysFixedByCat[e.category] = (sysFixedByCat[e.category] || 0) + num(e.amount);
+  });
+
+  // 카드 출금 (체크카드) — 매입행 카드결제와 매칭
+  const sysCardPurchase = dates.reduce((s, d) => s + (all[d].purchaseRows || []).filter(p => /카드/.test(p.method || '')).reduce((ss, p) => ss + num(p.total), 0), 0);
+  const bankCardOut = rows.filter(r => r.kind === '카드출금').reduce((s, r) => s + r.withdraw, 0);
+
+  return {
+    month,
+    bankRowsCount: rows.length,
+    cardSales: { sys: sysCardSales, bank: bankCardIn, diff: bankCardIn - sysCardSales },
+    cardOut: { sys: sysCardPurchase, bank: bankCardOut, diff: bankCardOut - sysCardPurchase },
+    labor: { sys: sysLabor, fixed: fixedLabor, bank: bankLabor, diff: bankLabor - (sysLabor + fixedLabor) },
+    vendor: { sys: sysVendorOutflow, bank: bankVendorOutflow },
+    fixed: { sys: sysFixedByCat, bank: bankFixed }
+  };
+}
+
+function renderBankReconcile(month) {
+  const el = document.getElementById('bankReconcileContent');
+  if (!el) return;
+  if (!month) { el.innerHTML = ''; return; }
+  const r = reconcileKbBank(month);
+  if (!r) { el.innerHTML = `<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">${month} 통장 데이터 미적재 — 위에서 KB 엑셀 업로드하세요.</div>`; return; }
+  const fmtKRW = (n) => '₩' + fmt(Math.round(n || 0));
+  const cmpRow = (label, sys, bank, diff, tolerance) => {
+    const tol = tolerance || 100;
+    const status = Math.abs(diff) <= tol ? `<span style="color:var(--green);">일치</span>` :
+                   diff > 0 ? `<span style="color:var(--orange);">통장이 ${fmtKRW(diff)} 더 많음</span>` :
+                   `<span style="color:var(--red);">통장이 ${fmtKRW(-diff)} 더 적음</span>`;
+    return `<tr><td>${label}</td><td class="num-cell">${fmtKRW(sys)}</td><td class="num-cell">${fmtKRW(bank)}</td><td>${status}</td></tr>`;
+  };
+  // 거래처별 매칭 — 통장+시스템 합집합
+  const vendors = Array.from(new Set([...Object.keys(r.vendor.sys), ...Object.keys(r.vendor.bank)])).sort();
+  const vendorRows = vendors.map(v => {
+    const sys = r.vendor.sys[v] || 0;
+    const bank = r.vendor.bank[v] || 0;
+    const diff = bank - sys;
+    const status = Math.abs(diff) <= 100 ? `<span style="color:var(--green);">일치</span>` :
+                   sys === 0 ? `<span style="color:var(--orange);">시스템에 매입행 없음</span>` :
+                   bank === 0 ? `<span style="color:var(--red);">통장 송금 누락</span>` :
+                   `<span style="color:var(--orange);">${fmtKRW(Math.abs(diff))} 차이</span>`;
+    return `<tr><td>${v}</td><td class="num-cell">${fmtKRW(sys)}</td><td class="num-cell">${fmtKRW(bank)}</td><td>${status}</td></tr>`;
+  }).join('');
+  // 고정비 매칭
+  const fcats = Array.from(new Set([...Object.keys(r.fixed.sys), ...Object.keys(r.fixed.bank)])).sort();
+  const fixedRowsHtml = fcats.map(c => {
+    const sys = r.fixed.sys[c] || 0;
+    const bank = r.fixed.bank[c] || 0;
+    const diff = bank - sys;
+    const status = sys === 0 && bank > 0 ? `<span style="color:var(--orange);">설정에 없음</span>` :
+                   bank === 0 && sys > 0 ? `<span style="color:var(--red);">통장 출금 없음</span>` :
+                   Math.abs(diff) <= 100 ? `<span style="color:var(--green);">일치</span>` :
+                   `<span style="color:var(--orange);">${fmtKRW(Math.abs(diff))} 차이</span>`;
+    return `<tr><td>${c}</td><td class="num-cell">${fmtKRW(sys)}</td><td class="num-cell">${fmtKRW(bank)}</td><td>${status}</td></tr>`;
+  }).join('');
+  el.innerHTML = `
+    <div class="msub-section-head"><div class="msub-section-title">자동 대사 결과 (${month}, 통장 ${r.bankRowsCount}건)</div></div>
+    <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">시스템 입력값과 통장 거래를 자동 매칭합니다. 일치 = 100원 이내 / 차이가 있으면 누락·지연·이중입금 등 확인 필요.</div>
+    <div class="table-wrap"><table class="data-table">
+      <thead><tr><th>항목</th><th class="num-cell">시스템</th><th class="num-cell">통장</th><th>상태</th></tr></thead>
+      <tbody>
+        ${cmpRow('카드매출 입금 (월 합)', r.cardSales.sys, r.cardSales.bank, r.cardSales.diff, 1000)}
+        ${cmpRow('체크카드 출금 vs 매입행 카드결제', r.cardOut.sys, r.cardOut.bank, r.cardOut.diff)}
+        ${cmpRow('인건비 출금 vs 시스템(알바+고정비)', r.labor.sys + r.labor.fixed, r.labor.bank, r.labor.diff)}
+      </tbody>
+    </table></div>
+    ${vendors.length ? `
+      <div class="msub-section-head" style="margin-top:24px;"><div class="msub-section-title">매입 거래처별 대사</div></div>
+      <div class="table-wrap"><table class="data-table">
+        <thead><tr><th>거래처</th><th class="num-cell">시스템 매입(계좌이체)</th><th class="num-cell">통장 송금</th><th>상태</th></tr></thead>
+        <tbody>${vendorRows}</tbody>
+      </table></div>
+    ` : ''}
+    ${fcats.length ? `
+      <div class="msub-section-head" style="margin-top:24px;"><div class="msub-section-title">고정비 카테고리별 대사</div></div>
+      <div class="table-wrap"><table class="data-table">
+        <thead><tr><th>분류</th><th class="num-cell">설정 월 금액</th><th class="num-cell">통장 출금</th><th>상태</th></tr></thead>
+        <tbody>${fixedRowsHtml}</tbody>
+      </table></div>
+    ` : ''}
+  `;
+}
+
+async function handleKbBankFile(file) {
+  const mm = document.getElementById('monthlyMonth');
+  if (!mm || !mm.value) { toast('월을 먼저 선택하세요 (월정산 탭 상단)', 'warn'); return; }
+  const month = mm.value;
+  try {
+    const rows = await parseKbBankRows(file);
+    if (!rows.length) { toast('파일에서 거래 데이터를 찾지 못했습니다 (KB 양식 확인)', 'danger'); return; }
+    const monthRows = rows.filter(r => r.date.startsWith(month));
+    const skipped = rows.length - monthRows.length;
+    if (!monthRows.length) { toast(`${month}월 거래가 없습니다 (총 ${rows.length}건 중 ${skipped}건이 다른 월)`, 'warn'); return; }
+    const existing = getKbBankData(month);
+    if (existing.length) {
+      if (!confirm(`${month}월에 이미 ${existing.length}건이 적재되어 있습니다. 새로 덮어쓸까요? (기존 자동분배도 다시 적재)`)) return;
+    }
+    saveKbBankData(month, monthRows);
+    distributeKbRowsToRecords(monthRows, month);
+    updateKbBankStatus();
+    renderBankReconcile(month);
+    toast(`✓ ${month} 통장 ${monthRows.length}건 적재 + 자동 대사 완료${skipped ? ` (${skipped}건 타월 제외)` : ''}`, 'ok');
+  } catch (err) {
+    console.error(err);
+    toast('파일 파싱 실패: ' + (err.message || err), 'danger');
+  }
+}
+
 async function handleHometaxFile(file) {
   const mm = document.getElementById('monthlyMonth');
   if (!mm || !mm.value) { toast('월을 먼저 선택하세요 (월정산 탭 상단)', 'warn'); return; }
@@ -3024,6 +3340,24 @@ function setupHometaxUpload() {
     e.preventDefault();
     zone.classList.remove('drag-over');
     if (e.dataTransfer.files[0]) handleHometaxFile(e.dataTransfer.files[0]);
+  });
+}
+
+function setupKbBankUpload() {
+  const zone = document.getElementById('kbBankUpload');
+  const input = document.getElementById('kbBankFile');
+  if (!zone || !input) return;
+  zone.addEventListener('click', () => input.click());
+  input.addEventListener('change', (e) => {
+    if (e.target.files[0]) handleKbBankFile(e.target.files[0]);
+    e.target.value = '';
+  });
+  zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    if (e.dataTransfer.files[0]) handleKbBankFile(e.dataTransfer.files[0]);
   });
 }
 
@@ -5429,6 +5763,10 @@ function renderMonthlyDistContent(data) {
 function switchMonthlySubTab(name) {
   document.querySelectorAll('.msub-btn').forEach(b => b.classList.toggle('active', b.dataset.msub === name));
   document.querySelectorAll('.msub-panel').forEach(p => p.classList.toggle('active', p.id === 'msub-' + name));
+  if (name === 'bank') {
+    const mm = document.getElementById('monthlyMonth');
+    if (mm && mm.value) { updateKbBankStatus(); renderBankReconcile(mm.value); }
+  }
 }
 
 /**
