@@ -3311,17 +3311,15 @@ function reconcileKbBank(month) {
   for (let i = bankOutUnmatched.length - 1; i >= 0; i--) {
     const b = bankOutUnmatched[i];
     if (!isAggregatedPayer(b.desc, b.summary)) continue;
-    // 같은 벤더(쿠팡)인 시스템 매입행 후보 수집 (±35일 이내)
+    // 합산매칭은 같은 일자만 (쿠팡 등 즉시결제는 통장 출금일 = 매입 일자)
     const candidates = [];
     for (let k = 0; k < sysOutUnmatched.length; k++) {
       const s = sysOutUnmatched[k];
       if (s.method === '현금') continue;
       if (!isMethodCompatible(s.method, b.summary, b.kind)) continue;
-      // 시스템 vendor가 통장 적요와 호환(쿠팡 매입은 쿠팡으로 등록되어 있다는 가정)
       if (!isVendorCompatible(s.vendor, b.desc, b.aliasVendor)) continue;
-      const dd = dayDiff(s.date, b.date);
-      if (dd > TOLERANCE_DAYS) continue;
-      candidates.push({ idx: k, sys: s, dd });
+      if (s.date !== b.date) continue; // 같은 일자만
+      candidates.push({ idx: k, sys: s, dd: 0 });
     }
     if (candidates.length < 2) continue;
     // 합산이 통장 금액과 일치하는 부분집합 찾기 (작은 조합 위주 — DP는 N 작을 때만)
