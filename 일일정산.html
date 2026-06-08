@@ -3466,6 +3466,17 @@ function reconcileKbBank(month) {
   const matchedN1 = [];
   const matchedHtIdx = new Set();
   const matchedBankIdxs = new Set();
+  // 디버그: 김상균 케이스 추적
+  const DEBUG_N1 = window.location.hash === '#debug-n1' || localStorage.getItem('debug_n1') === '1';
+  if (DEBUG_N1) {
+    console.log('=== N:1 매칭 디버그 ===');
+    console.log('홈택스 적재:', (ht || []).length, '건');
+    console.log('통장 미매칭 출금:', bankOutUnmatched.length, '건');
+    const htRepList = (ht || []).map(h => `${h.date} / ${h.vendor} / 대표: ${h.representative} / ${h.total}`);
+    console.log('홈택스 대표자명 목록:', htRepList);
+    const bankDescList = bankOutUnmatched.map(b => `${b.date} / ${b.desc} / alias: ${b.aliasVendor} / ${b.amount}`);
+    console.log('통장 적요 목록:', bankDescList);
+  }
   if (ht && ht.length) {
     // 통장 미매칭 출금을 적요/aliasVendor로 그룹화 (체크카드 출금 제외 — 세금계산서 대상 아님)
     const bankGroups = {};
@@ -3487,6 +3498,10 @@ function reconcileKbBank(month) {
         const rep = normalizeName(h.representative);
         return v === key || rep === key || (v && key && (v.includes(key) || key.includes(v)));
       });
+      if (DEBUG_N1) {
+        console.log(`[그룹 "${key}"] 통장 ${remaining.length}건 (합 ${remaining.reduce((s,r)=>s+r.b.amount,0)}), 홈택스 후보 ${htCandidates.length}건`);
+        htCandidates.forEach(({h}) => console.log(`  - 홈택스 후보: ${h.vendor} (대표 ${h.representative}) / ${h.total}`));
+      }
       for (const { h: htHit, hi } of htCandidates) {
         if (remaining.length < 1) break;
         const htTotal = num(htHit.total);
