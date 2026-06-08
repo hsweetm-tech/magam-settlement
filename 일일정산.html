@@ -3144,58 +3144,134 @@ function distributeKbRowsToRecords(rows, month) {
   _queueCloudUpload();
 }
 
-/** KB 통장 vs 시스템 자동 대사 4종 */
+/** KB 통장 vs 시스템 자동 대사 — 금액+날짜 기준 개별 거래 매칭 */
 function reconcileKbBank(month) {
   const rows = getKbBankData(month);
   if (!rows.length) return null;
   const all = getAllRecords();
   const dates = Object.keys(all).filter(d => d.startsWith(month)).sort();
 
-  // 1. 카드 입금 대사 — cardRows 합 vs 통장 카드입금 합 (월 단위, 일자별 매칭은 정산일 시차 있어 어려움)
-  const sysCardSales = dates.reduce((s, d) => s + (all[d].cardRows || []).reduce((ss, c) => ss + num(c.amount), 0), 0);
-  const bankCardIn = rows.filter(r => r.kind === '카드입금').reduce((s, r) => s + r.deposit, 0);
-
-  // 2. 매입 송금 대사 — 거래처별 매칭
-  const sysVendorOutflow = {};
+  // ===== 출금 매칭 (시스템 매입 vs 통장 출금) =====
+  // 시스템 매입 행 평탄화 (계좌이체 + 카드결제 모두)
+  const sysOut = [];
   dates.forEach(d => {
-    (all[d].purchaseRows || []).filter(p => p.method === '계좌이체').forEach(p => {
-      const v = (p.vendor || '').replace(/\(주\)|주식회사|\s/g, '');
-      sysVendorOutflow[v] = (sysVendorOutflow[v] || 0) + num(p.total);
+    (all[d].purchaseRows || []).forEach((p, idx) => {
+      const total = num(p.total) || (num(p.supply) + num(p.vat));
+      if (total <= 0) return;
+      sysOut.push({
+        date: d,
+        amount: total,
+        vendor: p.vendor || '',
+        category: p.category || '',
+        method: p.method || '',
+        _src: 'purchase',
+        _ref: `${d}#${idx}`
+      });
+    });
+    (all[d].payrollRows || []).forEach((pay, idx) => {
+      const amt = num(pay.amount);
+      if (amt <= 0) return;
+      sysOut.push({
+        date: d,
+        amount: amt,
+        vendor: pay.name || pay.employee || '인건비',
+        category: '인건비',
+        method: pay.method || '계좌이체',
+        _src: 'payroll',
+        _ref: `${d}#payroll${idx}`
+      });
+    });
+    const exp = num(all[d].extras && all[d].extras.expenses);
+    if (exp > 0) {
+      sysOut.push({ date: d, amount: exp, vendor: '기타지출', category: '기타비용', method: '현금', _src: 'expense', _ref: `${d}#exp` });
+    }
+  });
+  // 고정비 — 매입행 없는 카테고리는 자동반영 가정 (월 1회 출금)
+  const fixedExp = getFixedExpenses();
+  fixedExp.forEach((e, idx) => {
+    if (num(e.amount) <= 0) return;
+    // 매입행 같은 카테고리 있으면 skip
+    const hasInPurchase = sysOut.some(s => s.category === e.category && s._src === 'purchase');
+    if (!hasInPurchase) {
+      sysOut.push({ date: month + '-15', amount: num(e.amount), vendor: e.name || e.category, category: e.category, method: '자동이체', _src: 'fixed', _ref: `fixed#${idx}` });
+    }
+  });
+
+  // 통장 출금 행
+  const bankOut = rows.filter(r => r.withdraw > 0).map((r, idx) => ({
+    date: r.date,
+    amount: r.withdraw,
+    desc: r.desc,
+    summary: r.summary,
+    kind: r.kind,
+    _ref: `bank#${idx}`
+  }));
+
+  // 그리디 매칭: 금액 동일 + 날짜 차이 최소 (±5일까지 허용)
+  const TOLERANCE_DAYS = 5;
+  const sysOutUnmatched = [...sysOut];
+  const bankOutUnmatched = [...bankOut];
+  const matched = [];
+  const dayDiff = (a, b) => Math.abs((new Date(a) - new Date(b)) / 86400000);
+  // 매칭: 시스템 출금 기준으로 통장 후보 중 금액 동일 + 날짜 가장 가까운 것
+  for (let i = sysOutUnmatched.length - 1; i >= 0; i--) {
+    const s = sysOutUnmatched[i];
+    let bestJ = -1, bestDayDiff = Infinity;
+    for (let j = 0; j < bankOutUnmatched.length; j++) {
+      const b = bankOutUnmatched[j];
+      if (b.amount !== s.amount) continue;
+      const dd = dayDiff(s.date, b.date);
+      if (dd > TOLERANCE_DAYS) continue;
+      if (dd < bestDayDiff) { bestDayDiff = dd; bestJ = j; }
+    }
+    if (bestJ >= 0) {
+      matched.push({ sys: s, bank: bankOutUnmatched[bestJ], dayDiff: bestDayDiff });
+      sysOutUnmatched.splice(i, 1);
+      bankOutUnmatched.splice(bestJ, 1);
+    }
+  }
+
+  // ===== 입금 매칭 (시스템 cardRows vs 통장 입금) =====
+  const sysIn = [];
+  dates.forEach(d => {
+    (all[d].cardRows || []).forEach((c, idx) => {
+      const amt = num(c.amount);
+      if (amt <= 0) return;
+      sysIn.push({ date: d, amount: amt, issuer: c.issuer || '', _ref: `${d}#card${idx}` });
     });
   });
-  const bankVendorOutflow = {};
-  rows.filter(r => r.kind === '매입송금').forEach(r => {
-    const v = (r.desc || '').replace(/\(주\)|주식회사|\s/g, '');
-    bankVendorOutflow[v] = (bankVendorOutflow[v] || 0) + r.withdraw;
-  });
-
-  // 3. 인건비 대사 — 시스템 인건비(고정비+payrollRows) vs 통장 인건비 출금
-  const sysLabor = dates.reduce((s, d) => s + (all[d].payrollRows || []).reduce((ss, p) => ss + num(p.amount), 0), 0);
-  const fixedLabor = getFixedExpenses().filter(e => e.category === '인건비').reduce((s, e) => s + num(e.amount), 0);
-  const bankLabor = rows.filter(r => r.kind === '인건비').reduce((s, r) => s + r.withdraw, 0);
-
-  // 4. 고정비 출금 — 임대료/공과금/통신비
-  const bankFixed = {};
-  rows.filter(r => ['임대료', '공과금', '통신비', '세무비', '자동이체'].includes(r.kind)).forEach(r => {
-    bankFixed[r.kind] = (bankFixed[r.kind] || 0) + r.withdraw;
-  });
-  const sysFixedByCat = {};
-  getFixedExpenses().forEach(e => {
-    if (e.category !== '인건비') sysFixedByCat[e.category] = (sysFixedByCat[e.category] || 0) + num(e.amount);
-  });
-
-  // 카드 출금 (체크카드) — 매입행 카드결제와 매칭
-  const sysCardPurchase = dates.reduce((s, d) => s + (all[d].purchaseRows || []).filter(p => /카드/.test(p.method || '')).reduce((ss, p) => ss + num(p.total), 0), 0);
-  const bankCardOut = rows.filter(r => r.kind === '카드출금').reduce((s, r) => s + r.withdraw, 0);
+  const bankIn = rows.filter(r => r.deposit > 0).map((r, idx) => ({
+    date: r.date, amount: r.deposit, desc: r.desc, summary: r.summary, kind: r.kind, _ref: `bankin#${idx}`
+  }));
+  // 카드 정산은 T+1~3일 지연 → 허용 범위 더 큼
+  const IN_TOLERANCE_DAYS = 10;
+  const sysInUnmatched = [...sysIn];
+  const bankInUnmatched = [...bankIn];
+  const matchedIn = [];
+  for (let i = sysInUnmatched.length - 1; i >= 0; i--) {
+    const s = sysInUnmatched[i];
+    let bestJ = -1, bestDayDiff = Infinity;
+    for (let j = 0; j < bankInUnmatched.length; j++) {
+      const b = bankInUnmatched[j];
+      if (b.amount !== s.amount) continue;
+      const dd = dayDiff(s.date, b.date);
+      if (dd > IN_TOLERANCE_DAYS) continue;
+      // 카드 입금은 통장 날짜가 더 늦어야 자연스러움
+      if (new Date(b.date) < new Date(s.date)) continue;
+      if (dd < bestDayDiff) { bestDayDiff = dd; bestJ = j; }
+    }
+    if (bestJ >= 0) {
+      matchedIn.push({ sys: s, bank: bankInUnmatched[bestJ], dayDiff: bestDayDiff });
+      sysInUnmatched.splice(i, 1);
+      bankInUnmatched.splice(bestJ, 1);
+    }
+  }
 
   return {
     month,
     bankRowsCount: rows.length,
-    cardSales: { sys: sysCardSales, bank: bankCardIn, diff: bankCardIn - sysCardSales },
-    cardOut: { sys: sysCardPurchase, bank: bankCardOut, diff: bankCardOut - sysCardPurchase },
-    labor: { sys: sysLabor, fixed: fixedLabor, bank: bankLabor, diff: bankLabor - (sysLabor + fixedLabor) },
-    vendor: { sys: sysVendorOutflow, bank: bankVendorOutflow },
-    fixed: { sys: sysFixedByCat, bank: bankFixed }
+    out: { matched, sysOnly: sysOutUnmatched, bankOnly: bankOutUnmatched },
+    in: { matched: matchedIn, sysOnly: sysInUnmatched, bankOnly: bankInUnmatched }
   };
 }
 
@@ -3206,62 +3282,113 @@ function renderBankReconcile(month) {
   const r = reconcileKbBank(month);
   if (!r) { el.innerHTML = `<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">${month} 통장 데이터 미적재 — 위에서 KB 엑셀 업로드하세요.</div>`; return; }
   const fmtKRW = (n) => '₩' + fmt(Math.round(n || 0));
-  const cmpRow = (label, sys, bank, diff, tolerance) => {
-    const tol = tolerance || 100;
-    const status = Math.abs(diff) <= tol ? `<span style="color:var(--green);">일치</span>` :
-                   diff > 0 ? `<span style="color:var(--orange);">통장이 ${fmtKRW(diff)} 더 많음</span>` :
-                   `<span style="color:var(--red);">통장이 ${fmtKRW(-diff)} 더 적음</span>`;
-    return `<tr><td>${label}</td><td class="num-cell">${fmtKRW(sys)}</td><td class="num-cell">${fmtKRW(bank)}</td><td>${status}</td></tr>`;
-  };
-  // 거래처별 매칭 — 통장+시스템 합집합
-  const vendors = Array.from(new Set([...Object.keys(r.vendor.sys), ...Object.keys(r.vendor.bank)])).sort();
-  const vendorRows = vendors.map(v => {
-    const sys = r.vendor.sys[v] || 0;
-    const bank = r.vendor.bank[v] || 0;
-    const diff = bank - sys;
-    const status = Math.abs(diff) <= 100 ? `<span style="color:var(--green);">일치</span>` :
-                   sys === 0 ? `<span style="color:var(--orange);">시스템에 매입행 없음</span>` :
-                   bank === 0 ? `<span style="color:var(--red);">통장 송금 누락</span>` :
-                   `<span style="color:var(--orange);">${fmtKRW(Math.abs(diff))} 차이</span>`;
-    return `<tr><td>${v}</td><td class="num-cell">${fmtKRW(sys)}</td><td class="num-cell">${fmtKRW(bank)}</td><td>${status}</td></tr>`;
-  }).join('');
-  // 고정비 매칭
-  const fcats = Array.from(new Set([...Object.keys(r.fixed.sys), ...Object.keys(r.fixed.bank)])).sort();
-  const fixedRowsHtml = fcats.map(c => {
-    const sys = r.fixed.sys[c] || 0;
-    const bank = r.fixed.bank[c] || 0;
-    const diff = bank - sys;
-    const status = sys === 0 && bank > 0 ? `<span style="color:var(--orange);">설정에 없음</span>` :
-                   bank === 0 && sys > 0 ? `<span style="color:var(--red);">통장 출금 없음</span>` :
-                   Math.abs(diff) <= 100 ? `<span style="color:var(--green);">일치</span>` :
-                   `<span style="color:var(--orange);">${fmtKRW(Math.abs(diff))} 차이</span>`;
-    return `<tr><td>${c}</td><td class="num-cell">${fmtKRW(sys)}</td><td class="num-cell">${fmtKRW(bank)}</td><td>${status}</td></tr>`;
-  }).join('');
+  const fmtDayDiff = (d) => d === 0 ? '당일' : `${d.toFixed(0)}일`;
+
+  // 출금 매칭 표
+  const outMatchedRows = r.out.matched.sort((a,b) => a.sys.date.localeCompare(b.sys.date)).map(m => `
+    <tr>
+      <td>${m.sys.date}</td>
+      <td>${escapeHtml(m.sys.vendor)} <span style="color:var(--text-3);font-size:11px;">[${m.sys.category}/${m.sys.method}]</span></td>
+      <td class="num-cell">${fmtKRW(m.sys.amount)}</td>
+      <td>${m.bank.date}</td>
+      <td>${escapeHtml(m.bank.desc)} <span style="color:var(--text-3);font-size:11px;">[${m.bank.summary || ''}]</span></td>
+      <td>${m.dayDiff === 0 ? '<span style="color:var(--green);">당일</span>' : `<span style="color:var(--orange);">${fmtDayDiff(m.dayDiff)}</span>`}</td>
+    </tr>
+  `).join('');
+
+  const sysOnlyRows = r.out.sysOnly.sort((a,b) => a.date.localeCompare(b.date)).map(s => `
+    <tr style="color:var(--red);">
+      <td>${s.date}</td>
+      <td>${escapeHtml(s.vendor)} <span style="color:var(--text-3);font-size:11px;">[${s.category}/${s.method}]</span></td>
+      <td class="num-cell">${fmtKRW(s.amount)}</td>
+      <td colspan="3" style="color:var(--red);">통장 출금 없음 → 미지급 또는 다른 계좌·현금 결제 확인</td>
+    </tr>
+  `).join('');
+
+  const bankOnlyRows = r.out.bankOnly.sort((a,b) => a.date.localeCompare(b.date)).map(b => `
+    <tr style="color:var(--orange);">
+      <td colspan="3" style="color:var(--orange);">시스템에 매입행 없음 → 매입 등록 필요</td>
+      <td>${b.date}</td>
+      <td>${escapeHtml(b.desc)} <span style="color:var(--text-3);font-size:11px;">[${b.summary || ''}/${b.kind}]</span></td>
+      <td class="num-cell">${fmtKRW(b.amount)}</td>
+    </tr>
+  `).join('');
+
+  // 입금 매칭 표
+  const inMatchedRows = r.in.matched.sort((a,b) => a.sys.date.localeCompare(b.sys.date)).map(m => `
+    <tr>
+      <td>${m.sys.date}</td>
+      <td>${escapeHtml(m.sys.issuer)}</td>
+      <td class="num-cell">${fmtKRW(m.sys.amount)}</td>
+      <td>${m.bank.date}</td>
+      <td>${escapeHtml(m.bank.desc)}</td>
+      <td><span style="color:var(--green);">T+${m.dayDiff.toFixed(0)}일 입금</span></td>
+    </tr>
+  `).join('');
+  const inSysOnly = r.in.sysOnly.sort((a,b) => a.date.localeCompare(b.date)).map(s => `
+    <tr style="color:var(--red);">
+      <td>${s.date}</td><td>${escapeHtml(s.issuer)}</td><td class="num-cell">${fmtKRW(s.amount)}</td>
+      <td colspan="3" style="color:var(--red);">통장 입금 없음 → 정산 지연 또는 미정산 확인</td>
+    </tr>
+  `).join('');
+  const inBankOnly = r.in.bankOnly.sort((a,b) => a.date.localeCompare(b.date)).map(b => `
+    <tr style="color:var(--orange);">
+      <td colspan="3" style="color:var(--orange);">시스템 cardRows에 매칭되는 카드 매출 없음</td>
+      <td>${b.date}</td><td>${escapeHtml(b.desc)} <span style="color:var(--text-3);font-size:11px;">[${b.kind}]</span></td><td class="num-cell">${fmtKRW(b.amount)}</td>
+    </tr>
+  `).join('');
+
+  const sumMatched = r.out.matched.reduce((s, m) => s + m.sys.amount, 0);
+  const sumSysOnly = r.out.sysOnly.reduce((s, x) => s + x.amount, 0);
+  const sumBankOnly = r.out.bankOnly.reduce((s, x) => s + x.amount, 0);
+
   el.innerHTML = `
     <div class="msub-section-head"><div class="msub-section-title">자동 대사 결과 (${month}, 통장 ${r.bankRowsCount}건)</div></div>
-    <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">시스템 입력값과 통장 거래를 자동 매칭합니다. 일치 = 100원 이내 / 차이가 있으면 누락·지연·이중입금 등 확인 필요.</div>
-    <div class="table-wrap"><table class="data-table">
-      <thead><tr><th>항목</th><th class="num-cell">시스템</th><th class="num-cell">통장</th><th>상태</th></tr></thead>
-      <tbody>
-        ${cmpRow('카드매출 입금 (월 합)', r.cardSales.sys, r.cardSales.bank, r.cardSales.diff, 1000)}
-        ${cmpRow('체크카드 출금 vs 매입행 카드결제', r.cardOut.sys, r.cardOut.bank, r.cardOut.diff)}
-        ${cmpRow('인건비 출금 vs 시스템(알바+고정비)', r.labor.sys + r.labor.fixed, r.labor.bank, r.labor.diff)}
-      </tbody>
-    </table></div>
-    ${vendors.length ? `
-      <div class="msub-section-head" style="margin-top:24px;"><div class="msub-section-title">매입 거래처별 대사</div></div>
-      <div class="table-wrap"><table class="data-table">
-        <thead><tr><th>거래처</th><th class="num-cell">시스템 매입(계좌이체)</th><th class="num-cell">통장 송금</th><th>상태</th></tr></thead>
-        <tbody>${vendorRows}</tbody>
+    <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
+      <strong>매칭 기준:</strong> 금액 정확 일치 + 출금 ±5일 / 입금 ±10일 (T+N 정산 시차).
+      거래처명·OCR 오차 영향 없이 금액·날짜만으로 매칭됩니다. 매칭 안 된 건이 확인 필요 사항.
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;">
+      <div style="padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);">
+        <div style="font-size:11px;color:var(--text-3);">매칭됨 (출금)</div>
+        <div style="font-size:16px;font-weight:600;color:var(--green);">${r.out.matched.length}건 · ${fmtKRW(sumMatched)}</div>
+      </div>
+      <div style="padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);">
+        <div style="font-size:11px;color:var(--text-3);">시스템만 (통장 출금 없음)</div>
+        <div style="font-size:16px;font-weight:600;color:var(--red);">${r.out.sysOnly.length}건 · ${fmtKRW(sumSysOnly)}</div>
+      </div>
+      <div style="padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);">
+        <div style="font-size:11px;color:var(--text-3);">통장만 (매입행 없음)</div>
+        <div style="font-size:16px;font-weight:600;color:var(--orange);">${r.out.bankOnly.length}건 · ${fmtKRW(sumBankOnly)}</div>
+      </div>
+    </div>
+
+    <details ${r.out.sysOnly.length || r.out.bankOnly.length ? 'open' : ''}>
+      <summary style="cursor:pointer;font-size:13px;font-weight:600;margin-bottom:8px;">출금 매칭 상세 (매입·인건비·고정비)</summary>
+      <div class="table-wrap"><table class="data-table" style="font-size:12px;">
+        <thead><tr>
+          <th>시스템 일자</th><th>거래처/항목</th><th class="num-cell">금액</th>
+          <th>통장 일자</th><th>적요</th><th>매칭 상태</th>
+        </tr></thead>
+        <tbody>
+          ${sysOnlyRows}${bankOnlyRows}${outMatchedRows}
+        </tbody>
       </table></div>
-    ` : ''}
-    ${fcats.length ? `
-      <div class="msub-section-head" style="margin-top:24px;"><div class="msub-section-title">고정비 카테고리별 대사</div></div>
-      <div class="table-wrap"><table class="data-table">
-        <thead><tr><th>분류</th><th class="num-cell">설정 월 금액</th><th class="num-cell">통장 출금</th><th>상태</th></tr></thead>
-        <tbody>${fixedRowsHtml}</tbody>
+    </details>
+
+    <details ${r.in.sysOnly.length || r.in.bankOnly.length ? 'open' : ''} style="margin-top:16px;">
+      <summary style="cursor:pointer;font-size:13px;font-weight:600;margin-bottom:8px;">입금 매칭 상세 (카드사 정산)</summary>
+      <div class="table-wrap"><table class="data-table" style="font-size:12px;">
+        <thead><tr>
+          <th>시스템 일자</th><th>카드사</th><th class="num-cell">금액</th>
+          <th>통장 일자</th><th>적요</th><th>매칭 상태</th>
+        </tr></thead>
+        <tbody>
+          ${inSysOnly}${inBankOnly}${inMatchedRows}
+        </tbody>
       </table></div>
-    ` : ''}
+    </details>
   `;
 }
 
