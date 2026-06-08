@@ -3818,13 +3818,32 @@ function exportBankReconcileExcel(month) {
     ]);
   });
 
-  // 5. 확인 필요 - 통장만 (매입행 없음)
+  // 5. 확인 필요 - 통장만 (매입행 없음) — N:1 매칭건도 시스템 매입행 추가 필요하므로 포함
   const bankOnlySheet = [['통장 일자','적요','내 통장 표시','홈택스 대표자→상호','금액','종류', SEP, '세금계산서','확인사항']];
-  r.out.bankOnly.sort((a,b)=>a.date.localeCompare(b.date)).forEach(b => {
+  const bankOnlyAll = [...r.out.bankOnly];
+  (r.out.matchedN1 || []).forEach(m => {
+    m.banks.forEach(b => {
+      bankOnlyAll.push({
+        ...b,
+        _n1Match: m, // 표시용
+        _hometax: { ht: m.ht } // 세금계산서 정보 주입
+      });
+    });
+  });
+  bankOnlyAll.sort((a,b)=>a.date.localeCompare(b.date)).forEach(b => {
+    let action;
+    if (b._n1Match) {
+      action = `시스템 매입행 추가 등록 필요 — 홈택스 N:1 매칭됨 (${b._n1Match.ht.vendor} 합계 ${fmtKRW(b._n1Match.total).toLocaleString()}원 / ${b._n1Match.banks.length}건 분할)`;
+    } else {
+      action = bankOnlyAction(b);
+    }
+    const htCell = b._n1Match
+      ? `있음 N:1 (${b._n1Match.ht.date}, ${b._n1Match.ht.vendor})`
+      : (b._htNa ? '카드결제(대상외)' : (b._hometax ? `있음 (${b._hometax.ht.date}, ${b._hometax.ht.vendor})` : '없음'));
     bankOnlySheet.push([
       b.date, b.desc, myMemoOf(b), b.aliasVendor || '', fmtKRW(b.amount), b.summary || b.kind, '',
-      b._htNa ? '카드결제(대상외)' : (b._hometax ? `있음 (${b._hometax.ht.date}, ${b._hometax.ht.vendor})` : '없음'),
-      bankOnlyAction(b)
+      htCell,
+      action
     ]);
   });
 
@@ -3853,7 +3872,7 @@ function exportBankReconcileExcel(month) {
     ['1:N 합산매칭 (쿠팡 등 — 통장1↔시스템N)', matchedN.length, matchedN.reduce((s, m) => s + m.bank.amount, 0)],
     ['N:1 분할매칭 (김상균 등 — 통장N↔홈택스1)', (r.out.matchedN1 || []).length, (r.out.matchedN1 || []).reduce((s, m) => s + m.total, 0)],
     ['시스템만 (통장 송금 없음)', r.out.sysOnly.length, r.out.sysOnly.reduce((s, x) => s + x.amount, 0)],
-    ['통장만 (매입행 없음)', r.out.bankOnly.length, r.out.bankOnly.reduce((s, x) => s + x.amount, 0)],
+    ['통장만 (매입행 없음 — N:1매칭 포함)', bankOnlyAll.length, bankOnlyAll.reduce((s, x) => s + x.amount, 0)],
     [],
     ['카드 입금 매칭됨', r.in.matched.length, r.in.matched.reduce((s, m) => s + m.sys.amount, 0)],
     ['카드매출 정산 지연', r.in.sysOnly.length, r.in.sysOnly.reduce((s, x) => s + x.amount, 0)],
@@ -3864,7 +3883,8 @@ function exportBankReconcileExcel(month) {
     ['① 시스템만 — 통장 송금 확인. 카드결제(체크카드) 미반영 가능성 / 다른 계좌로 출금 / 미지급'],
     ['② 통장만 + 세금계산서 있음 — 시스템 매입행만 추가 등록'],
     ['③ 통장만 + 세금계산서 없음 — ⚠ 영수증/카드매출전표 매장에서 사진 올려주세요'],
-    ['④ 카드매출 정산 지연 — 카드사 정산일(T+1~3일) 지연 또는 미정산 확인'],
+    ['④ 통장만 + N:1 홈택스 매칭됨 — 분할출금 합계로 1장 세금계산서, 시스템에 매입행 추가 등록'],
+    ['⑤ 카드매출 정산 지연 — 카드사 정산일(T+1~3일) 지연 또는 미정산 확인'],
     [],
     ['컬럼 │ 표시는 시각적 구분자 (시스템 정보 ↔ 통장 정보 분리)']
   ];
