@@ -3079,13 +3079,14 @@ function parseKbBankRows(file) {
       const withdraw = num(String(row[3]).replace(/[,\s]/g, '')) || 0;
       const deposit = num(String(row[4]).replace(/[,\s]/g, '')) || 0;
       const balance = num(String(row[5]).replace(/[,\s]/g, '')) || 0;
-      const memo = String(row[6] || '').trim();
-      const memo2 = String(row[7] || '').trim();
+      const myMemo = String(row[6] || '').trim(); // 내 통장 표시 (사장님이 직접 입력한 거래 목적)
+      const memo2 = String(row[7] || '').trim();  // 메모 (시스템 추가 정보)
       const summary = String(row[8] || '').trim();
       const branch = String(row[9] || '').trim();
       out.push({
         date, time, desc, withdraw, deposit, balance,
-        memo: [memo, memo2].filter(Boolean).join(' / '),
+        myMemo, memo2,
+        memo: [myMemo, memo2].filter(Boolean).join(' / '),
         summary, branch,
         kind: inferBankKind(desc, summary, withdraw, deposit),
         _fromKb: true
@@ -3622,6 +3623,60 @@ function renderBankReconcile(month) {
         </tbody>
       </table></div>
     </details>
+
+    ${(() => {
+      const allBank = (getKbBankData(month) || []).slice().sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+      if (!allBank.length) return '';
+      // 매칭된 통장 거래 인덱스 set
+      const matchedBankIdx = new Set();
+      r.out.matched.forEach(m => { if (m.bank && m.bank._ref) matchedBankIdx.add(m.bank._ref); });
+      (r.out.matchedN1 || []).forEach(m => { m.banks.forEach(b => matchedBankIdx.add(b._ref)); });
+      r.in.matched.forEach(m => { if (m.bank && m.bank._ref) matchedBankIdx.add(m.bank._ref); });
+      // 통장 행마다 _ref 다시 부여해서 매칭 여부 확인 (저장된 데이터엔 _ref가 없음 — 인덱스로 추정)
+      const allBankRowsHtml = allBank.map((r2, idx) => {
+        // 매칭 여부: 출금이면 sysOut 매칭 또는 N1 매칭에 있는지, 입금이면 in 매칭에 있는지
+        // 단순화: bankRowsCount × 매칭된 출금/입금 건수로 색만 다르게
+        const isOut = r2.withdraw > 0;
+        const isIn = r2.deposit > 0;
+        // 매칭 여부 추정: bankOnly 목록에 같은 date+amount+desc 있으면 미매칭
+        const inBankOnly = r.out.bankOnly.some(b => b.date === r2.date && b.amount === r2.withdraw && b.desc === r2.desc);
+        const inInBankOnly = r.in.bankOnly.some(b => b.date === r2.date && b.amount === r2.deposit && b.desc === r2.desc);
+        const matched = isOut ? !inBankOnly : (isIn ? !inInBankOnly : true);
+        return `
+          <tr ${matched ? '' : 'style="background:var(--orange-bg, #fff4e6);"'}>
+            <td style="white-space:nowrap;">${r2.date} <span style="color:var(--text-3);font-size:11px;">${r2.time || ''}</span></td>
+            <td>${escapeHtml(r2.desc || '-')}</td>
+            <td style="color:var(--text-2);font-size:11px;">${escapeHtml(r2.myMemo || '')}</td>
+            <td class="num-cell">${r2.withdraw > 0 ? `<span style="color:var(--red);">-${fmt(r2.withdraw)}</span>` : ''}</td>
+            <td class="num-cell">${r2.deposit > 0 ? `<span style="color:var(--green);">+${fmt(r2.deposit)}</span>` : ''}</td>
+            <td class="num-cell" style="font-size:11px;color:var(--text-3);">${fmt(r2.balance)}</td>
+            <td><span style="font-size:11px;color:var(--text-3);">${escapeHtml(r2.summary || '')}</span></td>
+            <td><span style="font-size:11px;display:inline-block;padding:1px 6px;border-radius:4px;background:var(--subtle);color:var(--text-2);">${escapeHtml(r2.kind || '')}</span></td>
+            <td>${matched
+              ? `<span style="color:var(--green);font-weight:600;font-size:11px;">✓ 매칭</span>`
+              : `<span style="color:var(--orange);font-weight:600;font-size:11px;">⚠ 미매칭</span>`}</td>
+          </tr>`;
+      }).join('');
+      return `
+        <details open style="margin-top:20px;">
+          <summary style="cursor:pointer;font-size:13px;font-weight:600;margin-bottom:8px;">통장 전체 거래 내역 (${allBank.length}건)</summary>
+          <div class="table-wrap"><table class="data-table" style="font-size:12px;">
+            <thead><tr>
+              <th>일시</th>
+              <th>적요 (보낸분/받는분)</th>
+              <th>내 통장 표시</th>
+              <th class="num-cell">출금</th>
+              <th class="num-cell">입금</th>
+              <th class="num-cell">잔액</th>
+              <th>구분</th>
+              <th>종류</th>
+              <th>매칭</th>
+            </tr></thead>
+            <tbody>${allBankRowsHtml}</tbody>
+          </table></div>
+        </details>
+      `;
+    })()}
   `;
 }
 
