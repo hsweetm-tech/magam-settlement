@@ -3214,7 +3214,7 @@ function reconcileKbBank(month) {
     }
   });
 
-  // 통장 출금 행 (대표자명 → 상호 alias 적용)
+  // 통장 출금 행 (대표자명 → 상호 alias 적용, myMemo/memo 보존)
   const bankOut = rows.filter(r => r.withdraw > 0).map((r, idx) => {
     const desc = (r.desc || '').trim();
     const aliasVendor = repToVendor[desc] || '';
@@ -3225,6 +3225,8 @@ function reconcileKbBank(month) {
       aliasVendor,
       summary: r.summary,
       kind: r.kind,
+      myMemo: r.myMemo || '',
+      memo: r.memo || '',
       _ref: `bank#${idx}`
     };
   });
@@ -3373,7 +3375,9 @@ function reconcileKbBank(month) {
     });
   });
   const bankIn = rows.filter(r => r.deposit > 0).map((r, idx) => ({
-    date: r.date, amount: r.deposit, desc: r.desc, summary: r.summary, kind: r.kind, _ref: `bankin#${idx}`
+    date: r.date, amount: r.deposit, desc: r.desc, summary: r.summary, kind: r.kind,
+    myMemo: r.myMemo || '', memo: r.memo || '',
+    _ref: `bankin#${idx}`
   }));
   // 카드 정산은 T+1~3일 지연 → 허용 범위 더 큼
   const IN_TOLERANCE_DAYS = 10;
