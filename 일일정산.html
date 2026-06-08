@@ -3235,6 +3235,33 @@ function reconcileKbBank(month) {
   const matched = [];
   const dayDiff = (a, b) => Math.abs((new Date(a) - new Date(b)) / 86400000);
 
+  /** 거래처 이름 정규화 + 유사도 (OCR 오차/약식표기 허용, 완전히 다른 거래처는 매칭 차단) */
+  function normalizeName(s) {
+    return String(s || '').replace(/\(주\)|주식회사|㈜|\s+|에이치|h$/gi, '').toLowerCase();
+  }
+  function isVendorCompatible(sysVendor, bankDesc, aliasVendor) {
+    const sv = normalizeName(sysVendor);
+    const bvAlias = normalizeName(aliasVendor);
+    const bvDesc = normalizeName(bankDesc);
+    // 시스템 vendor 비어있으면 통과 (정보 없음 — 보수적 매칭 시도)
+    if (!sv) return true;
+    // 통장 적요·alias 둘 다 비어있으면 통과
+    if (!bvAlias && !bvDesc) return true;
+    // alias 또는 desc와 부분 일치
+    const candidates = [bvAlias, bvDesc].filter(Boolean);
+    for (const bv of candidates) {
+      if (sv === bv) return true;
+      if (sv.includes(bv) || bv.includes(sv)) return true;
+      // 공통 글자 비율 (한글 OCR 오차 허용)
+      const svSet = new Set(sv);
+      let common = 0;
+      for (const ch of bv) if (svSet.has(ch)) common++;
+      const minLen = Math.min(sv.length, bv.length);
+      if (minLen > 0 && common / minLen >= 0.5) return true;
+    }
+    return false;
+  }
+
   /** 시스템 매입 method가 통장 거래(summary/kind)와 호환되는지 */
   function isMethodCompatible(sysMethod, bankSummary, bankKind) {
     const sm = String(sysMethod || '').trim();
@@ -3255,7 +3282,7 @@ function reconcileKbBank(month) {
     return true;
   }
 
-  // 매칭: 시스템 출금 기준으로 통장 후보 중 금액 동일 + method 호환 + 날짜 가장 가까운 것
+  // 매칭: 시스템 출금 기준으로 통장 후보 중 금액 동일 + method 호환 + 거래처 호환 + 날짜 가장 가까운 것
   for (let i = sysOutUnmatched.length - 1; i >= 0; i--) {
     const s = sysOutUnmatched[i];
     // 시스템 현금 결제는 매칭 시도 안 함 (통장 거래 아님)
@@ -3265,6 +3292,7 @@ function reconcileKbBank(month) {
       const b = bankOutUnmatched[j];
       if (b.amount !== s.amount) continue;
       if (!isMethodCompatible(s.method, b.summary, b.kind)) continue;
+      if (!isVendorCompatible(s.vendor, b.desc, b.aliasVendor)) continue;
       const dd = dayDiff(s.date, b.date);
       if (dd > TOLERANCE_DAYS) continue;
       if (dd < bestDayDiff) { bestDayDiff = dd; bestJ = j; }
