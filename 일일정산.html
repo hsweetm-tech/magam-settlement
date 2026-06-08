@@ -3291,9 +3291,36 @@ function reconcileKbBank(month) {
     }
   }
 
+  // ===== 홈택스 세금계산서 매칭 (3원 대조) =====
+  // 통장에만 있는 출금 + 시스템에만 있는 매입행에 대해 홈택스 데이터로 추가 확인
+  const ht = getHometaxData(month);
+  function findHometax(amount, sysDate) {
+    if (!ht || !ht.length) return null;
+    // 금액 동일 + 날짜 ±35일 가장 가까운 것
+    let best = null, bestDd = Infinity;
+    for (const h of ht) {
+      if (num(h.total) !== amount && num(h.supply) + num(h.vat) !== amount) continue;
+      const dd = sysDate ? dayDiff(sysDate, h.date) : 0;
+      if (dd > 35) continue;
+      if (dd < bestDd) { bestDd = dd; best = h; }
+    }
+    return best ? { ht: best, dayDiff: bestDd } : null;
+  }
+  // bankOnly에 홈택스 매칭 추가
+  bankOutUnmatched.forEach(b => {
+    const m = findHometax(b.amount, b.date);
+    if (m) b._hometax = m;
+  });
+  // sysOnly에도 홈택스 확인
+  sysOutUnmatched.forEach(s => {
+    const m = findHometax(s.amount, s.date);
+    if (m) s._hometax = m;
+  });
+
   return {
     month,
     bankRowsCount: rows.length,
+    hometaxCount: ht.length,
     out: { matched, sysOnly: sysOutUnmatched, bankOnly: bankOutUnmatched },
     in: { matched: matchedIn, sysOnly: sysInUnmatched, bankOnly: bankInUnmatched }
   };
@@ -3320,12 +3347,17 @@ function renderBankReconcile(month) {
     </tr>
   `).join('');
 
+  const htBadge = (item) => item._hometax
+    ? `<span style="display:inline-block;background:var(--green-bg);color:var(--green);padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;" title="홈택스 세금계산서 있음 (${item._hometax.ht.date}, ${escapeHtml(item._hometax.ht.vendor)})">홈택스 ✓</span>`
+    : `<span style="display:inline-block;background:var(--red-bg, #ffe5e5);color:var(--red);padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;" title="홈택스 세금계산서 없음 — 매입 증빙 누락">홈택스 ✗</span>`;
+
   const sysOnlyRows = r.out.sysOnly.sort((a,b) => a.date.localeCompare(b.date)).map(s => `
     <tr style="color:var(--red);">
       <td>${s.date}</td>
       <td>${escapeHtml(s.vendor)} <span style="color:var(--text-3);font-size:11px;">[${s.category}/${s.method}]</span></td>
       <td class="num-cell">${fmtKRW(s.amount)}</td>
-      <td colspan="3" style="color:var(--red);">통장 출금 없음 → 미지급 또는 다른 계좌·현금 결제 확인</td>
+      <td colspan="2" style="color:var(--red);">통장 출금 없음 → 미지급 또는 다른 계좌·현금 결제 확인</td>
+      <td>${htBadge(s)}</td>
     </tr>
   `).join('');
 
@@ -3334,7 +3366,7 @@ function renderBankReconcile(month) {
       <td colspan="3" style="color:var(--orange);">시스템에 매입행 없음 → 매입 등록 필요</td>
       <td>${b.date}</td>
       <td>${escapeHtml(b.desc)} <span style="color:var(--text-3);font-size:11px;">[${b.summary || ''}/${b.kind}]</span></td>
-      <td class="num-cell">${fmtKRW(b.amount)}</td>
+      <td class="num-cell">${fmtKRW(b.amount)} ${htBadge(b)}</td>
     </tr>
   `).join('');
 
@@ -3369,8 +3401,8 @@ function renderBankReconcile(month) {
   el.innerHTML = `
     <div class="msub-section-head"><div class="msub-section-title">자동 대사 결과 (${month}, 통장 ${r.bankRowsCount}건)</div></div>
     <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
-      <strong>매칭 기준:</strong> 금액 정확 일치 + 출금 ±5일 / 입금 ±10일 (T+N 정산 시차).
-      거래처명·OCR 오차 영향 없이 금액·날짜만으로 매칭됩니다. 매칭 안 된 건이 확인 필요 사항.
+      <strong>매칭 기준:</strong> 금액 정확 일치 + 결제수단 호환 + 출금 ±35일 / 입금 ±10일.
+      <strong>홈택스 ✓/✗</strong> 배지는 해당 거래의 매입 세금계산서 존재 여부 (3원 대조). 통장에서 빠졌는데 시스템에도 없고 홈택스에도 없으면 매입 증빙 누락.
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;">
@@ -3449,7 +3481,11 @@ async function handleHometaxFile(file) {
     const ext = file.name.split('.').pop().toLowerCase();
     let rows = [];
     if (ext === 'csv') rows = await parseCSV(file);
-    else if (ext === 'xlsx' || ext === 'xls') rows = await parseExcel(file);
+    else if (ext === 'xlsx' || ext === 'xls') {
+      // 홈택스 양식은 헤더가 1행 아니라 2~4행에 있음 — 자동 감지
+      const allHeaderKeywords = Object.values(HOMETAX_COLUMNS).flat();
+      rows = await parseExcelAutoHeader(file, allHeaderKeywords);
+    }
     else { toast('지원하지 않는 파일 형식 (xlsx/xls/csv)', 'danger'); return; }
     if (!rows.length) { toast('파일에서 데이터를 찾지 못했습니다', 'danger'); return; }
     const { records, docType, detected } = parseHometaxRows(rows, file.name, month);
@@ -6301,6 +6337,41 @@ async function parseExcel(file) {
   const wb = XLSX.read(data, { type: 'array' });
   const ws = wb.Sheets[wb.SheetNames[0]];
   return XLSX.utils.sheet_to_json(ws, { defval: '' });
+}
+
+/** Excel을 2차원 배열로 읽고 헤더 행 자동 감지해서 객체 배열로 변환 (홈택스 같은 멀티헤더 양식 지원) */
+async function parseExcelAutoHeader(file, headerKeywords) {
+  const data = await file.arrayBuffer();
+  const wb = XLSX.read(data, { type: 'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  // 헤더 행 찾기: keywords 중 최소 N개 포함하는 행 (또는 가장 많이 일치하는 행)
+  let bestIdx = -1, bestHits = 0;
+  for (let i = 0; i < Math.min(aoa.length, 20); i++) {
+    const cells = aoa[i].map(c => String(c).replace(/\s+/g, ''));
+    let hits = 0;
+    for (const kw of headerKeywords) {
+      const k = String(kw).replace(/\s+/g, '');
+      if (cells.some(c => c === k || c.includes(k))) hits++;
+    }
+    if (hits > bestHits) { bestHits = hits; bestIdx = i; }
+  }
+  if (bestIdx < 0 || bestHits < 2) {
+    // 폴백: 첫 행 헤더
+    return XLSX.utils.sheet_to_json(ws, { defval: '' });
+  }
+  const headers = aoa[bestIdx].map(h => String(h).trim());
+  const out = [];
+  for (let i = bestIdx + 1; i < aoa.length; i++) {
+    const row = aoa[i];
+    if (!row || row.every(c => c === '' || c == null)) continue;
+    const obj = {};
+    headers.forEach((h, j) => {
+      if (h) obj[h] = row[j] !== undefined ? row[j] : '';
+    });
+    out.push(obj);
+  }
+  return out;
 }
 
 async function parsePDF(file) {
