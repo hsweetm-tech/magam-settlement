@@ -3432,11 +3432,45 @@ function reconcileKbBank(month) {
     if (m) b._hometax = m;
   });
 
+  // 3단계: N:1 매칭 — 통장 N건 합산 ↔ 홈택스 1건 (분할 결제 / 김상균 같은 대표자명 송금)
+  const matchedN1 = [];
+  if (ht && ht.length) {
+    // 통장 미매칭 출금을 적요/aliasVendor로 그룹화 (체크카드 출금 제외 — 세금계산서 대상 아님)
+    const bankGroups = {};
+    bankOutUnmatched.forEach((b, idx) => {
+      if (b._htNa) return;
+      const key = normalizeName(b.aliasVendor || b.desc);
+      if (!key) return;
+      if (!bankGroups[key]) bankGroups[key] = [];
+      bankGroups[key].push({ idx, b });
+    });
+    Object.entries(bankGroups).forEach(([key, group]) => {
+      if (group.length < 2) return;
+      const total = group.reduce((s, x) => s + x.b.amount, 0);
+      // 홈택스에서 vendor 또는 representative가 통장 key와 호환 + total 일치
+      const htHit = ht.find(h => {
+        if (num(h.total) !== total) return false;
+        const v = normalizeName(h.vendor);
+        const rep = normalizeName(h.representative);
+        return v === key || rep === key || (v && key && (v.includes(key) || key.includes(v)));
+      });
+      if (htHit) {
+        matchedN1.push({
+          ht: htHit,
+          banks: group.map(g => g.b),
+          total
+        });
+        // 매칭된 통장 행들 제거
+        group.map(g => g.idx).sort((a,b)=>b-a).forEach(i => bankOutUnmatched.splice(i, 1));
+      }
+    });
+  }
+
   return {
     month,
     bankRowsCount: rows.length,
-    hometaxCount: ht.length,
-    out: { matched, sysOnly: sysOutUnmatched, bankOnly: bankOutUnmatched },
+    hometaxCount: ht ? ht.length : 0,
+    out: { matched, sysOnly: sysOutUnmatched, bankOnly: bankOutUnmatched, matchedN1 },
     in: { matched: matchedIn, sysOnly: sysInUnmatched, bankOnly: bankInUnmatched }
   };
 }
@@ -3530,6 +3564,23 @@ function renderBankReconcile(month) {
       <strong>매칭 기준:</strong> 금액 정확 일치 + 결제수단 호환 + 출금 ±35일 / 입금 ±10일.
       <strong>홈택스 ✓/✗</strong> 배지는 해당 거래의 매입 세금계산서 존재 여부 (3원 대조). 통장에서 빠졌는데 시스템에도 없고 홈택스에도 없으면 매입 증빙 누락.
     </div>
+
+    ${(r.out.matchedN1 || []).length ? `
+      <details open style="margin-bottom:16px;padding:10px 14px;background:var(--green-bg);border:1px solid var(--green);border-radius:8px;">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--green);">통장 N건 합산 ↔ 홈택스 1건 매칭 (${r.out.matchedN1.length}건)</summary>
+        <div style="margin-top:8px;">
+          ${r.out.matchedN1.map(m => `
+            <div style="padding:8px 12px;margin-top:6px;background:var(--bg);border-radius:6px;font-size:12px;">
+              <strong>${escapeHtml(m.ht.vendor)}</strong>
+              <span style="color:var(--text-3);">(대표자 ${escapeHtml(m.ht.representative)} · 홈택스 ${m.ht.date} · ${fmtKRW(m.total)})</span>
+              <div style="margin-top:4px;color:var(--text-2);">통장 ${m.banks.length}건 합산:
+                ${m.banks.map(b => `${b.date} ${fmtKRW(b.amount)}`).join(' + ')}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </details>
+    ` : ''}
 
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;">
       <div style="padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);">
@@ -3649,6 +3700,13 @@ function exportBankReconcileExcel(month) {
     ]);
   });
 
+  // 6-a. 통장 N건 ↔ 홈택스 1건 (N:1 매칭)
+  const matchedN1Sheet = [['홈택스 일자','거래처(상호)','대표자명','합산 금액','분할 건수', SEP, '통장 분할 출금 상세 (일자 / 금액)']];
+  (r.out.matchedN1 || []).forEach(m => {
+    const detail = m.banks.map(b => `${b.date} / ${fmtKRW(b.amount).toLocaleString()}원`).join('  ;  ');
+    matchedN1Sheet.push([m.ht.date, m.ht.vendor, m.ht.representative, fmtKRW(m.total), m.banks.length, '', detail]);
+  });
+
   // 6. 카드매출 입금 매칭 안 됨 (시스템에만)
   const inSysOnlySheet = [['일자(시스템)','카드사','금액', SEP, '확인사항']];
   r.in.sysOnly.sort((a,b)=>a.date.localeCompare(b.date)).forEach(s => {
@@ -3661,7 +3719,8 @@ function exportBankReconcileExcel(month) {
     [],
     ['항목', '건수', '금액합'],
     ['1:1 매칭됨 (출금)', matched11.length, matched11.reduce((s, m) => s + m.sys.amount, 0)],
-    ['1:N 합산매칭 (쿠팡 등)', matchedN.length, matchedN.reduce((s, m) => s + m.bank.amount, 0)],
+    ['1:N 합산매칭 (쿠팡 등 — 통장1↔시스템N)', matchedN.length, matchedN.reduce((s, m) => s + m.bank.amount, 0)],
+    ['N:1 분할매칭 (김상균 등 — 통장N↔홈택스1)', (r.out.matchedN1 || []).length, (r.out.matchedN1 || []).reduce((s, m) => s + m.total, 0)],
     ['시스템만 (통장 송금 없음)', r.out.sysOnly.length, r.out.sysOnly.reduce((s, x) => s + x.amount, 0)],
     ['통장만 (매입행 없음)', r.out.bankOnly.length, r.out.bankOnly.reduce((s, x) => s + x.amount, 0)],
     [],
@@ -3684,6 +3743,7 @@ function exportBankReconcileExcel(month) {
   _addSheet(wb, bankOnlySheet, '⚠ 통장만 (확인필요)');
   _addSheet(wb, sysOnlySheet, '⚠ 시스템만 (확인필요)');
   if (matchedNSheet.length > 1) _addSheet(wb, matchedNSheet, '1대N 합산매칭');
+  if (matchedN1Sheet.length > 1) _addSheet(wb, matchedN1Sheet, 'N대1 분할매칭');
   if (inSysOnlySheet.length > 1) _addSheet(wb, inSysOnlySheet, '카드매출 정산지연');
   _addSheet(wb, matched11Sheet, '1대1 매칭');
   if (inMatchedSheet.length > 1) _addSheet(wb, inMatchedSheet, '카드입금 매칭');
