@@ -3286,6 +3286,7 @@ function reconcileKbBank(month) {
   }
 
   // 1단계: 1:1 매칭 — 시스템 출금 1건 ↔ 통장 출금 1건
+  // 같은 일자 + 같은 금액 + method 호환이면 거래처 호환성 체크 생략 (옵티마웰니스뮤지엄 vs 약국 같은 일반명사 케이스)
   for (let i = sysOutUnmatched.length - 1; i >= 0; i--) {
     const s = sysOutUnmatched[i];
     if (s.method === '현금') continue;
@@ -3294,9 +3295,10 @@ function reconcileKbBank(month) {
       const b = bankOutUnmatched[j];
       if (b.amount !== s.amount) continue;
       if (!isMethodCompatible(s.method, b.summary, b.kind)) continue;
-      if (!isVendorCompatible(s.vendor, b.desc, b.aliasVendor)) continue;
       const dd = dayDiff(s.date, b.date);
       if (dd > TOLERANCE_DAYS) continue;
+      // 같은 일자(dd===0)는 거래처 호환성 생략 (일반명사 vs 실제가게명 케이스 허용)
+      if (dd > 0 && !isVendorCompatible(s.vendor, b.desc, b.aliasVendor)) continue;
       if (dd < bestDayDiff) { bestDayDiff = dd; bestJ = j; }
     }
     if (bestJ >= 0) {
