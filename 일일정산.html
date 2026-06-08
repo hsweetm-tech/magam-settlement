@@ -3438,7 +3438,31 @@ function reconcileKbBank(month) {
   });
 
   // 3단계: N:1 매칭 — 통장 N건 합산 ↔ 홈택스 1건 (분할 결제 / 김상균 같은 대표자명 송금)
+  // 같은 적요 그룹 중 '부분집합' 합이 홈택스 1건과 일치하면 매칭 (블로그체험단 같은 다른 목적 거래는 제외)
+  function findSubsetSumN1(items, target) {
+    if (items.length > 15) {
+      // 그리디: 큰 금액부터 더해서 일치하는지 시도
+      const sorted = [...items].sort((a, b) => b.b.amount - a.b.amount);
+      const picked = []; let sum = 0;
+      for (const it of sorted) {
+        if (sum + it.b.amount <= target) { picked.push(it); sum += it.b.amount; if (sum === target) return picked; }
+      }
+      return null;
+    }
+    const n = items.length;
+    for (let mask = 1; mask < (1 << n); mask++) {
+      let sum = 0;
+      for (let k = 0; k < n; k++) if (mask & (1 << k)) sum += items[k].b.amount;
+      if (sum === target) {
+        const picked = []; for (let k = 0; k < n; k++) if (mask & (1 << k)) picked.push(items[k]);
+        return picked;
+      }
+    }
+    return null;
+  }
+
   const matchedN1 = [];
+  const matchedHtIdx = new Set();
   if (ht && ht.length) {
     // 통장 미매칭 출금을 적요/aliasVendor로 그룹화 (체크카드 출금 제외 — 세금계산서 대상 아님)
     const bankGroups = {};
@@ -3450,23 +3474,38 @@ function reconcileKbBank(month) {
       bankGroups[key].push({ idx, b });
     });
     Object.entries(bankGroups).forEach(([key, group]) => {
-      if (group.length < 2) return;
-      const total = group.reduce((s, x) => s + x.b.amount, 0);
-      // 홈택스에서 vendor 또는 representative가 통장 key와 호환 + total 일치
-      const htHit = ht.find(h => {
-        if (num(h.total) !== total) return false;
+      if (group.length < 1) return;
+      // 홈택스 후보: vendor 또는 representative가 통장 key와 호환
+      const htCandidates = ht.map((h, hi) => ({ h, hi })).filter(({ h, hi }) => {
+        if (matchedHtIdx.has(hi)) return false;
         const v = normalizeName(h.vendor);
         const rep = normalizeName(h.representative);
         return v === key || rep === key || (v && key && (v.includes(key) || key.includes(v)));
       });
-      if (htHit) {
-        matchedN1.push({
-          ht: htHit,
-          banks: group.map(g => g.b),
-          total
-        });
-        // 매칭된 통장 행들 제거
-        group.map(g => g.idx).sort((a,b)=>b-a).forEach(i => bankOutUnmatched.splice(i, 1));
+      for (const { h: htHit, hi } of htCandidates) {
+        const htTotal = num(htHit.total);
+        // 단건 일치
+        if (group.length === 1 && group[0].b.amount === htTotal) {
+          matchedN1.push({ ht: htHit, banks: [group[0].b], total: htTotal });
+          matchedHtIdx.add(hi);
+          bankOutUnmatched.splice(group[0].idx, 1);
+          group.length = 0;
+          break;
+        }
+        if (group.length < 2) continue;
+        // 부분집합 합 일치 찾기 (블로그체험단 같은 다른 목적 거래 자동 제외)
+        const subset = findSubsetSumN1(group, htTotal);
+        if (subset && subset.length >= 1) {
+          matchedN1.push({ ht: htHit, banks: subset.map(s => s.b), total: htTotal });
+          matchedHtIdx.add(hi);
+          // 매칭된 통장 행들 제거 + group에서도 제거
+          const matchedIdxs = new Set(subset.map(s => s.idx));
+          subset.map(s => s.idx).sort((a,b)=>b-a).forEach(i => bankOutUnmatched.splice(i, 1));
+          // bankOutUnmatched 인덱스가 변경됐으므로 group의 idx도 재조정 필요 — 간단하게 group 재생성
+          for (let k = group.length - 1; k >= 0; k--) {
+            if (matchedIdxs.has(group[k].idx)) group.splice(k, 1);
+          }
+        }
       }
     });
   }
