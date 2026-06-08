@@ -3207,8 +3207,8 @@ function reconcileKbBank(month) {
     _ref: `bank#${idx}`
   }));
 
-  // 그리디 매칭: 금액 동일 + 날짜 차이 최소 (±5일까지 허용)
-  const TOLERANCE_DAYS = 5;
+  // 그리디 매칭: 금액 동일 + 날짜 차이 최소 (±35일까지 허용 — 매입 영수증 발행일과 통장 송금일은 보통 차이 큼, 월말 후불결제도 흔함)
+  const TOLERANCE_DAYS = 35;
   const sysOutUnmatched = [...sysOut];
   const bankOutUnmatched = [...bankOut];
   const matched = [];
