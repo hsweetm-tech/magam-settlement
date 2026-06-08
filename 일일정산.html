@@ -3282,10 +3282,9 @@ function reconcileKbBank(month) {
     return true;
   }
 
-  // 매칭: 시스템 출금 기준으로 통장 후보 중 금액 동일 + method 호환 + 거래처 호환 + 날짜 가장 가까운 것
+  // 1단계: 1:1 매칭 — 시스템 출금 1건 ↔ 통장 출금 1건
   for (let i = sysOutUnmatched.length - 1; i >= 0; i--) {
     const s = sysOutUnmatched[i];
-    // 시스템 현금 결제는 매칭 시도 안 함 (통장 거래 아님)
     if (s.method === '현금') continue;
     let bestJ = -1, bestDayDiff = Infinity;
     for (let j = 0; j < bankOutUnmatched.length; j++) {
@@ -3301,6 +3300,67 @@ function reconcileKbBank(month) {
       matched.push({ sys: s, bank: bankOutUnmatched[bestJ], dayDiff: bestDayDiff });
       sysOutUnmatched.splice(i, 1);
       bankOutUnmatched.splice(bestJ, 1);
+    }
+  }
+
+  // 2단계: 1:N 매칭 — 통장 1건(쿠팡 등 합산결제) ↔ 시스템 매입행 여러 개 합산
+  // 적용 대상: 통장 적요에 '쿠팡' 또는 '아마존' 등 합산결제 키워드 포함, 또는 같은 일자에 시스템 매입행 N개 있는 경우
+  function isAggregatedPayer(desc, summary) {
+    return /쿠팡|아마존|네이버페이|페이코|11번가|G마켓|옥션/.test((desc || '') + (summary || ''));
+  }
+  for (let i = bankOutUnmatched.length - 1; i >= 0; i--) {
+    const b = bankOutUnmatched[i];
+    if (!isAggregatedPayer(b.desc, b.summary)) continue;
+    // 같은 벤더(쿠팡)인 시스템 매입행 후보 수집 (±35일 이내)
+    const candidates = [];
+    for (let k = 0; k < sysOutUnmatched.length; k++) {
+      const s = sysOutUnmatched[k];
+      if (s.method === '현금') continue;
+      if (!isMethodCompatible(s.method, b.summary, b.kind)) continue;
+      // 시스템 vendor가 통장 적요와 호환(쿠팡 매입은 쿠팡으로 등록되어 있다는 가정)
+      if (!isVendorCompatible(s.vendor, b.desc, b.aliasVendor)) continue;
+      const dd = dayDiff(s.date, b.date);
+      if (dd > TOLERANCE_DAYS) continue;
+      candidates.push({ idx: k, sys: s, dd });
+    }
+    if (candidates.length < 2) continue;
+    // 합산이 통장 금액과 일치하는 부분집합 찾기 (작은 조합 위주 — DP는 N 작을 때만)
+    candidates.sort((x, y) => x.dd - y.dd);
+    // 그리디: 합 ≤ b.amount까지 더하다가 정확히 일치하면 채택
+    function findSubsetSum(items, target) {
+      // 작은 N(≤15) 비트마스크
+      if (items.length > 15) {
+        // 그리디 fallback: 큰 금액부터 더해서 일치 못 하면 실패
+        const sorted = [...items].sort((a, b) => b.sys.amount - a.sys.amount);
+        const picked = []; let sum = 0;
+        for (const it of sorted) {
+          if (sum + it.sys.amount <= target) { picked.push(it); sum += it.sys.amount; if (sum === target) return picked; }
+        }
+        return null;
+      }
+      const n = items.length;
+      for (let mask = 1; mask < (1 << n); mask++) {
+        let sum = 0;
+        for (let k = 0; k < n; k++) if (mask & (1 << k)) sum += items[k].sys.amount;
+        if (sum === target) {
+          const picked = []; for (let k = 0; k < n; k++) if (mask & (1 << k)) picked.push(items[k]);
+          return picked;
+        }
+      }
+      return null;
+    }
+    const subset = findSubsetSum(candidates, b.amount);
+    if (subset && subset.length >= 2) {
+      matched.push({
+        sys: { vendor: b.desc + ' (합산 ' + subset.length + '건)', date: subset[0].sys.date, category: '복합', method: subset[0].sys.method, amount: b.amount, _multi: subset.map(x => x.sys) },
+        bank: b,
+        dayDiff: Math.max(...subset.map(x => x.dd)),
+        _aggregated: true
+      });
+      // 매칭된 시스템 행들 제거
+      const idxsToRemove = subset.map(x => x.idx).sort((a, b) => b - a);
+      idxsToRemove.forEach(k => sysOutUnmatched.splice(k, 1));
+      bankOutUnmatched.splice(i, 1);
     }
   }
 
@@ -3459,7 +3519,15 @@ function renderBankReconcile(month) {
   const sumBankOnly = r.out.bankOnly.reduce((s, x) => s + x.amount, 0);
 
   el.innerHTML = `
-    <div class="msub-section-head"><div class="msub-section-title">자동 대사 결과 (${month}, 통장 ${r.bankRowsCount}건)</div></div>
+    <div class="msub-section-head">
+      <div class="msub-section-title">자동 대사 결과 (${month}, 통장 ${r.bankRowsCount}건)</div>
+      <div class="msub-section-note">
+        <button class="btn btn-small" onclick="exportBankReconcileExcel('${month}')" title="확인필요사항까지 점장 전달용 엑셀로 내보내기">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          엑셀 (확인사항 포함)
+        </button>
+      </div>
+    </div>
     <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
       <strong>매칭 기준:</strong> 금액 정확 일치 + 결제수단 호환 + 출금 ±35일 / 입금 ±10일.
       <strong>홈택스 ✓/✗</strong> 배지는 해당 거래의 매입 세금계산서 존재 여부 (3원 대조). 통장에서 빠졌는데 시스템에도 없고 홈택스에도 없으면 매입 증빙 누락.
@@ -3506,6 +3574,101 @@ function renderBankReconcile(month) {
       </table></div>
     </details>
   `;
+}
+
+/** 점장 전달용 엑셀: 매칭됨/시스템만/통장만 + 확인사항(액션) 컬럼 포함 */
+function exportBankReconcileExcel(month) {
+  if (!month) {
+    const mm = document.getElementById('monthlyMonth');
+    month = mm && mm.value;
+  }
+  if (!month) { toast('월을 먼저 선택하세요', 'warn'); return; }
+  const r = reconcileKbBank(month);
+  if (!r) { toast(`${month} 통장 데이터 없음`, 'warn'); return; }
+
+  // 시스템만 — 액션 메시지
+  const sysOnlyAction = (s) => {
+    if (s._hometax) return '세금계산서 있음 — 통장 송금 확인 (미지급 가능성)';
+    if (s._htNa) return '카드 매출전표 확인 — 카드 결제 정상이면 OK';
+    return '⚠ 세금계산서·통장 출금 둘 다 없음 — 매입 등록 오류 확인 또는 영수증 사진 필요';
+  };
+  // 통장만 — 액션 메시지
+  const bankOnlyAction = (b) => {
+    if (b._hometax) return '시스템에 매입행만 추가하면 OK (세금계산서 있음)';
+    if (b._htNa) return '카드 매출전표 영수증 매장에 보관 — 사진 올려주세요';
+    return '⚠ 세금계산서도 없음 — 영수증/세금계산서 발행 확인 필요 (없으면 매입 증빙 불가)';
+  };
+
+  const fmtKRW = (n) => Math.round(n || 0);
+  // 1. 매칭됨 시트
+  const matchedSheet = [['일자(시스템)','거래처','분류/결제','금액','일자(통장)','적요','일자 차이','비고']];
+  r.out.matched.forEach(m => {
+    matchedSheet.push([
+      m.sys.date, m.sys.vendor, `${m.sys.category}/${m.sys.method}`, fmtKRW(m.sys.amount),
+      m.bank.date, m.bank.desc, m.dayDiff,
+      m._aggregated ? `합산결제 ${m.sys._multi.length}건` : (m.dayDiff === 0 ? '당일 매칭' : '')
+    ]);
+  });
+  r.in.matched.forEach(m => {
+    matchedSheet.push([m.sys.date, `[카드입금] ${m.sys.issuer}`, '카드매출', fmtKRW(m.sys.amount),
+      m.bank.date, m.bank.desc, m.dayDiff, `T+${m.dayDiff.toFixed(0)}일 정산`]);
+  });
+
+  // 2. 확인 필요 - 시스템만 (통장 송금 없음)
+  const sysOnlySheet = [['일자','거래처','분류','결제수단','금액','세금계산서','확인사항']];
+  r.out.sysOnly.sort((a,b)=>a.date.localeCompare(b.date)).forEach(s => {
+    sysOnlySheet.push([
+      s.date, s.vendor, s.category, s.method, fmtKRW(s.amount),
+      s._htNa ? '카드결제(대상외)' : (s._hometax ? `있음 (${s._hometax.ht.date})` : '없음'),
+      sysOnlyAction(s)
+    ]);
+  });
+
+  // 3. 확인 필요 - 통장만 (매입행 없음)
+  const bankOnlySheet = [['일자','적요','홈택스 대표자→상호','금액','종류','세금계산서','확인사항']];
+  r.out.bankOnly.sort((a,b)=>a.date.localeCompare(b.date)).forEach(b => {
+    bankOnlySheet.push([
+      b.date, b.desc, b.aliasVendor || '', fmtKRW(b.amount), b.summary || b.kind,
+      b._htNa ? '카드결제(대상외)' : (b._hometax ? `있음 (${b._hometax.ht.date}, ${b._hometax.ht.vendor})` : '없음'),
+      bankOnlyAction(b)
+    ]);
+  });
+
+  // 4. 카드매출 입금 매칭 안 됨 (시스템에만)
+  const inSysOnlySheet = [['일자(시스템)','카드사','금액','확인사항']];
+  r.in.sysOnly.sort((a,b)=>a.date.localeCompare(b.date)).forEach(s => {
+    inSysOnlySheet.push([s.date, s.issuer, fmtKRW(s.amount), '카드사 정산 지연 또는 미정산 확인']);
+  });
+
+  // 5. 요약
+  const summary = [
+    [`${month} 통장 자동 대사 요약`],
+    [],
+    ['항목', '건수', '금액합'],
+    ['매칭됨 (출금)', r.out.matched.length, r.out.matched.reduce((s, m) => s + m.sys.amount, 0)],
+    ['시스템만 (통장 송금 없음)', r.out.sysOnly.length, r.out.sysOnly.reduce((s, x) => s + x.amount, 0)],
+    ['통장만 (매입행 없음)', r.out.bankOnly.length, r.out.bankOnly.reduce((s, x) => s + x.amount, 0)],
+    [],
+    ['매칭됨 (카드 입금)', r.in.matched.length, r.in.matched.reduce((s, m) => s + m.sys.amount, 0)],
+    ['카드매출 정산 지연', r.in.sysOnly.length, r.in.sysOnly.reduce((s, x) => s + x.amount, 0)],
+    [],
+    [`통장 거래 총 ${r.bankRowsCount}건 / 홈택스 ${r.hometaxCount}건 적재됨`],
+    [],
+    ['액션 가이드'],
+    ['① 시스템만 — 통장 송금 확인. 카드결제(체크카드) 미반영 가능성 / 다른 계좌로 출금 / 미지급'],
+    ['② 통장만 + 세금계산서 있음 — 시스템 매입행만 추가 등록'],
+    ['③ 통장만 + 세금계산서 없음 — ⚠ 영수증/카드매출전표 매장에서 사진 올려주세요 (없으면 매입 증빙 불가)'],
+    ['④ 카드매출 정산 지연 — 카드사 정산일(T+1~3일) 지연 또는 미정산 확인']
+  ];
+
+  const wb = XLSX.utils.book_new();
+  _addSheet(wb, summary, '요약');
+  _addSheet(wb, bankOnlySheet, '⚠ 통장만 (확인필요)');
+  _addSheet(wb, sysOnlySheet, '⚠ 시스템만 (확인필요)');
+  if (inSysOnlySheet.length > 1) _addSheet(wb, inSysOnlySheet, '카드매출 정산지연');
+  _addSheet(wb, matchedSheet, '매칭됨');
+  XLSX.writeFile(wb, `통장대사_${month}.xlsx`);
+  toast(`✓ 통장대사_${month}.xlsx 저장 — 점장에게 전달`, 'ok');
 }
 
 async function handleKbBankFile(file) {
