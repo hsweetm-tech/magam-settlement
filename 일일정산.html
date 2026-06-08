@@ -3720,16 +3720,18 @@ function exportBankReconcileExcel(month) {
 
   const fmtKRW = (n) => Math.round(n || 0);
   const SEP = '│'; // 시각적 구분자
+  const myMemoOf = (bnk) => bnk.myMemo || (bnk.memo || '').split(' / ')[0] || '';
 
   // 1. 1:1 매칭 시트 (출금)
   const matched11 = r.out.matched.filter(m => !m._aggregated);
   const matched11Sheet = [
-    ['시스템 일자','거래처','분류','결제수단','금액', SEP, '통장 일자','적요','일자 차이','비고']
+    ['시스템 일자','거래처','분류','결제수단','금액', SEP, '통장 일자','적요','내 통장 표시','일자 차이','비고']
   ];
   matched11.forEach(m => {
     matched11Sheet.push([
       m.sys.date, m.sys.vendor, m.sys.category, m.sys.method, fmtKRW(m.sys.amount), '',
-      m.bank.date, m.bank.desc, m.dayDiff === 0 ? '당일' : `${m.dayDiff}일`,
+      m.bank.date, m.bank.desc, myMemoOf(m.bank),
+      m.dayDiff === 0 ? '당일' : `${m.dayDiff}일`,
       m.dayDiff === 0 ? '당일 매칭' : (m.dayDiff > 5 ? '날짜 차이 큼 — 후불결제 추정' : '')
     ]);
   });
@@ -3737,17 +3739,17 @@ function exportBankReconcileExcel(month) {
   // 2. 1:N 합산매칭 시트 (쿠팡 등)
   const matchedN = r.out.matched.filter(m => m._aggregated);
   const matchedNSheet = [
-    ['통장 일자','적요','합산 금액','합산 건수', SEP, '시스템 매입 상세 (일자 / 거래처 / 분류 / 금액)']
+    ['통장 일자','적요','내 통장 표시','합산 금액','합산 건수', SEP, '시스템 매입 상세 (일자 / 거래처 / 분류 / 금액)']
   ];
   matchedN.forEach(m => {
     const detail = m.sys._multi.map(s => `${s.date} / ${s.vendor} / ${s.category} / ${fmtKRW(s.amount).toLocaleString()}원`).join('  ;  ');
-    matchedNSheet.push([m.bank.date, m.bank.desc, fmtKRW(m.bank.amount), m.sys._multi.length, '', detail]);
+    matchedNSheet.push([m.bank.date, m.bank.desc, myMemoOf(m.bank), fmtKRW(m.bank.amount), m.sys._multi.length, '', detail]);
   });
 
   // 3. 카드매출 입금 매칭 (T+N일 정산)
-  const inMatchedSheet = [['시스템 일자','카드사','금액', SEP, '통장 입금일','적요','정산 지연일']];
+  const inMatchedSheet = [['시스템 일자','카드사','금액', SEP, '통장 입금일','적요','내 통장 표시','정산 지연일']];
   r.in.matched.forEach(m => {
-    inMatchedSheet.push([m.sys.date, m.sys.issuer, fmtKRW(m.sys.amount), '', m.bank.date, m.bank.desc, `T+${m.dayDiff.toFixed(0)}일`]);
+    inMatchedSheet.push([m.sys.date, m.sys.issuer, fmtKRW(m.sys.amount), '', m.bank.date, m.bank.desc, myMemoOf(m.bank), `T+${m.dayDiff.toFixed(0)}일`]);
   });
 
   // 4. 확인 필요 - 시스템만 (통장 송금 없음)
@@ -3761,19 +3763,22 @@ function exportBankReconcileExcel(month) {
   });
 
   // 5. 확인 필요 - 통장만 (매입행 없음)
-  const bankOnlySheet = [['통장 일자','적요','홈택스 대표자→상호','금액','종류', SEP, '세금계산서','확인사항']];
+  const bankOnlySheet = [['통장 일자','적요','내 통장 표시','홈택스 대표자→상호','금액','종류', SEP, '세금계산서','확인사항']];
   r.out.bankOnly.sort((a,b)=>a.date.localeCompare(b.date)).forEach(b => {
     bankOnlySheet.push([
-      b.date, b.desc, b.aliasVendor || '', fmtKRW(b.amount), b.summary || b.kind, '',
+      b.date, b.desc, myMemoOf(b), b.aliasVendor || '', fmtKRW(b.amount), b.summary || b.kind, '',
       b._htNa ? '카드결제(대상외)' : (b._hometax ? `있음 (${b._hometax.ht.date}, ${b._hometax.ht.vendor})` : '없음'),
       bankOnlyAction(b)
     ]);
   });
 
   // 6-a. 통장 N건 ↔ 홈택스 1건 (N:1 매칭)
-  const matchedN1Sheet = [['홈택스 일자','거래처(상호)','대표자명','합산 금액','분할 건수', SEP, '통장 분할 출금 상세 (일자 / 금액)']];
+  const matchedN1Sheet = [['홈택스 일자','거래처(상호)','대표자명','합산 금액','분할 건수', SEP, '통장 분할 출금 상세 (일자 / 금액 / 내 통장 표시)']];
   (r.out.matchedN1 || []).forEach(m => {
-    const detail = m.banks.map(b => `${b.date} / ${fmtKRW(b.amount).toLocaleString()}원`).join('  ;  ');
+    const detail = m.banks.map(b => {
+      const memo = myMemoOf(b);
+      return `${b.date} / ${fmtKRW(b.amount).toLocaleString()}원${memo ? ' / ' + memo : ''}`;
+    }).join('  ;  ');
     matchedN1Sheet.push([m.ht.date, m.ht.vendor, m.ht.representative, fmtKRW(m.total), m.banks.length, '', detail]);
   });
 
