@@ -3207,19 +3207,43 @@ function reconcileKbBank(month) {
     _ref: `bank#${idx}`
   }));
 
-  // 그리디 매칭: 금액 동일 + 날짜 차이 최소 (±35일까지 허용 — 매입 영수증 발행일과 통장 송금일은 보통 차이 큼, 월말 후불결제도 흔함)
+  // 그리디 매칭: 금액 동일 + 결제수단 호환 + 날짜 차이 최소 (±35일 허용 — 매입 발행일 vs 송금일 차이 큼)
   const TOLERANCE_DAYS = 35;
   const sysOutUnmatched = [...sysOut];
   const bankOutUnmatched = [...bankOut];
   const matched = [];
   const dayDiff = (a, b) => Math.abs((new Date(a) - new Date(b)) / 86400000);
-  // 매칭: 시스템 출금 기준으로 통장 후보 중 금액 동일 + 날짜 가장 가까운 것
+
+  /** 시스템 매입 method가 통장 거래(summary/kind)와 호환되는지 */
+  function isMethodCompatible(sysMethod, bankSummary, bankKind) {
+    const sm = String(sysMethod || '').trim();
+    const bs = String(bankSummary || '');
+    // 시스템 현금 결제 (현금영수증 아님) — 통장 매칭 대상 아님
+    if (sm === '현금') return false;
+    // 시스템 카드 결제 (법인카드/체크카드/카드) — 통장도 체크카드만 OK
+    if (/^(법인카드|체크카드|카드)$/.test(sm)) {
+      return /체크카드|카드/.test(bs) || bankKind === '카드출금';
+    }
+    // 시스템 계좌이체/이체 — 통장에서 체크카드는 아니어야
+    if (/계좌이체|이체/.test(sm)) {
+      return !(/체크카드/.test(bs) || bankKind === '카드출금');
+    }
+    // 현금영수증 (지출증빙용) — 보통 자동결제(FBS) 또는 카드 — 둘 다 OK
+    if (/영수증/.test(sm)) return true;
+    // method 없거나 알 수 없으면 매칭 시도
+    return true;
+  }
+
+  // 매칭: 시스템 출금 기준으로 통장 후보 중 금액 동일 + method 호환 + 날짜 가장 가까운 것
   for (let i = sysOutUnmatched.length - 1; i >= 0; i--) {
     const s = sysOutUnmatched[i];
+    // 시스템 현금 결제는 매칭 시도 안 함 (통장 거래 아님)
+    if (s.method === '현금') continue;
     let bestJ = -1, bestDayDiff = Infinity;
     for (let j = 0; j < bankOutUnmatched.length; j++) {
       const b = bankOutUnmatched[j];
       if (b.amount !== s.amount) continue;
+      if (!isMethodCompatible(s.method, b.summary, b.kind)) continue;
       const dd = dayDiff(s.date, b.date);
       if (dd > TOLERANCE_DAYS) continue;
       if (dd < bestDayDiff) { bestDayDiff = dd; bestJ = j; }
