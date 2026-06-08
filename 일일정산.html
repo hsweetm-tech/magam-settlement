@@ -3646,7 +3646,7 @@ function renderBankReconcile(month) {
           <tr ${matched ? '' : 'style="background:var(--orange-bg, #fff4e6);"'}>
             <td style="white-space:nowrap;">${r2.date} <span style="color:var(--text-3);font-size:11px;">${r2.time || ''}</span></td>
             <td>${escapeHtml(r2.desc || '-')}</td>
-            <td style="color:var(--text-2);font-size:11px;">${escapeHtml(r2.myMemo || '')}</td>
+            <td style="color:var(--text-2);font-size:11px;">${escapeHtml(r2.myMemo || (r2.memo || '').split(' / ')[0] || '')}</td>
             <td class="num-cell">${r2.withdraw > 0 ? `<span style="color:var(--red);">-${fmt(r2.withdraw)}</span>` : ''}</td>
             <td class="num-cell">${r2.deposit > 0 ? `<span style="color:var(--green);">+${fmt(r2.deposit)}</span>` : ''}</td>
             <td class="num-cell" style="font-size:11px;color:var(--text-3);">${fmt(r2.balance)}</td>
