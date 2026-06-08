@@ -3465,6 +3465,7 @@ function reconcileKbBank(month) {
 
   const matchedN1 = [];
   const matchedHtIdx = new Set();
+  const matchedBankIdxs = new Set();
   if (ht && ht.length) {
     // 통장 미매칭 출금을 적요/aliasVendor로 그룹화 (체크카드 출금 제외 — 세금계산서 대상 아님)
     const bankGroups = {};
@@ -3476,7 +3477,9 @@ function reconcileKbBank(month) {
       bankGroups[key].push({ idx, b });
     });
     Object.entries(bankGroups).forEach(([key, group]) => {
-      if (group.length < 1) return;
+      // 매칭된 행 제외하고 남은 행들로 진행 (인덱스는 bankOutUnmatched 기준 그대로)
+      let remaining = group.filter(g => !matchedBankIdxs.has(g.idx));
+      if (remaining.length < 1) return;
       // 홈택스 후보: vendor 또는 representative가 통장 key와 호환
       const htCandidates = ht.map((h, hi) => ({ h, hi })).filter(({ h, hi }) => {
         if (matchedHtIdx.has(hi)) return false;
@@ -3485,31 +3488,28 @@ function reconcileKbBank(month) {
         return v === key || rep === key || (v && key && (v.includes(key) || key.includes(v)));
       });
       for (const { h: htHit, hi } of htCandidates) {
+        if (remaining.length < 1) break;
         const htTotal = num(htHit.total);
         // 단건 일치
-        if (group.length === 1 && group[0].b.amount === htTotal) {
-          matchedN1.push({ ht: htHit, banks: [group[0].b], total: htTotal });
+        if (remaining.length === 1 && remaining[0].b.amount === htTotal) {
+          matchedN1.push({ ht: htHit, banks: [remaining[0].b], total: htTotal });
           matchedHtIdx.add(hi);
-          bankOutUnmatched.splice(group[0].idx, 1);
-          group.length = 0;
+          matchedBankIdxs.add(remaining[0].idx);
+          remaining = [];
           break;
         }
-        if (group.length < 2) continue;
-        // 부분집합 합 일치 찾기 (블로그체험단 같은 다른 목적 거래 자동 제외)
-        const subset = findSubsetSumN1(group, htTotal);
+        // 부분집합 합 일치 (다건)
+        const subset = findSubsetSumN1(remaining, htTotal);
         if (subset && subset.length >= 1) {
           matchedN1.push({ ht: htHit, banks: subset.map(s => s.b), total: htTotal });
           matchedHtIdx.add(hi);
-          // 매칭된 통장 행들 제거 + group에서도 제거
-          const matchedIdxs = new Set(subset.map(s => s.idx));
-          subset.map(s => s.idx).sort((a,b)=>b-a).forEach(i => bankOutUnmatched.splice(i, 1));
-          // bankOutUnmatched 인덱스가 변경됐으므로 group의 idx도 재조정 필요 — 간단하게 group 재생성
-          for (let k = group.length - 1; k >= 0; k--) {
-            if (matchedIdxs.has(group[k].idx)) group.splice(k, 1);
-          }
+          subset.forEach(s => matchedBankIdxs.add(s.idx));
+          remaining = remaining.filter(g => !matchedBankIdxs.has(g.idx));
         }
       }
     });
+    // 마지막에 한 번에 splice (큰 인덱스부터 — 인덱스 꼬임 방지)
+    Array.from(matchedBankIdxs).sort((a, b) => b - a).forEach(i => bankOutUnmatched.splice(i, 1));
   }
 
   return {
