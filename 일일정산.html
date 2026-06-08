@@ -2835,6 +2835,7 @@ const HOMETAX_COLUMNS = {
   date:   ['작성일자','거래일자','공급일자','결제일자','일자','거래년월일','승인일자','승인일시'],
   vendor: ['상호','거래처','공급자','공급자상호','가맹점','가맹점명','상호명','공급자명'],
   bizNo:  ['사업자번호','사업자등록번호','공급자등록번호','등록번호','가맹점사업자번호','공급자사업자등록번호'],
+  representative: ['대표자명','대표자','대표명','공급자대표자명','공급자대표','가맹점대표자명'],
   supply: ['공급가액','공급가','공급가(원)'],
   vat:    ['세액','부가세','매입세액','부가가치세','부가세액','부가세(원)','세액(원)'],
   total:  ['합계','합계금액','총액','거래금액','총거래금액','금액','승인금액','승인금액(원)','거래금액(원)']
@@ -2898,6 +2899,7 @@ function parseHometaxRows(rawRows, filename, fallbackMonth) {
       date: detected.date ? _parseHometaxDate(r[detected.date], fallbackMonth) : '',
       vendor: detected.vendor ? String(r[detected.vendor] || '').trim() : '',
       bizNo: detected.bizNo ? _normalizeBizNo(r[detected.bizNo]) : '',
+      representative: detected.representative ? String(r[detected.representative] || '').trim() : '',
       supply, vat, total,
       docType
     };
@@ -3197,15 +3199,34 @@ function reconcileKbBank(month) {
     }
   });
 
-  // 통장 출금 행
-  const bankOut = rows.filter(r => r.withdraw > 0).map((r, idx) => ({
-    date: r.date,
-    amount: r.withdraw,
-    desc: r.desc,
-    summary: r.summary,
-    kind: r.kind,
-    _ref: `bank#${idx}`
-  }));
+  // 홈택스 대표자명 → 상호 alias 맵 (통장 적요가 대표자명일 때 거래처 추정)
+  const htForAlias = getHometaxData(month) || [];
+  const repToVendor = {};
+  const repToVendorAndDate = {};
+  htForAlias.forEach(h => {
+    const rep = (h.representative || '').trim();
+    if (rep && h.vendor) {
+      repToVendor[rep] = h.vendor;
+      // 같은 대표자명 다중 업체 대비
+      if (!repToVendorAndDate[rep]) repToVendorAndDate[rep] = [];
+      repToVendorAndDate[rep].push({ vendor: h.vendor, date: h.date, total: num(h.total), bizNo: h.bizNo });
+    }
+  });
+
+  // 통장 출금 행 (대표자명 → 상호 alias 적용)
+  const bankOut = rows.filter(r => r.withdraw > 0).map((r, idx) => {
+    const desc = (r.desc || '').trim();
+    const aliasVendor = repToVendor[desc] || '';
+    return {
+      date: r.date,
+      amount: r.withdraw,
+      desc,
+      aliasVendor,
+      summary: r.summary,
+      kind: r.kind,
+      _ref: `bank#${idx}`
+    };
+  });
 
   // 그리디 매칭: 금액 동일 + 결제수단 호환 + 날짜 차이 최소 (±35일 허용 — 매입 발행일 vs 송금일 차이 큼)
   const TOLERANCE_DAYS = 35;
@@ -3292,11 +3313,17 @@ function reconcileKbBank(month) {
   }
 
   // ===== 홈택스 세금계산서 매칭 (3원 대조) =====
-  // 통장에만 있는 출금 + 시스템에만 있는 매입행에 대해 홈택스 데이터로 추가 확인
   const ht = getHometaxData(month);
+  function isCardOrCashReceipt(method) {
+    // 카드/체크카드/법인카드/현금영수증은 세금계산서 발행 안 함 → 홈택스 매칭 대상 아님
+    return /카드|체크카드|법인카드|영수증/.test(method || '');
+  }
+  function isBankCardOrCash(b) {
+    // 통장 거래도 카드출금/카드입금은 세금계산서 대상 아님
+    return b.kind === '카드출금' || /체크카드|KB카드/.test(b.summary || '');
+  }
   function findHometax(amount, sysDate) {
     if (!ht || !ht.length) return null;
-    // 금액 동일 + 날짜 ±35일 가장 가까운 것
     let best = null, bestDd = Infinity;
     for (const h of ht) {
       if (num(h.total) !== amount && num(h.supply) + num(h.vat) !== amount) continue;
@@ -3306,15 +3333,17 @@ function reconcileKbBank(month) {
     }
     return best ? { ht: best, dayDiff: bestDd } : null;
   }
-  // bankOnly에 홈택스 매칭 추가
-  bankOutUnmatched.forEach(b => {
-    const m = findHometax(b.amount, b.date);
-    if (m) b._hometax = m;
-  });
-  // sysOnly에도 홈택스 확인
+  // sysOnly: 카드/현금영수증은 매칭 시도 안 함 (대상 외)
   sysOutUnmatched.forEach(s => {
+    if (isCardOrCashReceipt(s.method)) { s._htNa = true; return; }
     const m = findHometax(s.amount, s.date);
     if (m) s._hometax = m;
+  });
+  // bankOnly: 체크카드 출금은 매칭 시도 안 함 (대상 외)
+  bankOutUnmatched.forEach(b => {
+    if (isBankCardOrCash(b)) { b._htNa = true; return; }
+    const m = findHometax(b.amount, b.date);
+    if (m) b._hometax = m;
   });
 
   return {
@@ -3347,9 +3376,12 @@ function renderBankReconcile(month) {
     </tr>
   `).join('');
 
-  const htBadge = (item) => item._hometax
-    ? `<span style="display:inline-block;background:var(--green-bg);color:var(--green);padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;" title="홈택스 세금계산서 있음 (${item._hometax.ht.date}, ${escapeHtml(item._hometax.ht.vendor)})">홈택스 ✓</span>`
-    : `<span style="display:inline-block;background:var(--red-bg, #ffe5e5);color:var(--red);padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;" title="홈택스 세금계산서 없음 — 매입 증빙 누락">홈택스 ✗</span>`;
+  const htBadge = (item) => {
+    if (item._htNa) return `<span style="display:inline-block;background:var(--subtle);color:var(--text-3);padding:1px 6px;border-radius:4px;font-size:10px;" title="카드결제/현금영수증은 세금계산서 발행 대상이 아님 (카드 매출전표가 증빙)">카드결제</span>`;
+    if (item._hometax) return `<span style="display:inline-block;background:var(--green-bg);color:var(--green);padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;" title="홈택스 세금계산서 있음 (${item._hometax.ht.date}, ${escapeHtml(item._hometax.ht.vendor)})">계산서 ✓</span>`;
+    return `<span style="display:inline-block;background:var(--red-bg, #ffe5e5);color:var(--red);padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;" title="홈택스 세금계산서 없음 — 매입 증빙 누락 (영수증 필요)">계산서 ✗</span>`;
+  };
+  const aliasNote = (b) => b.aliasVendor ? ` <span style="color:var(--text-3);font-size:11px;" title="홈택스 대표자명 매칭">≈ ${escapeHtml(b.aliasVendor)}</span>` : '';
 
   const sysOnlyRows = r.out.sysOnly.sort((a,b) => a.date.localeCompare(b.date)).map(s => `
     <tr style="color:var(--red);">
@@ -3365,7 +3397,7 @@ function renderBankReconcile(month) {
     <tr style="color:var(--orange);">
       <td colspan="3" style="color:var(--orange);">시스템에 매입행 없음 → 매입 등록 필요</td>
       <td>${b.date}</td>
-      <td>${escapeHtml(b.desc)} <span style="color:var(--text-3);font-size:11px;">[${b.summary || ''}/${b.kind}]</span></td>
+      <td>${escapeHtml(b.desc)}${aliasNote(b)} <span style="color:var(--text-3);font-size:11px;">[${b.summary || ''}/${b.kind}]</span></td>
       <td class="num-cell">${fmtKRW(b.amount)} ${htBadge(b)}</td>
     </tr>
   `).join('');
