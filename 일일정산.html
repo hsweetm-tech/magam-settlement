@@ -3485,14 +3485,16 @@ function renderBankReconcile(month) {
   const fmtKRW = (n) => '₩' + fmt(Math.round(n || 0));
   const fmtDayDiff = (d) => d === 0 ? '당일' : `${d.toFixed(0)}일`;
 
-  // 출금 매칭 표
+  // 출금 매칭 표 (내 통장 표시 컬럼 추가 + 금액↔통장일자 시각적 분리)
+  const myMemoOf = (bnk) => escapeHtml(bnk.myMemo || (bnk.memo || '').split(' / ')[0] || '');
   const outMatchedRows = r.out.matched.sort((a,b) => a.sys.date.localeCompare(b.sys.date)).map(m => `
     <tr>
       <td>${m.sys.date}</td>
       <td>${escapeHtml(m.sys.vendor)} <span style="color:var(--text-3);font-size:11px;">[${m.sys.category}/${m.sys.method}]</span></td>
-      <td class="num-cell">${fmtKRW(m.sys.amount)}</td>
-      <td>${m.bank.date}</td>
+      <td class="num-cell" style="padding-right:18px;">${fmtKRW(m.sys.amount)}</td>
+      <td style="border-left:2px solid var(--border);padding-left:10px;">${m.bank.date}</td>
       <td>${escapeHtml(m.bank.desc)} <span style="color:var(--text-3);font-size:11px;">[${m.bank.summary || ''}]</span></td>
+      <td style="color:var(--text-2);font-size:11px;">${myMemoOf(m.bank)}</td>
       <td>${m.dayDiff === 0 ? '<span style="color:var(--green);">당일</span>' : `<span style="color:var(--orange);">${fmtDayDiff(m.dayDiff)}</span>`}</td>
     </tr>
   `).join('');
@@ -3508,42 +3510,51 @@ function renderBankReconcile(month) {
     <tr style="color:var(--red);">
       <td>${s.date}</td>
       <td>${escapeHtml(s.vendor)} <span style="color:var(--text-3);font-size:11px;">[${s.category}/${s.method}]</span></td>
-      <td class="num-cell">${fmtKRW(s.amount)}</td>
-      <td colspan="2" style="color:var(--red);">통장 출금 없음 → 미지급 또는 다른 계좌·현금 결제 확인</td>
+      <td class="num-cell" style="padding-right:18px;">${fmtKRW(s.amount)}</td>
+      <td colspan="3" style="border-left:2px solid var(--border);padding-left:10px;color:var(--red);">통장 출금 없음 → 미지급 또는 다른 계좌·현금 결제 확인</td>
       <td>${htBadge(s)}</td>
     </tr>
   `).join('');
 
   const bankOnlyRows = r.out.bankOnly.sort((a,b) => a.date.localeCompare(b.date)).map(b => `
     <tr style="color:var(--orange);">
-      <td colspan="3" style="color:var(--orange);">시스템에 매입행 없음 → 매입 등록 필요</td>
-      <td>${b.date}</td>
+      <td colspan="2" style="color:var(--orange);">시스템에 매입행 없음 → 매입 등록 필요</td>
+      <td class="num-cell" style="padding-right:18px;color:var(--orange);">⚠</td>
+      <td style="border-left:2px solid var(--border);padding-left:10px;">${b.date}</td>
       <td>${escapeHtml(b.desc)}${aliasNote(b)} <span style="color:var(--text-3);font-size:11px;">[${b.summary || ''}/${b.kind}]</span></td>
+      <td style="color:var(--text-2);font-size:11px;">${myMemoOf(b)}</td>
       <td class="num-cell">${fmtKRW(b.amount)} ${htBadge(b)}</td>
     </tr>
   `).join('');
 
-  // 입금 매칭 표
+  // 입금 매칭 표 (내 통장 표시 추가)
   const inMatchedRows = r.in.matched.sort((a,b) => a.sys.date.localeCompare(b.sys.date)).map(m => `
     <tr>
       <td>${m.sys.date}</td>
       <td>${escapeHtml(m.sys.issuer)}</td>
-      <td class="num-cell">${fmtKRW(m.sys.amount)}</td>
-      <td>${m.bank.date}</td>
+      <td class="num-cell" style="padding-right:18px;">${fmtKRW(m.sys.amount)}</td>
+      <td style="border-left:2px solid var(--border);padding-left:10px;">${m.bank.date}</td>
       <td>${escapeHtml(m.bank.desc)}</td>
+      <td style="color:var(--text-2);font-size:11px;">${myMemoOf(m.bank)}</td>
       <td><span style="color:var(--green);">T+${m.dayDiff.toFixed(0)}일 입금</span></td>
     </tr>
   `).join('');
   const inSysOnly = r.in.sysOnly.sort((a,b) => a.date.localeCompare(b.date)).map(s => `
     <tr style="color:var(--red);">
-      <td>${s.date}</td><td>${escapeHtml(s.issuer)}</td><td class="num-cell">${fmtKRW(s.amount)}</td>
-      <td colspan="3" style="color:var(--red);">통장 입금 없음 → 정산 지연 또는 미정산 확인</td>
+      <td>${s.date}</td>
+      <td>${escapeHtml(s.issuer)}</td>
+      <td class="num-cell" style="padding-right:18px;">${fmtKRW(s.amount)}</td>
+      <td colspan="4" style="border-left:2px solid var(--border);padding-left:10px;color:var(--red);">통장 입금 없음 → 정산 지연 또는 미정산 확인</td>
     </tr>
   `).join('');
   const inBankOnly = r.in.bankOnly.sort((a,b) => a.date.localeCompare(b.date)).map(b => `
     <tr style="color:var(--orange);">
-      <td colspan="3" style="color:var(--orange);">시스템 cardRows에 매칭되는 카드 매출 없음</td>
-      <td>${b.date}</td><td>${escapeHtml(b.desc)} <span style="color:var(--text-3);font-size:11px;">[${b.kind}]</span></td><td class="num-cell">${fmtKRW(b.amount)}</td>
+      <td colspan="2" style="color:var(--orange);">시스템 cardRows에 매칭되는 카드 매출 없음</td>
+      <td class="num-cell" style="padding-right:18px;color:var(--orange);">⚠</td>
+      <td style="border-left:2px solid var(--border);padding-left:10px;">${b.date}</td>
+      <td>${escapeHtml(b.desc)} <span style="color:var(--text-3);font-size:11px;">[${b.kind}]</span></td>
+      <td style="color:var(--text-2);font-size:11px;">${myMemoOf(b)}</td>
+      <td class="num-cell">${fmtKRW(b.amount)}</td>
     </tr>
   `).join('');
 
@@ -3602,8 +3613,8 @@ function renderBankReconcile(month) {
       <summary style="cursor:pointer;font-size:13px;font-weight:600;margin-bottom:8px;">출금 매칭 상세 (매입·인건비·고정비)</summary>
       <div class="table-wrap"><table class="data-table" style="font-size:12px;">
         <thead><tr>
-          <th>시스템 일자</th><th>거래처/항목</th><th class="num-cell">금액</th>
-          <th>통장 일자</th><th>적요</th><th>매칭 상태</th>
+          <th>시스템 일자</th><th>거래처/항목</th><th class="num-cell" style="padding-right:18px;">금액</th>
+          <th style="border-left:2px solid var(--border);padding-left:10px;">통장 일자</th><th>적요</th><th>내 통장 표시</th><th>매칭 상태</th>
         </tr></thead>
         <tbody>
           ${sysOnlyRows}${bankOnlyRows}${outMatchedRows}
@@ -3615,8 +3626,8 @@ function renderBankReconcile(month) {
       <summary style="cursor:pointer;font-size:13px;font-weight:600;margin-bottom:8px;">입금 매칭 상세 (카드사 정산)</summary>
       <div class="table-wrap"><table class="data-table" style="font-size:12px;">
         <thead><tr>
-          <th>시스템 일자</th><th>카드사</th><th class="num-cell">금액</th>
-          <th>통장 일자</th><th>적요</th><th>매칭 상태</th>
+          <th>시스템 일자</th><th>카드사</th><th class="num-cell" style="padding-right:18px;">금액</th>
+          <th style="border-left:2px solid var(--border);padding-left:10px;">통장 일자</th><th>적요</th><th>내 통장 표시</th><th>매칭 상태</th>
         </tr></thead>
         <tbody>
           ${inSysOnly}${inBankOnly}${inMatchedRows}
