@@ -23,9 +23,11 @@ const src = `
   };
   const PARTNERS_KEY = 'partner_ratios';
   const DIST_DISCOUNT_KEY = 'dist_subtract_discounts';
+  const PG_KEY_PREFIX = 'pg_settle_';
   // UI re-render 호출은 no-op (테스트 환경)
   function renderPartners() {}
   function updateHometaxStatus() {}
+  function updatePgStatus() {}
   function refreshMonthlyDistribution() {}
   const document = { getElementById: () => null };
   ${collect}
@@ -50,12 +52,14 @@ let s = mod.collectAppSettings();
 check('1) 빈 partners=null', s.partners === null);
 check('1) 빈 distSubtract=false', s.distSubtractDiscounts === false);
 check('1) 빈 hometax={}', Object.keys(s.hometax).length === 0);
+check('1) 빈 pgSettle={}', Object.keys(s.pgSettle).length === 0);
 
 // CASE 2: 모든 데이터 채워서 collect
 mod.setStore('partner_ratios', JSON.stringify([{ name: 'A', ratio: 50 }, { name: 'B', ratio: 50 }]));
 mod.setStore('dist_subtract_discounts', 'true');
 mod.setStore('hometax_2026-05', JSON.stringify([{ date: '2026-05-10', total: 100000 }]));
 mod.setStore('hometax_2026-04', JSON.stringify([{ date: '2026-04-12', total: 50000 }]));
+mod.setStore('pg_settle_2026-05', JSON.stringify([{ payoutDate: '2026-05-13', net: 166029 }]));
 // 다른 키 (백업에서 제외돼야 함)
 mod.setStore('dailySettlement_v1', JSON.stringify({}));
 mod.setStore('cloud_settings', JSON.stringify({}));
@@ -67,6 +71,7 @@ check('2) distSubtract=true', s.distSubtractDiscounts === true);
 check('2) hometax 2개월', Object.keys(s.hometax).length === 2);
 check('2) hometax 2026-05', Array.isArray(s.hometax['2026-05']) && s.hometax['2026-05'].length === 1);
 check('2) hometax 2026-04 합계', s.hometax['2026-04'][0].total === 50000);
+check('2) pgSettle 2026-05', Array.isArray(s.pgSettle['2026-05']) && s.pgSettle['2026-05'][0].net === 166029);
 
 // CASE 3: round-trip → 다른 PC 시뮬레이션 (clear + apply)
 const payloadJson = JSON.stringify(s);
@@ -78,6 +83,8 @@ check('3) partners 내용', JSON.parse(mod.getStore('partner_ratios'))[0].ratio 
 check('3) distSubtract 복원', mod.getStore('dist_subtract_discounts') === 'true');
 check('3) hometax_2026-05 복원', mod.getStore('hometax_2026-05') !== null);
 check('3) hometax_2026-04 복원', mod.getStore('hometax_2026-04') !== null);
+check('3) pg_settle_2026-05 복원', mod.getStore('pg_settle_2026-05') !== null);
+check('3) pg_settle 내용', JSON.parse(mod.getStore('pg_settle_2026-05'))[0].net === 166029);
 
 // CASE 4: null/undefined settings는 안전하게 무시
 mod.applyAppSettings(null);

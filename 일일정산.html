@@ -1844,6 +1844,7 @@ body.tab-summary main { grid-template-columns: 1fr; }
           <button class="msub-btn active" data-msub="profit">손익</button>
           <button class="msub-btn" data-msub="dist">분배</button>
           <button class="msub-btn" data-msub="bank">통장</button>
+          <button class="msub-btn" data-msub="pg">PG정산</button>
           <button class="msub-btn" data-msub="proof">증빙</button>
           <button class="msub-btn" data-msub="settings">설정</button>
         </div>
@@ -1915,6 +1916,33 @@ body.tab-summary main { grid-template-columns: 1fr; }
             </div>
           </div>
           <div id="bankReconcileContent" style="margin-top:20px;"></div>
+        </div>
+
+        <!-- PG정산 sub-panel: 이지피지 PG 정산내역 업로드 + 통장/마감 대사 (2026-06-11 추가) -->
+        <div class="msub-panel" id="msub-pg">
+          <div class="msub-section-head">
+            <div class="msub-section-title">이지피지 PG 정산내역</div>
+            <div class="msub-section-note" id="pgCount">0건</div>
+          </div>
+          <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
+            이지피지에서 다운로드한 <strong>PG정산상세내역</strong> 엑셀(.xlsx)을 업로드하면 ① 지급일자별 실지급금액 합계 ↔ 통장 "에비뉴에이치" 입금, ② 거래일자별 카드매출 ↔ 일일 마감 카드매출입력 을 자동 대사합니다. (통장 대사를 보려면 <strong>통장</strong> 탭에서 KB 월 엑셀도 먼저 업로드하세요.) 월별 별도 저장(localStorage).
+          </div>
+          <div class="upload-grid">
+            <div class="upload-zone" id="pgUpload">
+              <input type="file" id="pgFile" accept=".xlsx,.xls,.csv" style="display:none;">
+              <svg class="icon icon-lg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              <div class="upload-label">PG 정산상세내역 업로드</div>
+              <div class="upload-hint">이지피지 .xlsx / .xls / .csv</div>
+            </div>
+            <div class="upload-zone" style="cursor:default;border-style:solid;">
+              <div style="font-size:11px;color:var(--text-3);">현재 월 적재된 PG 거래</div>
+              <div style="font-size:18px;font-weight:600;margin:4px 0;" id="pgLoadedCount">0건</div>
+              <div style="display:flex;gap:6px;justify-content:center;">
+                <button class="btn btn-small" onclick="clearPgSettleCurrentMonth()" style="font-size:11px;">초기화</button>
+              </div>
+            </div>
+          </div>
+          <div id="pgReconcileContent" style="margin-top:20px;"></div>
         </div>
 
         <!-- 증빙 sub-panel: 홈택스 업로드 + 대사 결과 -->
@@ -2573,12 +2601,12 @@ function init() {
     if (costsMonthEl && costsMonthEl.value !== month) costsMonthEl.value = month;
     const active = document.querySelector('.tab.active');
     const tabName = active ? active.dataset.tab : '';
-    if (tabName === 'monthly') { renderMonthlyReport(month); if (typeof updateHometaxStatus === 'function') updateHometaxStatus(); }
+    if (tabName === 'monthly') { renderMonthlyReport(month); if (typeof updateHometaxStatus === 'function') updateHometaxStatus(); if (typeof updatePgStatus === 'function') updatePgStatus(); }
     else if (tabName === 'forecast') { renderMonthlyForecast(month); }
     else if (tabName === 'costs') { renderCostsTab(month); }
   }
   window.syncSelectedMonth = syncSelectedMonth;
-  if (monthlyMonthEl) monthlyMonthEl.addEventListener('change', (e) => { syncSelectedMonth(e.target.value); if (typeof updateKbBankStatus === 'function') updateKbBankStatus(); if (typeof renderBankReconcile === 'function') renderBankReconcile(e.target.value); });
+  if (monthlyMonthEl) monthlyMonthEl.addEventListener('change', (e) => { syncSelectedMonth(e.target.value); if (typeof updateKbBankStatus === 'function') updateKbBankStatus(); if (typeof renderBankReconcile === 'function') renderBankReconcile(e.target.value); if (typeof updatePgStatus === 'function') updatePgStatus(); if (typeof renderPgReconcile === 'function') renderPgReconcile(e.target.value); });
   if (forecastMonthEl) forecastMonthEl.addEventListener('change', (e) => syncSelectedMonth(e.target.value));
   if (costsMonthEl) costsMonthEl.addEventListener('change', (e) => syncSelectedMonth(e.target.value));
   // 월정산 sub-tab navigation
@@ -2596,7 +2624,9 @@ function init() {
   // 홈택스 업로드 init
   setupHometaxUpload();
   setupKbBankUpload();
+  setupPgUpload();
   updateHometaxStatus();
+  updatePgStatus();
   setupUpload('posFile', 'posUpload', 'pos');
   setupUpload('cardFile', 'cardUpload', 'card');
   setupUpload('bankFile', 'bankUpload', 'bank');
@@ -2935,10 +2965,14 @@ function clearHometaxData(month) {
  */
 function collectAppSettings() {
   const hometax = {};
+  const pgSettle = {};
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);
     if (k && k.startsWith('hometax_')) {
       try { hometax[k.slice('hometax_'.length)] = JSON.parse(localStorage.getItem(k) || '[]'); } catch {}
+    }
+    if (k && k.startsWith(PG_KEY_PREFIX)) {
+      try { pgSettle[k.slice(PG_KEY_PREFIX.length)] = JSON.parse(localStorage.getItem(k) || '[]'); } catch {}
     }
   }
   let partners = null, fixedExpenses = null, capital = null;
@@ -2950,7 +2984,8 @@ function collectAppSettings() {
     fixedExpenses,
     capital,
     distSubtractDiscounts: localStorage.getItem(DIST_DISCOUNT_KEY) === 'true',
-    hometax
+    hometax,
+    pgSettle
   };
 }
 
@@ -2967,12 +3002,18 @@ function applyAppSettings(s) {
       if (Array.isArray(arr)) localStorage.setItem('hometax_' + month, JSON.stringify(arr));
     });
   }
+  if (s.pgSettle && typeof s.pgSettle === 'object') {
+    Object.entries(s.pgSettle).forEach(([month, arr]) => {
+      if (Array.isArray(arr)) localStorage.setItem(PG_KEY_PREFIX + month, JSON.stringify(arr));
+    });
+  }
   // UI 즉시 반영
   if (typeof renderPartners === 'function') renderPartners();
   if (typeof renderFixedExpenses === 'function') renderFixedExpenses();
   const distChk = document.getElementById('distSubtractDiscounts');
   if (distChk) distChk.checked = s.distSubtractDiscounts === true;
   if (typeof updateHometaxStatus === 'function') updateHometaxStatus();
+  if (typeof updatePgStatus === 'function') updatePgStatus();
   if (typeof refreshMonthlyDistribution === 'function') refreshMonthlyDistribution();
 }
 
@@ -3001,6 +3042,354 @@ function updateHometaxStatus() {
   const count = month ? getHometaxData(month).length : 0;
   const c1 = document.getElementById('hometaxCount');
   const c2 = document.getElementById('hometaxLoadedCount');
+  if (c1) c1.textContent = month ? `${month} · ${count}건` : '0건';
+  if (c2) c2.textContent = `${count}건`;
+}
+
+/* ========================================================================
+   이지피지 PG 정산내역 대사 (2026-06-11)
+   - PG정산상세내역 엑셀(.xlsx) 업로드 → 월별 localStorage 'pg_settle_{YYYY-MM}' 저장
+   - 대사 ①: 지급일자별 실지급금액 합계 ↔ 통장 "에비뉴에이치" 입금
+   - 대사 ②: 거래일자별 정산대상금액(카드매출) ↔ 일일 마감 카드매출 입력
+   ======================================================================== */
+const PG_KEY_PREFIX = 'pg_settle_';
+function getPgSettleKey(month) { return PG_KEY_PREFIX + month; }
+function getPgSettleData(month) {
+  if (!month) return [];
+  try {
+    const raw = localStorage.getItem(getPgSettleKey(month));
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function savePgSettleData(month, rows) {
+  localStorage.setItem(getPgSettleKey(month), JSON.stringify(rows));
+  _queueSettingsCloudUpload();
+}
+function clearPgSettleData(month) {
+  localStorage.removeItem(getPgSettleKey(month));
+  _queueSettingsCloudUpload();
+}
+function clearPgSettleCurrentMonth() {
+  const mm = document.getElementById('monthlyMonth');
+  if (!mm || !mm.value) { toast('월을 먼저 선택하세요', 'warn'); return; }
+  if (!confirm(`${mm.value}월 적재된 PG 정산내역을 모두 지울까요?`)) return;
+  clearPgSettleData(mm.value);
+  updatePgStatus();
+  renderPgReconcile(mm.value);
+  toast('PG 정산내역 초기화됨', 'ok');
+}
+
+// 이지피지 정산상세내역 컬럼명 변형 (다중 매핑)
+const PG_COLUMNS = {
+  payoutDate: ['지급일자', '입금일자', '정산일자', '정산지급일', '지급일'],
+  txnDate:    ['거래일자', '승인일자', '매출일자', '거래일시', '승인일시'],
+  cancelDate: ['취소일자', '취소일시'],
+  gross:      ['정산대상금액', '거래금액', '승인금액', '매출금액', '결제금액'],
+  fee:        ['대행수수료', '정산수수료', '가맹점수수료', '수수료'],
+  feeVat:     ['대행수수료VAT', '대행수수료부가세', '수수료VAT', '수수료부가세'],
+  net:        ['실지급금액', '실지급액', '지급액', '정산금액', '입금액'],
+  issuer:     ['발급사', '카드사', '매입사', '카드종류'],
+  state:      ['거래상태', '승인구분', '상태'],
+  approvalNo: ['승인번호', '승인No'],
+  method:     ['결제수단', '결제방법']
+};
+
+// YYYYMMDD / YYYY-MM-DD / 엑셀 시리얼 → YYYY-MM-DD
+function _parsePgDate(v) {
+  if (v == null || v === '') return '';
+  if (typeof v === 'number') {
+    const dt = new Date(Math.round((v - 25569) * 86400 * 1000));
+    if (!isNaN(dt)) return dt.toISOString().slice(0, 10);
+  }
+  const s = String(v).trim();
+  let m = s.match(/(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  m = s.match(/^(\d{4})(\d{2})(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  return '';
+}
+
+function parsePgSettleRows(rawRows, fallbackMonth) {
+  if (!rawRows || !rawRows.length) return { records: [], detected: {} };
+  const cols = Object.keys(rawRows[0] || {});
+  const map = {}, detected = {};
+  for (const key in PG_COLUMNS) {
+    const c = _matchHometaxCol(cols, PG_COLUMNS[key]);
+    map[key] = c; detected[key] = !!c;
+  }
+  const numCell = (r, col) => col != null ? num(String(r[col]).replace(/[,\s원]/g, '')) : 0;
+  const strCell = (r, col) => col != null ? String(r[col] == null ? '' : r[col]).trim() : '';
+  const records = [];
+  for (const r of rawRows) {
+    const gross = numCell(r, map.gross);
+    const net = numCell(r, map.net);
+    if (!gross && !net) continue; // 합계행/빈행 스킵
+    records.push({
+      payoutDate: _parsePgDate(map.payoutDate != null ? r[map.payoutDate] : ''),
+      txnDate:    _parsePgDate(map.txnDate != null ? r[map.txnDate] : ''),
+      cancelDate: _parsePgDate(map.cancelDate != null ? r[map.cancelDate] : ''),
+      gross, net,
+      fee: numCell(r, map.fee),
+      feeVat: numCell(r, map.feeVat),
+      issuer: strCell(r, map.issuer),
+      state: strCell(r, map.state),
+      approvalNo: strCell(r, map.approvalNo),
+      method: strCell(r, map.method)
+    });
+  }
+  return { records, detected };
+}
+
+/**
+ * 대사 ①: PG 지급일자별 실지급금액 합계 ↔ 통장 "에비뉴에이치" 입금
+ * 매칭: 같은 날짜+금액 일치 우선 → 금액 일치 & ±3일.
+ * 선택월보다 늦은 지급일(익월 정산예정)은 누락이 아니라 'pending'.
+ */
+function reconcilePgBank(month) {
+  const pg = getPgSettleData(month);
+  const bank = (typeof getKbBankData === 'function' ? getKbBankData(month) : []) || [];
+  const byPay = {};
+  pg.forEach(r => {
+    if (!r.payoutDate) return;
+    const g = byPay[r.payoutDate] || (byPay[r.payoutDate] = { date: r.payoutDate, count: 0, gross: 0, fee: 0, feeVat: 0, net: 0 });
+    g.count++; g.gross += num(r.gross); g.fee += num(r.fee); g.feeVat += num(r.feeVat); g.net += num(r.net);
+  });
+  const deposits = bank
+    .filter(b => num(b.deposit) > 0 && /에비뉴/.test((b.desc || '') + (b.summary || '')))
+    .map(b => ({ date: b.date, amount: num(b.deposit), desc: b.desc, used: false }));
+  const _dd = (a, b) => Math.abs((new Date(a) - new Date(b)) / 86400000);
+  const payouts = Object.values(byPay).sort((a, b) => a.date.localeCompare(b.date));
+  // 1차: 금액 일치(같은 날짜 우선 → ±3일) 매칭. 2차: 날짜 일치하나 금액 다른 건 차액으로 매칭.
+  const rows = payouts.map(p => ({ date: p.date, count: p.count, gross: Math.round(p.gross), fee: Math.round(p.fee + p.feeVat), net: Math.round(p.net), bankDate: '', bankAmt: null, diff: 0, status: '' }));
+  rows.forEach(p => {
+    let hit = deposits.find(d => !d.used && d.date === p.date && d.amount === p.net);
+    if (!hit) hit = deposits.find(d => !d.used && d.amount === p.net && _dd(p.date, d.date) <= 3);
+    if (hit) { hit.used = true; p.bankDate = hit.date; p.bankAmt = hit.amount; p.diff = hit.amount - p.net; p.status = p.diff === 0 ? 'match' : 'diff'; }
+  });
+  rows.forEach(p => {
+    if (p.status) return;
+    // 금액 매칭 실패 → 같은 날짜(±1일) 미사용 입금이 있으면 차액(수수료 등)으로 간주
+    let hit = deposits.find(d => !d.used && d.date === p.date);
+    if (!hit) hit = deposits.find(d => !d.used && _dd(p.date, d.date) <= 1);
+    if (hit) { hit.used = true; p.bankDate = hit.date; p.bankAmt = hit.amount; p.diff = hit.amount - p.net; p.status = 'diff'; }
+    else { p.status = (p.date.slice(0, 7) > month) ? 'pending' : 'missing'; }
+  });
+  const unmatchedDeposits = deposits.filter(d => !d.used);
+  return { month, payouts: rows, unmatchedDeposits, pgCount: pg.length, bankDepositCount: deposits.length };
+}
+
+// record의 "마감 카드매출" = cardRows 합(있으면) 아니면 totals.posCard
+function _recordCardSales(rec) {
+  if (!rec) return 0;
+  const cr = Array.isArray(rec.cardRows) ? rec.cardRows : [];
+  const crSum = cr.reduce((s, r) => s + num(r.amount), 0);
+  if (crSum > 0) return crSum;
+  return rec.totals ? num(rec.totals.posCard) : 0;
+}
+
+/**
+ * 대사 ②: PG 거래일자별 정산대상금액(카드매출) ↔ 일일 마감 카드매출 입력
+ * 주의: PG를 거치지 않는 카드(삼성 직승인·해외카드 등 VAN 직접정산)는 PG에 없으므로
+ *       '마감 > PG' 차이가 정상적으로 발생할 수 있음(over_close). 'PG > 마감'(over_pg)이 점검 대상.
+ */
+function reconcilePgDailyCard(month) {
+  const pg = getPgSettleData(month);
+  const all = (typeof getAllRecords === 'function' ? getAllRecords() : {}) || {};
+  const byTxn = {};
+  pg.forEach(r => {
+    if (!r.txnDate || r.txnDate.slice(0, 7) !== month) return;
+    const g = byTxn[r.txnDate] || (byTxn[r.txnDate] = { date: r.txnDate, count: 0, gross: 0 });
+    g.count++; g.gross += num(r.gross);
+  });
+  const dates = new Set(Object.keys(byTxn));
+  Object.keys(all).filter(d => d.startsWith(month)).forEach(d => {
+    if (_recordCardSales(all[d]) > 0) dates.add(d);
+  });
+  const rows = Array.from(dates).sort().map(d => {
+    const pgGross = byTxn[d] ? Math.round(byTxn[d].gross) : 0;
+    const pgCount = byTxn[d] ? byTxn[d].count : 0;
+    const rec = all[d];
+    const card = rec ? _recordCardSales(rec) : 0;
+    const diff = card - pgGross;
+    let status;
+    if (pgGross && !card) status = 'no_close';       // PG 있는데 마감 카드매출 없음
+    else if (!pgGross && card) status = 'no_pg';      // 마감 있는데 PG 거래 없음 (전부 VAN 직승인 추정)
+    else if (diff === 0) status = 'match';
+    else if (diff > 0) status = 'over_close';         // 마감 > PG (VAN 직승인 등 PG외 채널 추정)
+    else status = 'over_pg';                          // PG > 마감 (마감 카드매출 과소입력 의심)
+    return { date: d, pgGross, pgCount, card, diff, status };
+  });
+  return { month, rows };
+}
+
+const PG_BANK_STATUS = {
+  match:   { badge: '✅ 일치', color: 'var(--green)' },
+  diff:    { badge: '⚠️ 차액', color: 'var(--orange)' },
+  missing: { badge: '❌ 입금누락', color: 'var(--red, #e5484d)' },
+  pending: { badge: '⏳ 익월 정산예정', color: 'var(--text-3)' }
+};
+const PG_CARD_STATUS = {
+  match:      { badge: '✅ 일치', color: 'var(--green)' },
+  over_close: { badge: '⚠️ 마감>PG (VAN 직승인 추정)', color: 'var(--orange)' },
+  over_pg:    { badge: '❗ PG>마감 (마감 과소입력 의심)', color: 'var(--red, #e5484d)' },
+  no_close:   { badge: '❌ 마감 카드매출 없음', color: 'var(--red, #e5484d)' },
+  no_pg:      { badge: '· PG 거래 없음 (전부 직승인?)', color: 'var(--text-3)' }
+};
+
+function renderPgReconcile(month) {
+  const el = document.getElementById('pgReconcileContent');
+  if (!el) return;
+  const pg = getPgSettleData(month);
+  if (!pg.length) {
+    el.innerHTML = `<div style="padding:14px;border:1px dashed var(--border);border-radius:8px;font-size:12px;color:var(--text-3);">상단 "이지피지 PG 정산내역" 섹션에서 PG정산상세내역 엑셀을 업로드하세요. (지급일자·거래일자·정산대상금액·실지급금액 컬럼 필요)</div>`;
+    return;
+  }
+  const rb = reconcilePgBank(month);
+  const rc = reconcilePgDailyCard(month);
+  const fmtN = n => (n == null ? '-' : Number(n).toLocaleString());
+
+  // ── 대사 ①: PG ↔ 통장 입금 ──
+  const matched = rb.payouts.filter(p => p.status === 'match');
+  const diffRows = rb.payouts.filter(p => p.status === 'diff');
+  const missRows = rb.payouts.filter(p => p.status === 'missing');
+  const pendRows = rb.payouts.filter(p => p.status === 'pending');
+  const bankAllOk = diffRows.length === 0 && missRows.length === 0;
+  const sumMatchedNet = matched.reduce((s, p) => s + p.net, 0);
+  const sumPendNet = pendRows.reduce((s, p) => s + p.net, 0);
+
+  const bankRowsHtml = rb.payouts.map(p => {
+    const st = PG_BANK_STATUS[p.status] || PG_BANK_STATUS.missing;
+    return `<tr>
+      <td>${p.date.slice(5)}</td>
+      <td style="text-align:right;">${p.count}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;">${fmtN(p.gross)}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text-3);">${fmtN(p.fee)}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-weight:600;">${fmtN(p.net)}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;">${p.bankAmt == null ? '<span style="color:var(--text-3);">—</span>' : fmtN(p.bankAmt)}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;${p.diff ? 'color:var(--orange);font-weight:600;' : 'color:var(--text-3);'}">${p.status === 'match' ? '0' : (p.bankAmt == null ? '' : fmtN(p.diff))}</td>
+      <td style="white-space:nowrap;color:${st.color};font-size:11px;font-weight:600;">${st.badge}</td>
+    </tr>`;
+  }).join('');
+
+  const unmatchedHtml = rb.unmatchedDeposits.length ? `
+    <div style="margin-top:10px;font-size:12px;color:var(--orange);">
+      ⚠️ PG 정산과 매칭되지 않은 "에비뉴에이치" 입금 ${rb.unmatchedDeposits.length}건:
+      ${rb.unmatchedDeposits.map(d => `${d.date.slice(5)} ${fmtN(d.amount)}원`).join(', ')}
+      <div style="color:var(--text-3);margin-top:2px;">→ 다른 PG 회차/타월 거래이거나 PG 파일 누락 가능성. 확인 필요.</div>
+    </div>` : '';
+
+  const bankSection = `
+    <div style="display:flex;align-items:center;gap:8px;margin:4px 0 10px;">
+      <div style="font-weight:600;font-size:14px;">① PG 정산 ↔ 통장 입금 대사</div>
+      <span style="font-size:12px;font-weight:600;color:${bankAllOk ? 'var(--green)' : 'var(--orange)'};">
+        ${rb.bankDepositCount === 0 ? '통장내역 미적재' : (bankAllOk ? `전건 일치 (${matched.length}회차)` : `차이 ${diffRows.length} · 누락 ${missRows.length}`)}
+      </span>
+    </div>
+    ${rb.bankDepositCount === 0 ? `<div style="padding:10px 12px;border:1px dashed var(--border);border-radius:8px;font-size:12px;color:var(--text-3);margin-bottom:10px;">통장 "에비뉴에이치" 입금이 없습니다. <strong>통장</strong> 탭에서 KB 월 엑셀을 먼저 업로드하면 자동 대사됩니다.</div>` : ''}
+    <div class="table-wrap"><table class="data-table" style="font-size:12px;">
+      <thead><tr>
+        <th>지급일</th><th style="text-align:right;">건수</th><th style="text-align:right;">정산대상</th>
+        <th style="text-align:right;">수수료</th><th style="text-align:right;">PG실지급</th>
+        <th style="text-align:right;">통장입금</th><th style="text-align:right;">차액</th><th>상태</th>
+      </tr></thead>
+      <tbody>${bankRowsHtml}</tbody>
+    </table></div>
+    ${unmatchedHtml}
+    <div style="margin-top:8px;font-size:12px;color:var(--text-2);">
+      5월 입금분 실지급 합계 <strong>${fmtN(sumMatchedNet)}</strong>원 일치
+      ${pendRows.length ? ` · 익월 정산예정 ${pendRows.length}회차 <strong>${fmtN(sumPendNet)}</strong>원 (다음달 통장에서 확인)` : ''}
+    </div>`;
+
+  // ── 대사 ②: PG 거래일자별 카드매출 ↔ 마감 카드매출 입력 ──
+  const cardMatch = rc.rows.filter(r => r.status === 'match').length;
+  const cardOverPg = rc.rows.filter(r => r.status === 'over_pg' || r.status === 'no_close');
+  const cardRowsHtml = rc.rows.length ? rc.rows.map(r => {
+    const st = PG_CARD_STATUS[r.status];
+    return `<tr>
+      <td>${r.date.slice(5)}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;">${r.pgGross ? fmtN(r.pgGross) : '<span style="color:var(--text-3);">—</span>'}</td>
+      <td style="text-align:right;color:var(--text-3);">${r.pgCount || ''}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;">${r.card ? fmtN(r.card) : '<span style="color:var(--text-3);">—</span>'}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;${r.diff ? '' : 'color:var(--text-3);'}">${r.diff ? (r.diff > 0 ? '+' : '') + fmtN(r.diff) : '0'}</td>
+      <td style="white-space:nowrap;color:${st.color};font-size:11px;font-weight:600;">${st.badge}</td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="6" style="text-align:center;color:var(--text-3);padding:14px;">해당 월 마감 카드매출/PG 거래 데이터 없음</td></tr>`;
+
+  const cardSection = `
+    <div style="display:flex;align-items:center;gap:8px;margin:22px 0 10px;">
+      <div style="font-weight:600;font-size:14px;">② PG 카드매출 ↔ 일일 마감 카드매출 대사</div>
+      <span style="font-size:12px;font-weight:600;color:${cardOverPg.length ? 'var(--orange)' : 'var(--green)'};">
+        일치 ${cardMatch}일${cardOverPg.length ? ` · 점검필요 ${cardOverPg.length}일` : ''}
+      </span>
+    </div>
+    <div style="font-size:11px;color:var(--text-3);margin-bottom:8px;">PG 거래일자 기준 정산대상금액(카드매출) vs 그날 마감의 카드매출 입력. <strong>마감 &gt; PG</strong>는 PG 외 채널(삼성 직승인·해외카드 등 VAN) 추정이라 정상일 수 있고, <strong>PG &gt; 마감</strong>은 마감 카드매출 과소입력 의심.</div>
+    <div class="table-wrap"><table class="data-table" style="font-size:12px;">
+      <thead><tr>
+        <th>거래일</th><th style="text-align:right;">PG 카드매출</th><th style="text-align:right;">건</th>
+        <th style="text-align:right;">마감 카드매출</th><th style="text-align:right;">차이(마감-PG)</th><th>상태</th>
+      </tr></thead>
+      <tbody>${cardRowsHtml}</tbody>
+    </table></div>`;
+
+  el.innerHTML = bankSection + cardSection;
+}
+
+async function handlePgSettleFile(file) {
+  const mm = document.getElementById('monthlyMonth');
+  if (!mm || !mm.value) { toast('월을 먼저 선택하세요 (월정산 탭 상단)', 'warn'); return; }
+  const month = mm.value;
+  try {
+    const ext = file.name.split('.').pop().toLowerCase();
+    let rows = [];
+    if (ext === 'csv') rows = await parseCSV(file);
+    else if (ext === 'xlsx' || ext === 'xls') rows = await parseExcelAutoHeader(file, Object.values(PG_COLUMNS).flat());
+    else { toast('지원하지 않는 파일 형식 (xlsx/xls/csv)', 'danger'); return; }
+    if (!rows.length) { toast('파일에서 데이터를 찾지 못했습니다', 'danger'); return; }
+    const { records, detected } = parsePgSettleRows(rows, month);
+    if (!records.length) { toast('정산대상금액/실지급금액 컬럼을 찾지 못했습니다', 'danger'); return; }
+    const existing = getPgSettleData(month);
+    let merged;
+    if (existing.length) {
+      const replace = confirm(`${month}월에 이미 PG ${existing.length}건이 있습니다.\n\n확인: 기존을 지우고 새로 적재\n취소: 기존에 추가`);
+      merged = replace ? records : existing.concat(records);
+    } else { merged = records; }
+    savePgSettleData(month, merged);
+    updatePgStatus();
+    renderPgReconcile(month);
+    const miss = Object.entries(detected).filter(([, v]) => !v).map(([k]) => k).join(',');
+    toast(`PG 정산 ${records.length}건 적재` + (miss ? ` · 미감지 컬럼: ${miss}` : ''), 'ok');
+  } catch (err) {
+    console.error(err);
+    toast('PG 파일 처리 실패: ' + err.message, 'danger');
+  }
+}
+
+function setupPgUpload() {
+  const zone = document.getElementById('pgUpload');
+  const input = document.getElementById('pgFile');
+  if (!zone || !input) return;
+  zone.addEventListener('click', () => input.click());
+  input.addEventListener('change', (e) => {
+    if (e.target.files[0]) handlePgSettleFile(e.target.files[0]);
+    e.target.value = '';
+  });
+  zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    if (e.dataTransfer.files[0]) handlePgSettleFile(e.dataTransfer.files[0]);
+  });
+}
+
+function updatePgStatus() {
+  const mm = document.getElementById('monthlyMonth');
+  const month = mm ? mm.value : '';
+  const count = month ? getPgSettleData(month).length : 0;
+  const c1 = document.getElementById('pgCount');
+  const c2 = document.getElementById('pgLoadedCount');
   if (c1) c1.textContent = month ? `${month} · ${count}건` : '0건';
   if (c2) c2.textContent = `${count}건`;
 }
@@ -5912,6 +6301,7 @@ function renderMonthlyReport(month) {
   profitEl.innerHTML = renderMonthlyProfitContent(data);
   if (distEl) distEl.innerHTML = renderMonthlyDistContent(data);
   if (proofEl) proofEl.innerHTML = renderHometaxReconciliation(month);
+  if (typeof renderPgReconcile === 'function') renderPgReconcile(month);
 }
 
 /* ========================================================================
@@ -6437,6 +6827,10 @@ function switchMonthlySubTab(name) {
   if (name === 'bank') {
     const mm = document.getElementById('monthlyMonth');
     if (mm && mm.value) { updateKbBankStatus(); renderBankReconcile(mm.value); }
+  }
+  if (name === 'pg') {
+    const mm = document.getElementById('monthlyMonth');
+    if (mm && mm.value) { updatePgStatus(); renderPgReconcile(mm.value); }
   }
 }
 

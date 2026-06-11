@@ -3,7 +3,7 @@
 > **다른 PC에서 이어서 개발할 때:** 이 저장소를 `git clone` → Claude Code 실행 →
 > "마감 폴더의 ONBOARDING.md 읽고 이어서 작업하자" 라고 말하면 진행 상황이 그대로 이어집니다.
 >
-> 최종 업데이트: 2026-05-20
+> 최종 업데이트: 2026-06-11
 
 ## 1. 한 줄 요약
 식당(매장) **일일/월 정산** 단일 파일 정적 HTML 앱. 백엔드 없음. 동업자 간 공유.
@@ -58,7 +58,8 @@
 - **3-4 월정산 탭 sub-tab 분리** ✅ (2026-05-20): 월정산 탭이 너무 길어서 [손익][분배][증빙][설정] 4-sub-tab으로 분할. 월 선택·엑셀·PDF 버튼은 공통 헤더. 손익 = KPI/운영KPI/손익계산서/일자별/매입분류. 분배 = 동업자 비율 설정 + 결과. 증빙 = 홈택스 업로드 + 대사. 설정 = 고정비. PDF 인쇄 시 자동으로 손익 sub-tab으로 전환 후 인쇄 (@media print에서 msub-profit만 노출). `renderMonthlyReport`를 `renderMonthlyProfitContent` + `renderMonthlyDistContent` + `renderHometaxReconciliation` 3개로 분할. `switchMonthlySubTab(name)` 추가.
 - **3-5 환경 변수 분석 (날씨 + 공휴일)** ✅ (2026-05-21): Open-Meteo API(무료·키 불필요, 강남역 좌표 37.4979/127.0276) 연동해 일별 매출과 환경 변수의 영향 분석. 마감 시 그날 날씨 자동 fetch + 분석 탭 [날씨 가져오기] 버튼으로 전체 backfill (과거=archive API, 오늘+미래=forecast API, 경계 자동 처리). 분석 탭에 "환경 변수 분석" 카드 3구획: ① 요일/공휴일(평일/주말/공휴일/대체공휴일 평균 매출), ② 강수(맑음/흐림 vs 비/눈), ③ 기온(추움<5°, 쌀쌀 5~15°, 쾌적 15~25°, 더움 25~30°, 폭염>30°) — 모두 막대 바 시각화. 이상기상(폭우·폭설·천둥번개) 일자 별도 표. 한국 공휴일 2026~2027 하드코딩(대체공휴일 포함). `getHoliday` / `getDayType` / `isRainDay` / `computeWeatherAnalysis` pure 헬퍼, 28 케이스 단위 테스트.
 - **3-6 손익 추정 (Profit Forecast)** ✅ (2026-05-21 초안, 5-21 개편): **별도 메인 탭 [손익 추정]**으로 분리됨. 월 단위 분석 — 이번 달(또는 선택 월) 1일~말일 모두 일별로 표시. 실제 매출(누적) + 잔여 일수 추정 = 월 예상 매출. 매출 모델: 요일별 평균(전체 학습 records, outlier·휴무 제외) × 비/눈 0.85 × 공휴일 0.55 × 화요일 휴무=0. 미래 날씨는 Open-Meteo forecast(오늘~월말). 비용: 변동비=매출공급가×원가율, 인건비·기타고정비=월 전액(안분 X). 일별 막대 차트(실제=검정·이벤트=주황·추정=옅음·휴무/미마감=회색·오늘 표식) + 범례 + 일별 상세 표. **Outlier 자동/수동 제외**: 영업일 매출 median × 3 초과는 자동, 마감내역 [이벤트 표시] 버튼으로 수동 토글(record._meta.excludeFromForecast). `computeMonthlyForecast` / `_detectForecastOutliers` / `_computeWeekdayBaseline` pure 헬퍼, 28 케이스 단위 테스트.
-- 다음 예정: BEP 시뮬레이션 / 현금흐름 표 / YoY 비교 / 부가세 신고서 양식 / 컴프 행단위 기록 / 미세먼지 추가
+- **3-7 이지피지 PG 정산 대사** ✅ (2026-06-11): 월정산 탭에 [PG정산] sub-tab 추가. 이지피지 **PG정산상세내역** 엑셀(.xlsx) 업로드 → 월별 localStorage `pg_settle_{YYYY-MM}` 저장(백업/복원·클라우드 동기화 페이로드 포함). 컬럼은 다중 변형 패턴으로 자동 매핑(지급일자·거래일자·정산대상금액·대행수수료·대행수수료VAT·실지급금액·발급사 등), 날짜는 YYYYMMDD/엑셀시리얼 정규화. **대사 ①** 지급일자별 `실지급금액` 합계 ↔ 통장 "에비뉴에이치" 입금(`getKbBankData`) — 같은 날짜+금액 우선 매칭 → 금액 일치 ±3일 → 날짜 일치(금액 차액). 일치/차액/입금누락/익월 정산예정(선택월보다 늦은 지급일=pending) 분류. **대사 ②** 거래일자별 `정산대상금액`(카드매출) ↔ 일일 마감 카드매출(record cardRows 합 우선, 없으면 totals.posCard). `마감>PG`=PG 외 채널(삼성 직승인·해외카드 VAN) 추정으로 정상 가능, `PG>마감`=마감 과소입력 의심으로 강조. (참고: 5월 실데이터 검증 — 8개 정산회차 전건 원단위 일치, 6월 정산예정 3건. 통장의 삼성/하나/BC 직접입금은 PG 외 VAN 채널.) `parsePgSettleRows` / `reconcilePgBank` / `reconcilePgDailyCard` / `_recordCardSales` / `_parsePgDate` pure 헬퍼, 25 케이스 단위 테스트(`.test-pg-reconcile.js`). 백업 round-trip 테스트에 pgSettle 케이스 추가.
+- 다음 예정: BEP 시뮬레이션 / 현금흐름 표 / YoY 비교 / 부가세 신고서 양식 / 컴프 행단위 기록 / 미세먼지 추가 / PG 대사 엑셀 export
 
 ### 인프라 — 클라우드 동기화 (코드 구현됨, 사용자 GAS 셋업 필요)
 헤더 "클라우드" 버튼 → 모달의 10단계 가이드 따라 GAS 웹앱 만들고 URL/토큰을 양쪽 PC에 동일 입력.
