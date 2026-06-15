@@ -2892,7 +2892,9 @@ const HOMETAX_COLUMNS = {
   representative: ['공급자대표자명','공급자대표','대표자명','대표자','대표명','가맹점대표자명'],
   supply: ['공급가액','공급가','공급가(원)'],
   vat:    ['세액','부가세','매입세액','부가가치세','부가세액','부가세(원)','세액(원)'],
-  total:  ['합계금액','합계','총액','거래금액','총거래금액','금액','승인금액','승인금액(원)','거래금액(원)']
+  total:  ['합계금액','합계','총액','거래금액','총거래금액','금액','승인금액','승인금액(원)','거래금액(원)'],
+  // 품목명만 — '품목일자/품목규격/품목공급가액' 등에 오매칭되지 않도록 구체 후보만. (비고는 컬럼 순서상 앞서서 제외)
+  item:   ['품목명','품명','상품명','품목내역','거래내용']
 };
 
 function detectHometaxDocType(rows, filename) {
@@ -2946,7 +2948,7 @@ function parseHometaxRows(rawRows, filename, fallbackMonth) {
   // 구체적인 필드(사업자번호·대표자명·날짜·금액)를 먼저 잡고 그 컬럼은 제외한 뒤 vendor(상호)를 매핑.
   // 그래야 '공급자' 같은 느슨한 vendor 후보가 '공급자사업자등록번호'를 잘못 집어 상호=사업자번호 되는 버그를 막음.
   const used = new Set();
-  ['date', 'bizNo', 'representative', 'supply', 'vat', 'total', 'vendor'].forEach(k => {
+  ['date', 'bizNo', 'representative', 'supply', 'vat', 'total', 'item', 'vendor'].forEach(k => {
     const c = _matchHometaxCol(cols, HOMETAX_COLUMNS[k], used);
     detected[k] = c;
     if (c) used.add(c);
@@ -2962,6 +2964,7 @@ function parseHometaxRows(rawRows, filename, fallbackMonth) {
       vendor: detected.vendor ? String(r[detected.vendor] || '').trim() : '',
       bizNo: detected.bizNo ? _normalizeBizNo(r[detected.bizNo]) : '',
       representative: detected.representative ? String(r[detected.representative] || '').trim() : '',
+      item: detected.item ? String(r[detected.item] || '').trim() : '',
       supply, vat, total,
       docType
     };
@@ -5015,8 +5018,33 @@ function reconcileHometax(month) {
       orphanHometax.push(hi);
     }
   });
+  // 3단계: N:1 — 홈택스 1건 ↔ 같은 거래처 입력 N건 합산 (월정산 거래처: 단지푸드 등).
+  // 같은 거래처(사업자번호 일치 또는 상호 정규화 일치)의 남은 입력행 합이 홈택스 합계와 맞으면 묶어서 매칭.
+  const matchedN1 = [];
+  const stillOrphanHt = [];
+  const _vkey = s => String(s || '').replace(/[\s()（）㈜]|주식회사|\(주\)/g, '').toLowerCase();
+  orphanHometax.forEach(hi => {
+    const h = ht[hi];
+    const hv = _vkey(h.vendor);
+    const cand = [];
+    appRows.forEach((a, ai) => {
+      if (usedApp.has(ai)) return;
+      const av = _vkey(a.vendor);
+      const bizMatch = h.bizNo && a.bizNo && h.bizNo === a.bizNo;
+      const venMatch = hv && av && (hv === av || hv.includes(av) || av.includes(hv));
+      if (bizMatch || venMatch) cand.push(ai);
+    });
+    if (cand.length < 2) { stillOrphanHt.push(hi); return; } // N:1은 2건 이상 합산일 때만
+    const sum = cand.reduce((s, ai) => s + num(appRows[ai].total), 0);
+    if (Math.abs(sum - num(h.total)) <= 10 + cand.length) {
+      cand.forEach(ai => usedApp.add(ai));
+      matchedN1.push({ hometaxIdx: hi, appIdxs: cand, total: sum, count: cand.length });
+    } else {
+      stillOrphanHt.push(hi);
+    }
+  });
   const orphanApp = appRows.map((_, i) => i).filter(i => !usedApp.has(i));
-  return { matched, orphanHometax, orphanApp, appRows, hometaxRows: ht };
+  return { matched, matchedN1, orphanHometax: stillOrphanHt, orphanApp, appRows, hometaxRows: ht };
 }
 
 /* ========================================================================
@@ -7508,12 +7536,13 @@ function renderHometaxReconciliation(month) {
   const orphanSet = new Set(rec.orphanHometax);
   const allHometaxRows = rec.hometaxRows.map((h, i) => {
     const matchedItem = rec.matched.find(m => m.hometaxIdx === i);
+    const matchedN1 = (rec.matchedN1 || []).find(m => m.hometaxIdx === i);
     let vendor = h.vendor;
     if (!vendor || _isBizNoLike(vendor)) {
       const looked = bizToVendor[_normalizeBizNo(h.bizNo)];
       if (looked) vendor = looked;
     }
-    return { ...h, vendor, _matched: !orphanSet.has(i), _matchedApp: matchedItem };
+    return { ...h, vendor, _matched: !orphanSet.has(i), _matchedApp: matchedItem, _matchedN1: matchedN1 };
   }).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
   // orphanHometax 섹션 표시용으로도 같은 보강 적용
   const orphanHtEnriched = rec.orphanHometax.map(i => {
@@ -7542,6 +7571,7 @@ function renderHometaxReconciliation(month) {
           <thead><tr>
             <th>작성일</th>
             <th>상호 (업체명)</th>
+            <th>품목</th>
             <th>대표자명</th>
             <th style="font-family:monospace;">사업자번호</th>
             <th class="num-cell">공급가</th>
@@ -7553,15 +7583,20 @@ function renderHometaxReconciliation(month) {
           <tbody>
             ${allHometaxRows.map(h => {
               const statusBadge = h._matched
-                ? `<span style="color:var(--green);font-weight:600;font-size:11px;">✓ 매칭</span>`
+                ? (h._matchedN1
+                    ? `<span style="color:var(--green);font-weight:600;font-size:11px;">✓ 매칭 (N:1 ${h._matchedN1.count}건 합산)</span>`
+                    : `<span style="color:var(--green);font-weight:600;font-size:11px;">✓ 매칭</span>`)
                 : `<span style="color:var(--orange);font-weight:600;font-size:11px;">⚠ 입력 누락</span>`;
-              const matchedAppInfo = h._matchedApp && h._matchedApp.appIdx != null
-                ? `<span style="font-size:10px;color:var(--text-3);" title="${escapeHtml(rec.appRows[h._matchedApp.appIdx].vendor || '')}">→ 입력행 #${h._matchedApp.appIdx + 1}</span>`
-                : '';
+              const matchedAppInfo = h._matchedN1
+                ? `<span style="font-size:10px;color:var(--text-3);">→ 입력 ${h._matchedN1.count}건 합산 ${fmt(num(h._matchedN1.total))}</span>`
+                : (h._matchedApp && h._matchedApp.appIdx != null
+                    ? `<span style="font-size:10px;color:var(--text-3);" title="${escapeHtml(rec.appRows[h._matchedApp.appIdx].vendor || '')}">→ 입력행 #${h._matchedApp.appIdx + 1}</span>`
+                    : '');
               return `
                 <tr ${h._matched ? '' : 'style="background:var(--orange-bg, #fff4e6);"'}>
                   <td>${escapeHtml(h.date || '-')}</td>
                   <td><strong>${escapeHtml(h.vendor || '-')}</strong></td>
+                  <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;" title="${escapeHtml(h.item || '')}">${escapeHtml(h.item || '-')}</td>
                   <td>${escapeHtml(h.representative || '-')}</td>
                   <td style="font-family:monospace;font-size:11px;">${escapeHtml(h.bizNo || '-')}</td>
                   <td class="num-cell">${fmt(num(h.supply))}</td>
@@ -7579,12 +7614,13 @@ function renderHometaxReconciliation(month) {
         <div style="margin-bottom: 14px;">
           <div style="font-weight: 600; font-size: 12px; color: var(--orange); margin-bottom: 6px;">홈택스에만 있음 (입력 누락 의심) · ${oh}건</div>
           <table class="m-table">
-            <thead><tr><th>일자</th><th>상호 (업체명)</th><th>대표자명</th><th>사업자번호</th><th style="text-align:right;">공급가</th><th style="text-align:right;">세액</th><th style="text-align:right;">합계</th><th>종류</th></tr></thead>
+            <thead><tr><th>일자</th><th>상호 (업체명)</th><th>품목</th><th>대표자명</th><th>사업자번호</th><th style="text-align:right;">공급가</th><th style="text-align:right;">세액</th><th style="text-align:right;">합계</th><th>종류</th></tr></thead>
             <tbody>
               ${orphanHtEnriched.slice(0, 30).map(h => `
                 <tr>
                   <td>${escapeHtml(h.date || '-')}</td>
                   <td><strong>${escapeHtml(h.vendor || '-')}</strong></td>
+                  <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;" title="${escapeHtml(h.item || '')}">${escapeHtml(h.item || '-')}</td>
                   <td>${escapeHtml(h.representative || '-')}</td>
                   <td style="font-family:monospace;font-size:11px;">${escapeHtml(h.bizNo || '-')}</td>
                   <td style="text-align:right;">${fmt(num(h.supply))}</td>

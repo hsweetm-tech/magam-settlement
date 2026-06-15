@@ -154,4 +154,29 @@ mod.setRecords({ '2026-09-03': { purchaseRows: [{ date: '2026-09-03', vendor: '�
 r = mod.reconcileHometax('2026-09');
 check('11) 코카콜라 상호+합계로 매칭', r.matched.length === 1 && r.orphanHometax.length === 0, `matched ${r.matched.length}`);
 
+// CASE 12: 단지푸드 — 월정산 N:1 (홈택스 1건 ↔ 일별 입력 N건 합산)
+mod.setRecords({
+  '2026-10-05': { purchaseRows: [{ date: '2026-10-05', vendor: '단지푸드', supply: 200000, vat: 20000, total: 220000 }] },
+  '2026-10-15': { purchaseRows: [{ date: '2026-10-15', vendor: '단지푸드', supply: 250000, vat: 25000, total: 275000 }] },
+  '2026-10-25': { purchaseRows: [{ date: '2026-10-25', vendor: '단지푸드', supply: 150000, vat: 15000, total: 165000 }] },
+});
+// 월말 합산 세금계산서 1건: 220000+275000+165000 = 660000
+mod.setHometax('2026-10', [{ date: '2026-10-31', vendor: '단지푸드', bizNo: '1112233344', supply: 600000, vat: 60000, total: 660000, docType: '세금계산서' }]);
+r = mod.reconcileHometax('2026-10');
+check('12) N:1 단지푸드 매칭 1건', (r.matchedN1 || []).length === 1, `matchedN1 ${(r.matchedN1||[]).length}`);
+check('12) N:1 합산 3건', r.matchedN1 && r.matchedN1[0].count === 3, `count ${r.matchedN1 && r.matchedN1[0].count}`);
+check('12) N:1 합계 660000', r.matchedN1 && r.matchedN1[0].total === 660000);
+check('12) 홈택스 orphan 0', r.orphanHometax.length === 0);
+check('12) 입력 orphan 0 (3건 모두 묶임)', r.orphanApp.length === 0);
+check('12) 1:1 matched 0 (전부 N:1)', r.matched.length === 0);
+
+// CASE 13: 합산이 안 맞으면 N:1 매칭 안 함
+mod.setRecords({
+  '2026-11-05': { purchaseRows: [{ date: '2026-11-05', vendor: '단지푸드', total: 100000, supply: 100000 }] },
+  '2026-11-15': { purchaseRows: [{ date: '2026-11-15', vendor: '단지푸드', total: 100000, supply: 100000 }] },
+});
+mod.setHometax('2026-11', [{ date: '2026-11-30', vendor: '단지푸드', total: 500000, supply: 500000 }]); // 합 200000 ≠ 500000
+r = mod.reconcileHometax('2026-11');
+check('13) 합 불일치 → N:1 매칭 안 함', (r.matchedN1 || []).length === 0 && r.orphanHometax.length === 1);
+
 if (!process.exitCode) console.log('\n전체 통과');
