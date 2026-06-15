@@ -2906,8 +2906,9 @@ function detectHometaxDocType(rows, filename) {
   return '세금계산서';
 }
 
-function _matchHometaxCol(cols, candidates) {
+function _matchHometaxCol(cols, candidates, exclude) {
   for (const c of cols) {
+    if (exclude && exclude.has(c)) continue;
     const norm = String(c).replace(/\s+/g, '');
     for (const cand of candidates) {
       const cn = cand.replace(/\s+/g, '');
@@ -2942,7 +2943,14 @@ function parseHometaxRows(rawRows, filename, fallbackMonth) {
   if (!rawRows || !rawRows.length) return { records: [], docType: '세금계산서', detected: {} };
   const cols = Object.keys(rawRows[0]);
   const detected = {};
-  Object.entries(HOMETAX_COLUMNS).forEach(([k, cands]) => { detected[k] = _matchHometaxCol(cols, cands); });
+  // 구체적인 필드(사업자번호·대표자명·날짜·금액)를 먼저 잡고 그 컬럼은 제외한 뒤 vendor(상호)를 매핑.
+  // 그래야 '공급자' 같은 느슨한 vendor 후보가 '공급자사업자등록번호'를 잘못 집어 상호=사업자번호 되는 버그를 막음.
+  const used = new Set();
+  ['date', 'bizNo', 'representative', 'supply', 'vat', 'total', 'vendor'].forEach(k => {
+    const c = _matchHometaxCol(cols, HOMETAX_COLUMNS[k], used);
+    detected[k] = c;
+    if (c) used.add(c);
+  });
   const docType = detectHometaxDocType(rawRows, filename);
   const records = rawRows.map(r => {
     const supply = detected.supply ? num(r[detected.supply]) : 0;

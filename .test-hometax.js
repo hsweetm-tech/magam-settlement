@@ -135,4 +135,23 @@ check('8) 합계 차이 100원 → 미매칭', r.matched.length === 0 && r.orpha
 r = mod.reconcileHometax('2026-08');
 check('9) 데이터 없음', r.matched.length === 0 && r.hometaxRows.length === 0);
 
+// CASE 10: 실제 홈택스 양식 — 공급자사업자등록번호가 상호보다 앞 컬럼 (회귀 방지)
+// 버그: vendor 후보 '공급자'가 '공급자사업자등록번호'를 잡아 상호=사업자번호가 됐었음.
+parsed = mod.parseHometaxRows([
+  { '작성일자': '2026-05-10', '승인번호': 'x', '공급자사업자등록번호': '211-88-12345', '종사업장번호': '',
+    '상호': '코카콜라음료', '대표자명': '홍길동', '공급받는자사업자등록번호': '795-53-01082',
+    '합계금액': 110000, '공급가액': 100000, '세액': 10000 }
+], '매입세금계산서.xls', '2026-05');
+check('10) vendor=상호값(코카콜라음료)', parsed.records[0].vendor === '코카콜라음료', `got "${parsed.records[0].vendor}"`);
+check('10) vendor에 사업자번호 안 들어감', !/^\d{8,}$/.test(parsed.records[0].vendor));
+check('10) bizNo=공급자사업자등록번호', parsed.records[0].bizNo === '2118812345');
+check('10) representative=대표자명', parsed.records[0].representative === '홍길동');
+check('10) total/supply/vat', parsed.records[0].total === 110000 && parsed.records[0].supply === 100000 && parsed.records[0].vat === 10000);
+
+// CASE 11: 코카콜라 — 사업자번호 없이 상호+합계만 일치해도 매칭 (버그2 회귀 방지)
+mod.setHometax('2026-09', [{ date: '2026-09-03', vendor: '코카콜라음료', bizNo: '2118812345', total: 110000, supply: 100000, vat: 10000 }]);
+mod.setRecords({ '2026-09-03': { purchaseRows: [{ date: '2026-09-03', vendor: '코카콜라음료', supply: 100000, vat: 10000, total: 110000 }] } });
+r = mod.reconcileHometax('2026-09');
+check('11) 코카콜라 상호+합계로 매칭', r.matched.length === 1 && r.orphanHometax.length === 0, `matched ${r.matched.length}`);
+
 if (!process.exitCode) console.log('\n전체 통과');
