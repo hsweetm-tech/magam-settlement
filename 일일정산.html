@@ -3003,8 +3003,9 @@ function collectAppSettings() {
       try { pgVan[k.slice(PG_VAN_KEY_PREFIX.length)] = JSON.parse(localStorage.getItem(k) || '[]'); } catch {}
     }
   }
-  let partners = null, fixedExpenses = null, capital = null, pgDirectRates = null;
+  let partners = null, fixedExpenses = null, capital = null, pgDirectRates = null, kbBank = null;
   try { const raw = localStorage.getItem(PG_DIRECT_RATES_KEY); if (raw) pgDirectRates = JSON.parse(raw); } catch {}
+  try { const raw = localStorage.getItem(KB_BANK_KEY); if (raw) kbBank = JSON.parse(raw); } catch {}
   try { const raw = localStorage.getItem(PARTNERS_KEY); if (raw) partners = JSON.parse(raw); } catch {}
   try { const raw = localStorage.getItem(FIXED_EXPENSES_KEY); if (raw) fixedExpenses = JSON.parse(raw); } catch {}
   try { const raw = localStorage.getItem(CAPITAL_KEY); if (raw) capital = JSON.parse(raw); } catch {}
@@ -3016,7 +3017,8 @@ function collectAppSettings() {
     hometax,
     pgSettle,
     pgVan,
-    pgDirectRates
+    pgDirectRates,
+    kbBank
   };
 }
 
@@ -3045,6 +3047,10 @@ function applyAppSettings(s) {
   }
   if (s.pgDirectRates && typeof s.pgDirectRates === 'object') {
     localStorage.setItem(PG_DIRECT_RATES_KEY, JSON.stringify(s.pgDirectRates));
+  }
+  if (s.kbBank && typeof s.kbBank === 'object') {
+    localStorage.setItem(KB_BANK_KEY, JSON.stringify(s.kbBank));
+    if (typeof updateKbBankStatus === 'function') updateKbBankStatus();
   }
   // UI 즉시 반영
   if (typeof renderPartners === 'function') renderPartners();

@@ -28,6 +28,8 @@ const src = `
   const PG_DIRECT_RATES_KEY = 'pg_direct_rates';
   const FIXED_EXPENSES_KEY = 'fixed_monthly_expenses';
   const CAPITAL_KEY = 'initial_capital_v1';
+  const KB_BANK_KEY = 'kb_bank_v1';
+  function updateKbBankStatus() {}
   // UI re-render 호출은 no-op (테스트 환경)
   function renderPartners() {}
   function updateHometaxStatus() {}
@@ -102,6 +104,19 @@ mod.clearStore();
 mod.applyAppSettings(JSON.parse(pjson));
 check('3b) pg_van_2026-05 복원', JSON.parse(mod.getStore('pg_van_2026-05'))[1].gross === 322900);
 check('3b) pg_direct_rates 복원', JSON.parse(mod.getStore('pg_direct_rates'))['삼성'] === 0.035);
+
+// CASE 3-c: KB 통장 원본(kb_bank_v1) round-trip — 백업·클라우드에 통장 포함되는지 (2026-06-15 버그수정)
+mod.clearStore();
+mod.setStore('kb_bank_v1', JSON.stringify({ '2026-05': [{ date: '2026-05-13', deposit: 283848, desc: '에비뉴에이치' }], '2026-04': [{ date: '2026-04-02', withdraw: 50000, desc: '임대료' }] }));
+let sb = mod.collectAppSettings();
+check('3c) kbBank collect', sb.kbBank && Array.isArray(sb.kbBank['2026-05']) && sb.kbBank['2026-05'][0].deposit === 283848);
+check('3c) kbBank 2개월', sb.kbBank && Object.keys(sb.kbBank).length === 2);
+const bjson = JSON.stringify(sb);
+mod.clearStore();
+check('3c) 클리어 직후 통장 없음', mod.getStore('kb_bank_v1') == null);
+mod.applyAppSettings(JSON.parse(bjson));
+check('3c) kb_bank_v1 복원', mod.getStore('kb_bank_v1') !== null);
+check('3c) 통장 내용 복원', JSON.parse(mod.getStore('kb_bank_v1'))['2026-05'][0].deposit === 283848);
 
 // CASE 4: null/undefined settings는 안전하게 무시
 mod.applyAppSettings(null);
