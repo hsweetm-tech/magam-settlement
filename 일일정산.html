@@ -5080,12 +5080,15 @@ function reconcileHometax(month) {
       orphanHometax.push(hi);
     }
   });
-  // 3단계: N:1 — 홈택스 1건 ↔ 같은 거래처 입력 N건 합산 (월정산 거래처: 단지푸드 등).
-  // 같은 거래처(사업자번호 일치 또는 상호 정규화 일치)의 남은 입력행 합이 홈택스 합계와 맞으면 묶어서 매칭.
+  // 3단계: N:1 — 홈택스 1건 ↔ 같은 거래처 입력의 '부분집합' 합 = 홈택스 합계.
+  // 월정산 거래처(단지푸드 등). 단지푸드처럼 과세 세금계산서 + 면세 계산서로 분리발행되면
+  // 일별 입력 전체합이 아니라 일부 합과 맞아야 하므로 부분집합 합(_htSubsetSumN1)으로 매칭.
+  // 큰 홈택스부터 처리(작은 게 큰 것의 부분집합으로 먼저 먹히지 않게).
   const matchedN1 = [];
   const stillOrphanHt = [];
   const _vkey = s => String(s || '').replace(/[\s()（）㈜]|주식회사|\(주\)/g, '').toLowerCase();
-  orphanHometax.forEach(hi => {
+  const _htOrphanSorted = [...orphanHometax].sort((a, b) => num(ht[b].total) - num(ht[a].total));
+  _htOrphanSorted.forEach(hi => {
     const h = ht[hi];
     const hv = _vkey(h.vendor);
     const cand = [];
@@ -5094,19 +5097,51 @@ function reconcileHometax(month) {
       const av = _vkey(a.vendor);
       const bizMatch = h.bizNo && a.bizNo && h.bizNo === a.bizNo;
       const venMatch = hv && av && (hv === av || hv.includes(av) || av.includes(hv));
-      if (bizMatch || venMatch) cand.push(ai);
+      if (bizMatch || venMatch) cand.push({ ai, amt: num(appRows[ai].total) });
     });
     if (cand.length < 2) { stillOrphanHt.push(hi); return; } // N:1은 2건 이상 합산일 때만
-    const sum = cand.reduce((s, ai) => s + num(appRows[ai].total), 0);
-    if (Math.abs(sum - num(h.total)) <= 10 + cand.length) {
-      cand.forEach(ai => usedApp.add(ai));
-      matchedN1.push({ hometaxIdx: hi, appIdxs: cand, total: sum, count: cand.length });
+    const picked = _htSubsetSumN1(cand, num(h.total));
+    if (picked && picked.length >= 2) {
+      picked.forEach(ai => usedApp.add(ai));
+      const sum = picked.reduce((s, ai) => s + num(appRows[ai].total), 0);
+      matchedN1.push({ hometaxIdx: hi, appIdxs: picked, total: sum, count: picked.length });
     } else {
       stillOrphanHt.push(hi);
     }
   });
   const orphanApp = appRows.map((_, i) => i).filter(i => !usedApp.has(i));
   return { matched, matchedN1, orphanHometax: stillOrphanHt, orphanApp, appRows, hometaxRows: ht };
+}
+
+/**
+ * 홈택스 N:1용 부분집합 합 — 같은 거래처 입력 후보 중 합이 target(±오차)인 부분집합을 찾음.
+ * 가장 많은 건수를 포함하는 조합 우선(전체합이 맞으면 전체 반환). 동률이면 오차 작은 쪽.
+ * @param {{ai:number,amt:number}[]} items
+ * @returns {number[]|null} 선택된 appRow 인덱스 배열
+ */
+function _htSubsetSumN1(items, target) {
+  const n = items.length;
+  const total = items.reduce((s, it) => s + it.amt, 0);
+  const tolAll = 10 + n;
+  if (Math.abs(total - target) <= tolAll) return items.map(it => it.ai); // 전체합 우선
+  if (n > 20) {
+    // 너무 크면 비트마스크 비현실적 → 전체합만 시도(위에서 실패 시 매칭 안 함)
+    return null;
+  }
+  let bestMask = 0, bestCount = -1, bestDiff = Infinity;
+  for (let mask = 1; mask < (1 << n); mask++) {
+    let sum = 0, cnt = 0;
+    for (let k = 0; k < n; k++) if (mask & (1 << k)) { sum += items[k].amt; cnt++; }
+    if (cnt < 2) continue; // N:1은 2건 이상
+    const diff = Math.abs(sum - target);
+    if (diff <= 10 + cnt && (cnt > bestCount || (cnt === bestCount && diff < bestDiff))) {
+      bestMask = mask; bestCount = cnt; bestDiff = diff;
+    }
+  }
+  if (!bestMask) return null;
+  const out = [];
+  for (let k = 0; k < n; k++) if (bestMask & (1 << k)) out.push(items[k].ai);
+  return out;
 }
 
 /* ========================================================================

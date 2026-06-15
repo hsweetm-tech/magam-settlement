@@ -17,6 +17,7 @@ const pd = grab(/function _parseHometaxDate[\s\S]*?\n\}/, '_parseHometaxDate');
 const nb = grab(/function _normalizeBizNo[\s\S]*?\n\}/, '_normalizeBizNo');
 const parse = grab(/function parseHometaxRows[\s\S]*?\n\}/, 'parseHometaxRows');
 const recon = grab(/function reconcileHometax[\s\S]*?\n\}/, 'reconcileHometax');
+const subN1 = grab(/function _htSubsetSumN1[\s\S]*?\n\}/, '_htSubsetSumN1');
 
 const src = `
   let _records = {};
@@ -30,6 +31,7 @@ const src = `
   ${nb}
   ${detect}
   ${parse}
+  ${subN1}
   ${recon}
   return {
     num, parseHometaxRows, detectHometaxDocType, reconcileHometax,
@@ -178,5 +180,27 @@ mod.setRecords({
 mod.setHometax('2026-11', [{ date: '2026-11-30', vendor: '단지푸드', total: 500000, supply: 500000 }]); // 합 200000 ≠ 500000
 r = mod.reconcileHometax('2026-11');
 check('13) 합 불일치 → N:1 매칭 안 함', (r.matchedN1 || []).length === 0 && r.orphanHometax.length === 1);
+
+// CASE 14: 단지푸드 — 과세 세금계산서 + 면세 계산서 분리발행 → 부분집합 N:1
+// 일별 매입 5건: 과세 3건(부가>0) 합 900,000 / 면세 2건(부가0) 합 500,000. 전체합 1,400,000.
+mod.setRecords({
+  '2026-12-03': { purchaseRows: [{ date: '2026-12-03', vendor: '(주)단지푸드', bizNo: '5478102961', supply: 300000, vat: 30000, total: 330000 }] },
+  '2026-12-10': { purchaseRows: [{ date: '2026-12-10', vendor: '(주)단지푸드', bizNo: '5478102961', supply: 250000, vat: 25000, total: 275000 }] },
+  '2026-12-17': { purchaseRows: [{ date: '2026-12-17', vendor: '(주)단지푸드', bizNo: '5478102961', supply: 268182, vat: 26818, total: 295000 }] }, // 과세 3건 합 900,000
+  '2026-12-05': { purchaseRows: [{ date: '2026-12-05', vendor: '(주)단지푸드', bizNo: '5478102961', supply: 200000, vat: 0, total: 200000 }] },
+  '2026-12-20': { purchaseRows: [{ date: '2026-12-20', vendor: '(주)단지푸드', bizNo: '5478102961', supply: 300000, vat: 0, total: 300000 }] }, // 면세 2건 합 500,000
+});
+// 홈택스: 세금계산서(과세) 900,000 + 계산서(면세) 500,000 — 일별 전체합(1,400,000) 아님
+mod.setHometax('2026-12', [
+  { date: '2026-12-31', vendor: '(주)단지푸드', bizNo: '5478102961', supply: 818182, vat: 81818, total: 900000, docType: '세금계산서' },
+  { date: '2026-12-31', vendor: '(주)단지푸드', bizNo: '5478102961', supply: 500000, vat: 0, total: 500000, docType: '계산서' },
+]);
+r = mod.reconcileHometax('2026-12');
+check('14) 분리발행 N:1 2건 매칭', (r.matchedN1 || []).length === 2, `matchedN1 ${(r.matchedN1||[]).length}`);
+const n1by = {}; (r.matchedN1 || []).forEach(m => n1by[m.total] = m.count);
+check('14) 과세 900,000 = 3건 부분집합', n1by[900000] === 3, JSON.stringify(n1by));
+check('14) 면세 500,000 = 2건 부분집합', n1by[500000] === 2, JSON.stringify(n1by));
+check('14) 입력 5건 모두 묶임(orphan 0)', r.orphanApp.length === 0);
+check('14) 홈택스 orphan 0', r.orphanHometax.length === 0);
 
 if (!process.exitCode) console.log('\n전체 통과');
