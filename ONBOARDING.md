@@ -1,7 +1,14 @@
 # 마감 정산 시스템 — 개발 인수인계 (ONBOARDING)
 
-> **다른 PC에서 이어서 개발할 때:** 이 저장소를 `git clone` → Claude Code 실행 →
-> "마감 폴더의 ONBOARDING.md 읽고 이어서 작업하자" 라고 말하면 진행 상황이 그대로 이어집니다.
+> **이 파일이 인수인계서 정본(source of truth)입니다.** 코드와 함께 git으로 따라다니므로,
+> 어디서 이어받든 이 파일만 읽으면 됩니다. (구버전 `G:\내 드라이브\정산시스템\HANDOVER_magam-settlement.md`는 폐기 — 더 갱신 안 함.)
+>
+> **새 세션 시작 한 줄(복붙):**
+> `magam-settlement 일일정산 시스템 작업. ONBOARDING.md 먼저 읽고 이어서 해.`
+>
+> **웹(클라우드) vs 로컬 차이 — 중요:**
+> - **Claude Code 웹**(claude.ai/code 등): 클라우드 일회용 컨테이너에서 실행. GitHub clone한 코드+네트워크만 있음. **사장님 PC의 `G:\`·`D:\` 등 로컬 디스크는 접근 불가.** 코드 작업·푸시는 GitHub 통해 가능.
+> - **Claude Code 로컬**(PC에 설치): 안티그래비티처럼 PC에서 직접 실행 → `G:\`(구글드라이브 동기화 폴더)·`D:\` 파일 직접 읽기/쓰기 가능. 로컬 데이터·드라이브를 다뤄야 하면 로컬로 실행할 것. (설치는 §7 참고)
 >
 > 최종 업데이트: 2026-06-15
 
@@ -84,7 +91,11 @@
 1. Git + GitHub CLI 설치 (없으면): `winget install Git.Git` + `winget install GitHub.cli`
 2. `gh auth login` (브라우저 로그인) → `git config --global user.name "hsweetm"` + `user.email "hsweetm@gmail.com"`
 3. `git clone https://github.com/hsweetm-tech/magam-settlement.git` (D 드라이브 등 non-NTFS/외장 경로에 받으면 첫 git 명령 시 `safe.directory` 에러 → `git config --global --add safe.directory <클론한 절대경로>` 한 번 실행)
-4. Claude Code 실행 → "마감 폴더의 ONBOARDING.md 읽고 이어서 작업하자"
+3-b. **Claude Code 로컬 설치(Windows)** — 로컬로 쓰면 `G:\`·`D:\` 직접 접근 가능(안티그래비티처럼):
+   - PowerShell에서 `irm https://claude.ai/install.ps1 | iex` (네이티브 설치) **또는** Node.js 18+ 있으면 `npm install -g @anthropic-ai/claude-code`
+   - 첫 실행 시 로그인(Claude Pro/Max 구독 또는 Anthropic API 키 필요)
+   - 공식 문서: https://docs.claude.com/en/docs/claude-code
+4. 프로젝트 폴더에서 `claude` 실행 → "ONBOARDING.md 읽고 이어서 작업하자"
 5. **데이터 가져오기** — 이 저장소엔 코드만 있고 정산 데이터는 없음. 두 가지 방법:
    - **임시(빠름)**: 다른 PC에서 헤더 "백업" → JSON 다운 → 이 PC로 옮긴 뒤 헤더 "불러오기"
    - **자동(권장)**: 헤더 "클라우드" → 모달 가이드 따라 GAS URL/토큰 입력 (양쪽 PC 동일하게)
