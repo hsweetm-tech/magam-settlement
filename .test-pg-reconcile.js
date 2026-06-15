@@ -21,6 +21,7 @@ const recPgCard  = grab(/function reconcilePgDailyCard[\s\S]*?\n\}/, 'reconcileP
 const vanParse   = grab(/function parseVanSalesRows[\s\S]*?\n\}/, 'parseVanSalesRows');
 const cardPats   = grab(/const CARD_ISSUER_PATTERNS = \[[\s\S]*?\n\];/, 'CARD_ISSUER_PATTERNS');
 const matchIssue = grab(/function _matchCardIssuer[\s\S]*?\n\}/, '_matchCardIssuer');
+const classifyDep = grab(/function _classifyDepositChannel[\s\S]*?\n\}/, '_classifyDepositChannel');
 const directExc  = grab(/const DIRECT_CARD_EXCLUDE = [^\n]*/, 'DIRECT_CARD_EXCLUDE');
 const dirIssuers = grab(/const DIRECT_CARD_ISSUERS = \[[\s\S]*?\n\];/, 'DIRECT_CARD_ISSUERS');
 const revRate    = grab(/function _reverseFeeRate[\s\S]*?\n\}/, '_reverseFeeRate');
@@ -53,6 +54,7 @@ const src = `
   ${vanParse}
   ${cardPats}
   ${matchIssue}
+  ${classifyDep}
   ${directExc}
   ${dirIssuers}
   ${revRate}
@@ -64,7 +66,7 @@ const src = `
   ${applyCorr}
   return {
     parsePgSettleRows, reconcilePgBank, reconcilePgDailyCard, _parsePgDate, _recordCardSales,
-    parseVanSalesRows, _matchCardIssuer, _reverseFeeRate, reconcileDirectCard,
+    parseVanSalesRows, _matchCardIssuer, _classifyDepositChannel, _reverseFeeRate, reconcileDirectCard,
     _pgGrossByDayIssuer, reconcileCloseVsPg, applyCloseCorrection,
     setPg: (m, a) => { _pg[m] = a; }, setBank: (m, a) => { _bank[m] = a; }, setRecords: (r) => { _records = r; },
     setVan: (m, a) => { _van[m] = a; }, setRates: (r) => { _rates = r; }, getRecords: () => _records
@@ -248,6 +250,14 @@ eq(fixedMap['삼성카드'], 100000, '대사④: 교정후 삼성카드 100,000'
 eq(fixed.reduce((s, r) => s + r.amount, 0), 400000, '대사④: 교정후 총액 400,000 보존');
 const cc2 = M.reconcileCloseVsPg('2026-05');
 eq(cc2.rows.find(r => r.date === '2026-05-15').status, 'match', '대사④: 교정후 5/15 일치로 전환');
+
+// ── 10. 통장 입금 채널 분류 (PG·직승인은 카드매출 미매칭 경고에서 제외) ──
+eq(M._classifyDepositChannel('에비뉴에이치'), { channel: 'pg' }, '입금분류: 에비뉴=PG(①)');
+eq(M._classifyDepositChannel('삼성카드'), { channel: 'direct', issuer: '삼성' }, '입금분류: 삼성카드=직승인(③)');
+eq(M._classifyDepositChannel('하나92751350'), { channel: 'direct', issuer: '하나' }, '입금분류: 하나=직승인(③)');
+eq(M._classifyDepositChannel('BC-745552845'), { channel: 'direct', issuer: '비씨' }, '입금분류: BC=직승인(③)');
+eq(M._classifyDepositChannel('쿠팡페이(쿠페이)'), null, '입금분류: 쿠페이 환입은 제외(null)');
+eq(M._classifyDepositChannel('김상균'), null, '입금분류: 일반 송금=미매칭(null)');
 
 console.log(`\nPG 정산 대사 테스트: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

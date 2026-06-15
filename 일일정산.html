@@ -3398,6 +3398,20 @@ function _matchCardIssuer(text) {
   for (const [key, re] of CARD_ISSUER_PATTERNS) if (re.test(s)) return key;
   return null;
 }
+
+// 통장 입금 채널 분류 (통장 대사에서 PG·직승인 입금을 '카드매출 미매칭' 경고에서 빼기 위함)
+//  - 'pg'    : 에비뉴에이치 = 이지피지 PG 정산입금 → 대사①에서 처리
+//  - 'direct': 카드사 직접입금(삼성·하나·BC 등) = 직승인 → 대사③에서 처리
+//  - null    : 그 외(진짜 카드매출 미매칭)
+function _classifyDepositChannel(text) {
+  const t = String(text == null ? '' : text);
+  if (/에비뉴/.test(t)) return { channel: 'pg' };
+  if (!/쿠팡|쿠페이/.test(t)) {
+    const iss = _matchCardIssuer(t);
+    if (iss) return { channel: 'direct', issuer: iss };
+  }
+  return null;
+}
 // 통장 직접입금 후보에서 제외: 에비뉴(PG 대사①), 쿠팡/쿠페이(체크카드 취소환입), 계좌인증(1원)
 const DIRECT_CARD_EXCLUDE = /에비뉴|쿠팡|쿠페이/;
 // VAN 발급사(삼성/해외) → 통장 입금 적요 매칭. 해외는 하나·BC 등 매입사 적요로 들어옴.
@@ -4469,12 +4483,23 @@ function reconcileKbBank(month) {
     Array.from(matchedBankIdxs).sort((a, b) => b - a).forEach(i => bankOutUnmatched.splice(i, 1));
   }
 
+  // 입금 미매칭 분리: PG정산(에비뉴=대사①)·직승인(카드사 직접=대사③)은 거기서 대사되므로
+  // '매칭되는 카드매출 없음' 경고에서 제외하고 별도 정보로 분류.
+  const _depText = b => [b.desc, b.memo, b.myMemo, b.summary].filter(Boolean).join(' ');
+  const inPgDeposits = [], inDirectDeposits = [], inBankOnlyReal = [];
+  bankInUnmatched.forEach(b => {
+    const ch = _classifyDepositChannel(_depText(b));
+    if (ch && ch.channel === 'pg') inPgDeposits.push(b);                  // PG 정산입금 → 대사①
+    else if (ch && ch.channel === 'direct') inDirectDeposits.push({ ...b, _issuer: ch.issuer }); // 직승인 → 대사③
+    else inBankOnlyReal.push(b);                                          // 진짜 카드매출 미매칭
+  });
+
   return {
     month,
     bankRowsCount: rows.length,
     hometaxCount: ht ? ht.length : 0,
     out: { matched, sysOnly: sysOutUnmatched, bankOnly: bankOutUnmatched, matchedN1 },
-    in: { matched: matchedIn, sysOnly: sysInUnmatched, bankOnly: bankInUnmatched }
+    in: { matched: matchedIn, sysOnly: sysInUnmatched, bankOnly: inBankOnlyReal, pgDeposits: inPgDeposits, directDeposits: inDirectDeposits }
   };
 }
 
@@ -4635,6 +4660,16 @@ function renderBankReconcile(month) {
           ${inSysOnly}${inBankOnly}${inMatchedRows}
         </tbody>
       </table></div>
+      ${(() => {
+        const pg = r.in.pgDeposits || [], dr = r.in.directDeposits || [];
+        if (!pg.length && !dr.length) return '';
+        const sum = arr => arr.reduce((s, b) => s + num(b.amount), 0);
+        return `<div style="margin-top:8px;font-size:11px;color:var(--text-2);background:var(--subtle, #f5f5f5);padding:8px 10px;border-radius:6px;">
+          ℹ️ 아래 입금은 <strong>카드매출 미매칭이 아니라 PG정산 탭에서 대사</strong>됩니다 (여기 경고에서 제외):
+          ${pg.length ? `<br>· PG 정산입금(에비뉴에이치) <strong>${pg.length}건</strong> ${fmtKRW(sum(pg))} → <strong>대사①</strong>` : ''}
+          ${dr.length ? `<br>· 직승인 카드사 직접입금 <strong>${dr.length}건</strong> ${fmtKRW(sum(dr))} (${[...new Set(dr.map(b => b._issuer))].join('·')}) → <strong>대사③</strong>` : ''}
+        </div>`;
+      })()}
     </details>
 
     ${(() => {
