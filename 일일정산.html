@@ -3356,17 +3356,36 @@ function parseVanSalesRows(aoa) {
   return out;
 }
 
-// 통장 입금 → VAN 발급사 버킷 분류 규칙 (적요 기준). PG(에비뉴=대사①)·노이즈는 제외.
+// 카드사 정규화 — 마감(국민카드)·이지피지(국민)·통장(하나92751350) 등 변형을 한 키로 통일.
+// 통장 입금 적요에서 자동 판별(범위 제한 없음). 매칭 안 되면 카드입금 아님으로 간주.
+const CARD_ISSUER_PATTERNS = [
+  ['삼성', /삼성|SAMSUNG/i],
+  ['국민', /국민|\bKB\b/i],
+  ['신한', /신한|SHINHAN/i],
+  ['현대', /현대|HYUNDAI/i],
+  ['롯데', /롯데|LOTTE/i],
+  ['하나', /하나|HANA|외환/i],
+  ['우리', /우리|WOORI/i],
+  ['비씨', /비씨|비시|\bBC\b/i],
+  ['농협', /농협|\bNH\b/i],
+  ['씨티', /씨티|CITI/i],
+  ['해외', /해외|VISA|MASTER|마스타|마스터|아멕스|AMEX|은련|UNION/i]
+];
+function _matchCardIssuer(text) {
+  const s = String(text == null ? '' : text);
+  for (const [key, re] of CARD_ISSUER_PATTERNS) if (re.test(s)) return key;
+  return null;
+}
+// 통장 직접입금 후보에서 제외: 에비뉴(PG 대사①), 쿠팡/쿠페이(체크카드 취소환입), 계좌인증(1원)
+const DIRECT_CARD_EXCLUDE = /에비뉴|쿠팡|쿠페이/;
+// VAN 발급사(삼성/해외) → 통장 입금 적요 매칭. 해외는 하나·BC 등 매입사 적요로 들어옴.
 const DIRECT_CARD_ISSUERS = [
   { key: '삼성', bank: /삼성/ },
   { key: '해외', bank: /하나|비씨|\bBC\b|비자|마스타|마스터|VISA|MASTER|해외/i }
 ];
-// 직승인 후보에서 제외: 에비뉴(PG 대사①), 쿠팡/쿠페이(체크카드 취소환입), 계좌인증(1원)
-const DIRECT_CARD_EXCLUDE = /에비뉴|쿠팡|쿠페이/;
 
 /**
- * 역산 수수료율 + 상태 판정 (pure)
- * @returns {rate, status}  status: ok | partial | over | no_van | no_deposit
+ * 역산 수수료율 + 상태 판정 (pure). status: ok | partial | over | no_van | no_deposit
  */
 function _reverseFeeRate(vanGross, depSum) {
   if (!(vanGross > 0)) return { rate: 0, status: 'no_van' };
@@ -3380,13 +3399,13 @@ function _reverseFeeRate(vanGross, depSum) {
 }
 
 /**
- * 대사 ③: VAN 직승인 매출(발급사별) ↔ 통장 카드사 직접입금 역산
+ * 대사 ③: VAN 직승인 매출(삼성/해외) ↔ 통장 카드사 직접입금 역산.
+ * 직승인 매출의 기준은 이지피지 VAN 시트(마감 카드사별은 OCR 오분류로 신뢰 불가).
  */
 function reconcileDirectCard(month) {
   const van = getPgVanData(month);
   const bank = (typeof getKbBankData === 'function' ? getKbBankData(month) : []) || [];
   const storedRates = getPgDirectRates();
-  // 통장 직접입금 후보 (입금>10원, PG·노이즈 제외)
   const candidates = bank
     .filter(b => num(b.deposit) > 10)
     .map(b => ({
@@ -3414,7 +3433,6 @@ function reconcileDirectCard(month) {
       storedRate: storedRates[v.issuer] != null ? storedRates[v.issuer] : null
     };
   });
-  // VAN에 없는데 카드사 패턴엔 걸린 입금(분류됐으나 미사용) — 점검용
   const orphanCardDeposits = candidates
     .filter(c => c.issuer && !c.used)
     .map(c => ({ date: c.date, amount: c.amount, desc: c.desc, issuer: c.issuer }));
@@ -3428,6 +3446,114 @@ const PG_DIRECT_STATUS = {
   no_deposit: { badge: '❌ 통장 입금 없음', color: 'var(--red, #e5484d)' },
   no_van:     { badge: '· VAN 매출 없음', color: 'var(--text-3)' }
 };
+
+/* ========================================================================
+   대사 ④: 일일 마감 카드매출 카드사 OCR 교정 (2026-06-15)
+   - 마감 cardRows의 카드사 칸이 OCR로 뒤섞임(예: 5/15 총액 맞는데 삼성↔신한 뒤바뀜).
+   - 이지피지 PG정산상세내역(건별 정확)을 기준으로 그날 카드사별 매출을 비교.
+   - 총액 일치+카드사만 다름(mislabel) → 이지피지 기준으로 안전 교정(총액 보존).
+   - 총액 차이(amount_diff) → 직승인(삼성/해외) 또는 입력오차 → 사람이 판단(자동교정 안 함).
+   ======================================================================== */
+const CARD_ISSUER_DISPLAY = {
+  삼성: '삼성카드', 국민: '국민카드', 신한: '신한카드', 현대: '현대카드', 롯데: '롯데카드',
+  하나: '하나카드', 우리: '우리카드', 비씨: '비씨카드', 농협: '농협카드', 씨티: '씨티카드', 해외: '해외카드'
+};
+function _displayCardName(key) { return CARD_ISSUER_DISPLAY[key] || key; }
+
+// 일자별·카드사별 이지피지 PG 매출(GROSS=정산대상금액) — 거래일자 기준
+function _pgGrossByDayIssuer(month) {
+  const pg = getPgSettleData(month);
+  const out = {};
+  pg.forEach(r => {
+    if (!r.txnDate || r.txnDate.slice(0, 7) !== month) return;
+    const k = _matchCardIssuer(r.issuer) || (String(r.issuer || '').trim() || '기타');
+    (out[r.txnDate] || (out[r.txnDate] = {}))[k] = (out[r.txnDate][k] || 0) + num(r.gross);
+  });
+  return out;
+}
+
+function reconcileCloseVsPg(month) {
+  const all = (typeof getAllRecords === 'function' ? getAllRecords() : {}) || {};
+  const pgByDay = _pgGrossByDayIssuer(month);
+  const days = Array.from(new Set([
+    ...Object.keys(all).filter(d => d.startsWith(month) && (all[d].cardRows || []).length),
+    ...Object.keys(pgByDay)
+  ])).sort();
+  const rows = days.map(d => {
+    const rec = all[d];
+    const close = {};
+    (rec && rec.cardRows || []).forEach(r => {
+      const k = _matchCardIssuer(r.issuer) || (String(r.issuer || '').trim() || '기타');
+      close[k] = (close[k] || 0) + num(r.amount);
+    });
+    const pg = pgByDay[d] || {};
+    const closeTotal = Object.values(close).reduce((a, b) => a + b, 0);
+    const pgTotal = Math.round(Object.values(pg).reduce((a, b) => a + b, 0));
+    const totalDiff = closeTotal - pgTotal;
+    const issuers = Array.from(new Set([...Object.keys(close), ...Object.keys(pg)])).sort();
+    const issuerDiffs = issuers
+      .map(k => ({ issuer: k, close: Math.round(close[k] || 0), pg: Math.round(pg[k] || 0) }))
+      .filter(x => x.close - x.pg !== 0)
+      .map(x => ({ ...x, diff: x.close - x.pg }));
+    const hasClose = !!(rec && (rec.cardRows || []).length);
+    let status;
+    if (!hasClose) status = 'no_close';                 // PG 있는데 마감 카드행 없음
+    else if (totalDiff === 0 && !issuerDiffs.length) status = 'match';
+    else if (totalDiff === 0) status = 'mislabel';      // 총액 같고 카드사만 다름 → 안전 교정
+    else status = 'amount_diff';                         // 총액 차이 → 직승인/오차 (수동)
+    return { date: d, close, pg, closeTotal, pgTotal, totalDiff, issuerDiffs, status, hasPg: !!pgByDay[d] };
+  });
+  const counts = { match: 0, mislabel: 0, amount_diff: 0, no_close: 0 };
+  rows.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
+  return { month, rows, counts };
+}
+
+const PG_CLOSE_STATUS = {
+  match:       { badge: '✅ 일치', color: 'var(--green)' },
+  mislabel:    { badge: '🔀 카드사 오분류(총액OK)', color: 'var(--orange)' },
+  amount_diff: { badge: '⚠️ 금액차이(직승인/오차)', color: 'var(--red, #e5484d)' },
+  no_close:    { badge: '❌ 마감 카드행 없음', color: 'var(--text-3)' }
+};
+
+// 특정일 마감 cardRows를 이지피지 PG 카드사별로 교정 (총액 보존되는 mislabel 일자만 안전)
+function applyCloseCorrection(date, skipConfirm) {
+  const month = date.slice(0, 7);
+  const pg = _pgGrossByDayIssuer(month)[date];
+  const all = getAllRecords();
+  const rec = all[date];
+  if (!pg || !rec) { toast('교정할 PG/마감 데이터가 없습니다', 'warn'); return false; }
+  const newRows = Object.entries(pg)
+    .map(([k, v]) => ({ time: '', issuer: _displayCardName(k), approvalNo: '', amount: Math.round(v) }))
+    .filter(r => r.amount)
+    .sort((a, b) => b.amount - a.amount);
+  if (!skipConfirm) {
+    const cur = (rec.cardRows || []).map(r => `${r.issuer} ${num(r.amount).toLocaleString()}`).join(', ') || '(없음)';
+    const next = newRows.map(r => `${r.issuer} ${r.amount.toLocaleString()}`).join(', ');
+    if (!confirm(`${date} 카드사별 매출을 이지피지 기준으로 교정합니다 (총액 동일).\n\n현재: ${cur}\n\n교정: ${next}\n\n적용할까요?`)) return false;
+  }
+  rec.cardRows = newRows;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+  _queueCloudUpload();
+  return true;
+}
+
+function applyCloseCorrectionDay(date) {
+  if (applyCloseCorrection(date, false)) {
+    toast(`${date} 카드사 교정 완료`, 'ok');
+    renderPgReconcile(date.slice(0, 7));
+  }
+}
+
+function applyCloseCorrectionAll(month) {
+  const r = reconcileCloseVsPg(month);
+  const targets = r.rows.filter(x => x.status === 'mislabel');
+  if (!targets.length) { toast('총액이 일치하는 오분류 일자가 없습니다', 'warn'); return; }
+  if (!confirm(`${month}월 카드사 오분류 ${targets.length}일을 이지피지 기준으로 일괄 교정합니다. (모두 총액 동일, 카드사 칸만 정정)\n\n${targets.map(t => t.date.slice(5)).join(', ')}\n\n적용할까요?`)) return;
+  let n = 0;
+  targets.forEach(t => { if (applyCloseCorrection(t.date, true)) n++; });
+  toast(`${n}일 카드사 일괄 교정 완료`, 'ok');
+  renderPgReconcile(month);
+}
 
 const PG_BANK_STATUS = {
   match:   { badge: '✅ 일치', color: 'var(--green)' },
@@ -3541,7 +3667,58 @@ function renderPgReconcile(month) {
   // ── 대사 ③: VAN 직승인 매출 ↔ 통장 카드사 직접입금 역산 ──
   const directSection = renderDirectCardSection(month, fmtN);
 
-  el.innerHTML = bankSection + cardSection + directSection;
+  // ── 대사 ④: 마감 카드매출 카드사 OCR 교정 (이지피지 기준) ──
+  const correctionSection = renderCloseCorrectionSection(month, fmtN);
+
+  el.innerHTML = bankSection + cardSection + directSection + correctionSection;
+}
+
+function renderCloseCorrectionSection(month, fmtN) {
+  const r = reconcileCloseVsPg(month);
+  if (!getPgSettleData(month).length) return '';
+  const c = r.counts;
+  const attention = r.rows.filter(x => x.status === 'mislabel' || x.status === 'amount_diff' || x.status === 'no_close');
+  const head = `
+    <div style="display:flex;align-items:center;gap:8px;margin:22px 0 10px;">
+      <div style="font-weight:600;font-size:14px;">④ 마감 카드매출 카드사 교정 (이지피지 기준)</div>
+      <span style="font-size:12px;font-weight:600;color:${c.mislabel || c.amount_diff ? 'var(--orange)' : 'var(--green)'};">
+        일치 ${c.match || 0}일${c.mislabel ? ` · 오분류 ${c.mislabel}일` : ''}${c.amount_diff ? ` · 금액차이 ${c.amount_diff}일` : ''}
+      </span>
+    </div>
+    <div style="font-size:11px;color:var(--text-3);margin-bottom:8px;">
+      마감 카드매출의 <strong>카드사 칸</strong>을 이지피지 건별 정산내역과 대조합니다. <strong>🔀 오분류</strong>(총액은 맞고 카드사만 뒤섞임, OCR 오류)는 이지피지 기준으로 <strong>안전 교정</strong>(총액 보존). <strong>⚠️ 금액차이</strong>는 직승인(삼성/해외)이거나 입력오차라 자동 교정하지 않고 표시만 합니다.
+    </div>`;
+  if (!attention.length) {
+    return head + `<div style="padding:10px 12px;border:1px dashed var(--border);border-radius:8px;font-size:12px;color:var(--green);">모든 마감일 카드사 분류가 이지피지와 일치합니다. ✅</div>`;
+  }
+  const allBtn = c.mislabel ? `<button class="btn btn-small" onclick="applyCloseCorrectionAll('${month}')" style="font-size:11px;margin-bottom:8px;">🔀 오분류 ${c.mislabel}일 일괄 교정</button>` : '';
+  const rowsHtml = attention.map(x => {
+    const st = PG_CLOSE_STATUS[x.status];
+    const diffStr = x.issuerDiffs.map(d => `${d.issuer} ${d.diff > 0 ? '+' : ''}${fmtN(d.diff)}`).join(', ');
+    const totalCell = x.totalDiff === 0 ? '<span style="color:var(--text-3);">0</span>'
+      : `<span style="color:var(--orange);font-weight:600;">${x.totalDiff > 0 ? '+' : ''}${fmtN(x.totalDiff)}</span>`;
+    const action = x.status === 'mislabel'
+      ? `<button class="btn btn-small" onclick="applyCloseCorrectionDay('${x.date}')" style="font-size:10px;padding:2px 8px;">교정</button>`
+      : (x.status === 'amount_diff' ? '<span style="font-size:10px;color:var(--text-3);">수동확인</span>' : '');
+    return `<tr>
+      <td>${x.date.slice(5)}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;">${fmtN(x.closeTotal)}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text-3);">${fmtN(x.pgTotal)}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;">${totalCell}</td>
+      <td style="font-size:11px;color:var(--text-3);max-width:280px;">${diffStr || '<span style="color:var(--text-3);">—</span>'}</td>
+      <td style="white-space:nowrap;color:${st.color};font-size:11px;font-weight:600;">${st.badge}</td>
+      <td>${action}</td>
+    </tr>`;
+  }).join('');
+  return head + allBtn + `
+    <div class="table-wrap"><table class="data-table" style="font-size:12px;">
+      <thead><tr>
+        <th>일자</th><th style="text-align:right;">마감합</th><th style="text-align:right;">이지피지합</th>
+        <th style="text-align:right;">총액차</th><th>카드사별 차이(마감−PG)</th><th>상태</th><th></th>
+      </tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table></div>
+    <div style="font-size:11px;color:var(--text-3);margin-top:6px;">⚠️ 금액차이 일자: 마감&gt;PG면 직승인(삼성/해외) 가능 또는 과입력, 마감&lt;PG면 입력 누락. 영수증 확인 후 일일정산 탭에서 수정하세요.</div>`;
 }
 
 function renderDirectCardSection(month, fmtN) {
@@ -3552,7 +3729,7 @@ function renderDirectCardSection(month, fmtN) {
       <div style="font-weight:600;font-size:14px;">③ 직승인(PG 외) 매출 ↔ 통장 직접입금 역산</div>
     </div>
     <div style="padding:10px 12px;border:1px dashed var(--border);border-radius:8px;font-size:12px;color:var(--text-3);">
-      이지피지 <strong>매출내역</strong> 엑셀(VAN 시트 포함)을 위 "VAN 직승인 매출" 영역에 업로드하면, PG를 거치지 않고 카드사(삼성 직승인·해외 Visa/Master 등)가 통장에 직접 넣는 입금을 인식해 적용 수수료율을 역산합니다.
+      이지피지 <strong>매출내역</strong> 엑셀(VAN 시트 포함)을 위 "VAN 직승인 매출" 영역에 업로드하면, PG를 거치지 않고 카드사(삼성 직승인·해외 Visa/Master 등)가 통장에 직접 넣는 입금을 인식해 적용 수수료율을 역산합니다. <strong>직승인 매출 기준은 VAN 시트</strong>입니다(마감 카드사별은 OCR 오분류로 신뢰 불가 — 카드사 칸 교정은 아래 ④에서).
     </div>`;
   }
   const rd = reconcileDirectCard(month);
@@ -3577,17 +3754,15 @@ function renderDirectCardSection(month, fmtN) {
     </tr>`;
   }).join('');
 
-  // 발급사별 입금 상세 (역산매출 포함)
-  const detailHtml = rd.groups.filter(g => g.deposits.length).map(g => {
-    const rows = g.deposits.map(d => `<tr>
+  const detailHtml = rd.groups.filter(g => g.deposits.length).map(g =>
+    g.deposits.map(d => `<tr>
       <td style="color:var(--text-3);">${g.issuer}</td>
       <td>${d.date ? d.date.slice(5) : ''}</td>
-      <td style="font-size:11px;color:var(--text-3);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${d.desc || ''}</td>
+      <td style="font-size:11px;color:var(--text-3);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${d.desc || ''}</td>
       <td style="text-align:right;font-family:'JetBrains Mono',monospace;">${fmtN(d.amount)}</td>
       <td style="text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text-2);">${d.reverseGross ? fmtN(d.reverseGross) : '-'}</td>
-    </tr>`).join('');
-    return rows;
-  }).join('');
+    </tr>`).join('')
+  ).join('');
 
   const orphanHtml = rd.orphanCardDeposits.length ? `
     <div style="margin-top:8px;font-size:12px;color:var(--orange);">
@@ -3635,7 +3810,7 @@ function renderDirectCardSection(month, fmtN) {
 function saveDirectRatesFromReconcile(month) {
   const rd = reconcileDirectCard(month);
   let n = 0;
-  rd.groups.filter(g => g.status === 'ok' && g.rate >= 0).forEach(g => { savePgDirectRate(g.issuer, g.rate); n++; });
+  rd.groups.filter(g => g.status === 'ok' && g.rate != null && g.rate >= 0).forEach(g => { savePgDirectRate(g.issuer, g.rate); n++; });
   toast(n ? `역산율 ${n}건 저장됨` : '저장할 정상 역산율이 없습니다', n ? 'ok' : 'warn');
   renderPgReconcile(month);
 }
