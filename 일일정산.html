@@ -4323,15 +4323,31 @@ function reconcileKbBank(month) {
     }
   }
 
-  // ===== 입금 매칭 (시스템 cardRows vs 통장 입금) =====
+  // ===== 입금 매칭 (시스템 vs 통장 입금) =====
+  // 통장 PG 입금은 여러 날 카드매출이 PG에서 '뭉쳐서 NET(수수료 뗀)'으로 한 번에 들어옴.
+  // → 시스템 측을 카드사별 일별 gross가 아니라 'PG 지급일자별 실지급금액 합'으로 두면
+  //   뭉친 에비뉴 입금과 1:1로 매칭된다. (PG 데이터 없으면 기존 카드사별 마감 매출로 폴백)
   const sysIn = [];
-  dates.forEach(d => {
-    (all[d].cardRows || []).forEach((c, idx) => {
-      const amt = num(c.amount);
-      if (amt <= 0) return;
-      sysIn.push({ date: d, amount: amt, issuer: c.issuer || '', _ref: `${d}#card${idx}` });
+  const _pgForIn = (typeof getPgSettleData === 'function' ? getPgSettleData(month) : []) || [];
+  const _pgPayInMonth = _pgForIn.filter(p => p.payoutDate && p.payoutDate.slice(0, 7) === month);
+  if (_pgPayInMonth.length) {
+    const byPay = {};
+    _pgPayInMonth.forEach(p => {
+      const g = byPay[p.payoutDate] || (byPay[p.payoutDate] = { net: 0, cnt: 0 });
+      g.net += num(p.net); g.cnt++;
     });
-  });
+    Object.keys(byPay).sort().forEach((pd, idx) => {
+      sysIn.push({ date: pd, amount: Math.round(byPay[pd].net), issuer: `PG정산(에비뉴) ${byPay[pd].cnt}건`, _ref: `pgpay#${idx}`, _pg: true });
+    });
+  } else {
+    dates.forEach(d => {
+      (all[d].cardRows || []).forEach((c, idx) => {
+        const amt = num(c.amount);
+        if (amt <= 0) return;
+        sysIn.push({ date: d, amount: amt, issuer: c.issuer || '', _ref: `${d}#card${idx}` });
+      });
+    });
+  }
   const bankIn = rows.filter(r => r.deposit > 0).map((r, idx) => ({
     date: r.date, amount: r.deposit, desc: r.desc, summary: r.summary, kind: r.kind,
     myMemo: r.myMemo || '', memo: r.memo || '',
