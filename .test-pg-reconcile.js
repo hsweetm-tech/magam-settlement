@@ -18,12 +18,19 @@ const pgParse    = grab(/function parsePgSettleRows[\s\S]*?\n\}/, 'parsePgSettle
 const recCard    = grab(/function _recordCardSales[\s\S]*?\n\}/, '_recordCardSales');
 const recPgBank  = grab(/function reconcilePgBank[\s\S]*?\n\}/, 'reconcilePgBank');
 const recPgCard  = grab(/function reconcilePgDailyCard[\s\S]*?\n\}/, 'reconcilePgDailyCard');
+const vanParse   = grab(/function parseVanSalesRows[\s\S]*?\n\}/, 'parseVanSalesRows');
+const directCfg  = grab(/const DIRECT_CARD_ISSUERS = \[[\s\S]*?\];/, 'DIRECT_CARD_ISSUERS');
+const directExc  = grab(/const DIRECT_CARD_EXCLUDE = [^\n]*/, 'DIRECT_CARD_EXCLUDE');
+const revRate    = grab(/function _reverseFeeRate[\s\S]*?\n\}/, '_reverseFeeRate');
+const recDirect  = grab(/function reconcileDirectCard[\s\S]*?\n\}/, 'reconcileDirectCard');
 
 const src = `
-  let _pg = {}, _bank = {}, _records = {};
+  let _pg = {}, _bank = {}, _records = {}, _van = {}, _rates = {};
   function getPgSettleData(m) { return _pg[m] || []; }
   function getKbBankData(m) { return _bank[m] || []; }
   function getAllRecords() { return _records; }
+  function getPgVanData(m) { return _van[m] || []; }
+  function getPgDirectRates() { return _rates; }
   ${numFn}
   ${matchCol}
   ${pgCols}
@@ -32,9 +39,16 @@ const src = `
   ${recCard}
   ${recPgBank}
   ${recPgCard}
+  ${vanParse}
+  ${directCfg}
+  ${directExc}
+  ${revRate}
+  ${recDirect}
   return {
     parsePgSettleRows, reconcilePgBank, reconcilePgDailyCard, _parsePgDate, _recordCardSales,
-    setPg: (m, a) => { _pg[m] = a; }, setBank: (m, a) => { _bank[m] = a; }, setRecords: (r) => { _records = r; }
+    parseVanSalesRows, _reverseFeeRate, reconcileDirectCard,
+    setPg: (m, a) => { _pg[m] = a; }, setBank: (m, a) => { _bank[m] = a; }, setRecords: (r) => { _records = r; },
+    setVan: (m, a) => { _van[m] = a; }, setRates: (r) => { _rates = r; }
   };
 `;
 const M = new Function(src)();
@@ -126,6 +140,70 @@ M.setRecords({});
 M.setPg('2026-05', [{ payoutDate:'2026-05-13', txnDate:'2026-05-09', gross:50000, net:48500 }]);
 const rc2 = M.reconcilePgDailyCard('2026-05');
 eq(rc2.rows[0].status, 'no_close', 'PG↔마감: 마감 record 없음 → no_close');
+
+// ── 6. VAN 시트 파서 (발급사별 직승인 매출) ──
+const vanAoa = [
+  ['', '', '', '', '', '', ''],
+  ['1.업체정보', '', '', '', '', '', ''],
+  ['상호명(법인명)', '에비뉴 에이치', '', '조회기간', '260501 ~ 260531', '', ''],
+  ['※ 아래의 데이터는 승인 - 취소 건수 입니다.', '', '', '', '', '', ''],
+  ['2.신용카드', '', '', '', '', '', ''],
+  ['26년 05월', '', '거래건수', '거래금액', '봉사료', '부가세', '비과세'],
+  ['삼성 합계', '', 3, 140400, 0, 12763, 0],
+  ['해외 합계', '', 5, 322900, 0, 29352, 0],
+  ['합계', '', 8, 463300, 0, 42115, 0],   // 전체합계 → 스킵
+  ['', '', '', '', '', '', ''],
+  ['총계 ', '', 8, 463300, 0, 42115, 0],  // 총계 → 스킵
+];
+const vanRows = M.parseVanSalesRows(vanAoa);
+eq(vanRows.length, 2, 'VAN: 발급사 2건(삼성·해외), 합계/총계 제외');
+eq(vanRows[0], { issuer: '삼성', count: 3, gross: 140400 }, 'VAN: 삼성 합계');
+eq(vanRows[1], { issuer: '해외', count: 5, gross: 322900 }, 'VAN: 해외 합계');
+eq(M.parseVanSalesRows([['헤더없음']]).length, 0, 'VAN: 헤더 못찾으면 빈배열');
+
+// ── 7. 역산 수수료율 판정 ──
+eq(M._reverseFeeRate(140400, 135486).status, 'ok', '역산: 삼성 3.5% → ok');
+ok(Math.abs(M._reverseFeeRate(140400, 135486).rate - 0.035) < 1e-9, '역산: 정확히 3.5%');
+eq(M._reverseFeeRate(322900, 137488).status, 'partial', '역산: 입금부족 → partial(부분/익월)');
+eq(M._reverseFeeRate(100000, 100500).status, 'over', '역산: 입금>매출 → over');
+eq(M._reverseFeeRate(100000, 0).status, 'no_deposit', '역산: 입금 없음');
+eq(M._reverseFeeRate(0, 5000).status, 'no_van', '역산: VAN 매출 없음');
+
+// ── 8. 대사 ③: VAN ↔ 통장 직접입금 역산 (5월 실데이터 검증) ──
+M.setVan('2026-05', [
+  { issuer: '삼성', count: 3, gross: 140400 },
+  { issuer: '해외', count: 5, gross: 322900 },
+]);
+M.setRates({});
+M.setBank('2026-05', [
+  // 삼성 직승인 2건 → 135,486 합, 역산매출 140,400 (3.5%)
+  { date: '2026-05-14', deposit: 39372, withdraw: 0, desc: '삼성카드', summary: '' },
+  { date: '2026-05-28', deposit: 96114, withdraw: 0, desc: '삼성카드', summary: '' },
+  // 해외(하나·BC) 부분입금 → 137,488 (나머지 익월)
+  { date: '2026-05-20', deposit: 88212, withdraw: 0, desc: '하나92751350', summary: '' },
+  { date: '2026-05-27', deposit: 49276, withdraw: 0, desc: 'BC-745552845', summary: '' },
+  // 노이즈: 쿠페이 환입(매출 아님), 1원 인증, 에비뉴(PG=대사①) → 모두 제외
+  { date: '2026-05-15', deposit: 28870, withdraw: 0, desc: '쿠팡페이(쿠페이)', summary: '' },
+  { date: '2026-05-01', deposit: 1, withdraw: 0, desc: '호주노래', summary: '' },
+  { date: '2026-05-13', deposit: 283848, withdraw: 0, desc: '에비뉴에이치', summary: '' },
+]);
+const rd = M.reconcileDirectCard('2026-05');
+const gi = {}; rd.groups.forEach(g => gi[g.issuer] = g);
+eq(gi['삼성'].depSum, 135486, '대사③: 삼성 통장입금합 135,486');
+eq(gi['삼성'].status, 'ok', '대사③: 삼성 정상');
+ok(Math.abs(gi['삼성'].rate - 0.035) < 1e-9, '대사③: 삼성 역산율 3.5%');
+eq(gi['삼성'].deposits.map(d => d.reverseGross), [40800, 99600], '대사③: 삼성 역산매출 40800·99600');
+eq(gi['해외'].depSum, 137488, '대사③: 해외 부분입금 137,488');
+eq(gi['해외'].status, 'partial', '대사③: 해외 부분/익월');
+eq(rd.orphanCardDeposits.length, 0, '대사③: VAN 외 카드입금 없음(전부 매칭)');
+
+// ── 9. 대사 ③: 저장된 역산율 활용 + 노이즈 제외 검증 ──
+M.setRates({ '해외': 0.025 });
+const rd2 = M.reconcileDirectCard('2026-05');
+const gi2 = {}; rd2.groups.forEach(g => gi2[g.issuer] = g);
+// partial이라 저장율(2.5%)로 역산매출 계산: 88212/(1-0.025)=90474, 49276/0.975=50539
+eq(gi2['해외'].deposits.map(d => d.reverseGross), [90474, 50539], '대사③: partial은 저장율로 역산매출');
+ok(!rd.groups.some(g => g.deposits.some(d => /쿠페이|호주|에비뉴/.test(d.desc))), '대사③: 노이즈·PG 입금 제외됨');
 
 console.log(`\nPG 정산 대사 테스트: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

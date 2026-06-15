@@ -1942,6 +1942,28 @@ body.tab-summary main { grid-template-columns: 1fr; }
               </div>
             </div>
           </div>
+          <div class="msub-section-head" style="margin-top:22px;">
+            <div class="msub-section-title" style="font-size:13px;">VAN 직승인 매출 (대사 ③)</div>
+            <div class="msub-section-note" id="pgVanCount">0건</div>
+          </div>
+          <div style="padding:4px 0 12px; color: var(--text-3); font-size: 12px;">
+            이지피지 <strong>매출내역</strong> 엑셀(VAN 시트 포함)을 올리면, PG를 안 거치고 카드사가 통장에 직접 넣는 입금(삼성 직승인·해외 Visa/Master)을 발급사별로 인식해 <strong>적용 수수료율을 역산</strong>합니다.
+          </div>
+          <div class="upload-grid">
+            <div class="upload-zone" id="pgVanUpload">
+              <input type="file" id="pgVanFile" accept=".xlsx,.xls,.csv" style="display:none;">
+              <svg class="icon icon-lg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              <div class="upload-label">이지피지 매출내역(VAN) 업로드</div>
+              <div class="upload-hint">VAN 시트 자동 인식 .xlsx</div>
+            </div>
+            <div class="upload-zone" style="cursor:default;border-style:solid;">
+              <div style="font-size:11px;color:var(--text-3);">현재 월 VAN 발급사</div>
+              <div style="font-size:18px;font-weight:600;margin:4px 0;" id="pgVanLoadedCount">0건</div>
+              <div style="display:flex;gap:6px;justify-content:center;">
+                <button class="btn btn-small" onclick="clearPgVanCurrentMonth()" style="font-size:11px;">초기화</button>
+              </div>
+            </div>
+          </div>
           <div id="pgReconcileContent" style="margin-top:20px;"></div>
         </div>
 
@@ -2601,12 +2623,12 @@ function init() {
     if (costsMonthEl && costsMonthEl.value !== month) costsMonthEl.value = month;
     const active = document.querySelector('.tab.active');
     const tabName = active ? active.dataset.tab : '';
-    if (tabName === 'monthly') { renderMonthlyReport(month); if (typeof updateHometaxStatus === 'function') updateHometaxStatus(); if (typeof updatePgStatus === 'function') updatePgStatus(); }
+    if (tabName === 'monthly') { renderMonthlyReport(month); if (typeof updateHometaxStatus === 'function') updateHometaxStatus(); if (typeof updatePgStatus === 'function') updatePgStatus(); if (typeof updatePgVanStatus === 'function') updatePgVanStatus(); }
     else if (tabName === 'forecast') { renderMonthlyForecast(month); }
     else if (tabName === 'costs') { renderCostsTab(month); }
   }
   window.syncSelectedMonth = syncSelectedMonth;
-  if (monthlyMonthEl) monthlyMonthEl.addEventListener('change', (e) => { syncSelectedMonth(e.target.value); if (typeof updateKbBankStatus === 'function') updateKbBankStatus(); if (typeof renderBankReconcile === 'function') renderBankReconcile(e.target.value); if (typeof updatePgStatus === 'function') updatePgStatus(); if (typeof renderPgReconcile === 'function') renderPgReconcile(e.target.value); });
+  if (monthlyMonthEl) monthlyMonthEl.addEventListener('change', (e) => { syncSelectedMonth(e.target.value); if (typeof updateKbBankStatus === 'function') updateKbBankStatus(); if (typeof renderBankReconcile === 'function') renderBankReconcile(e.target.value); if (typeof updatePgStatus === 'function') updatePgStatus(); if (typeof updatePgVanStatus === 'function') updatePgVanStatus(); if (typeof renderPgReconcile === 'function') renderPgReconcile(e.target.value); });
   if (forecastMonthEl) forecastMonthEl.addEventListener('change', (e) => syncSelectedMonth(e.target.value));
   if (costsMonthEl) costsMonthEl.addEventListener('change', (e) => syncSelectedMonth(e.target.value));
   // 월정산 sub-tab navigation
@@ -2625,8 +2647,10 @@ function init() {
   setupHometaxUpload();
   setupKbBankUpload();
   setupPgUpload();
+  setupPgVanUpload();
   updateHometaxStatus();
   updatePgStatus();
+  updatePgVanStatus();
   setupUpload('posFile', 'posUpload', 'pos');
   setupUpload('cardFile', 'cardUpload', 'card');
   setupUpload('bankFile', 'bankUpload', 'bank');
@@ -2966,6 +2990,7 @@ function clearHometaxData(month) {
 function collectAppSettings() {
   const hometax = {};
   const pgSettle = {};
+  const pgVan = {};
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);
     if (k && k.startsWith('hometax_')) {
@@ -2974,8 +2999,12 @@ function collectAppSettings() {
     if (k && k.startsWith(PG_KEY_PREFIX)) {
       try { pgSettle[k.slice(PG_KEY_PREFIX.length)] = JSON.parse(localStorage.getItem(k) || '[]'); } catch {}
     }
+    if (k && k.startsWith(PG_VAN_KEY_PREFIX)) {
+      try { pgVan[k.slice(PG_VAN_KEY_PREFIX.length)] = JSON.parse(localStorage.getItem(k) || '[]'); } catch {}
+    }
   }
-  let partners = null, fixedExpenses = null, capital = null;
+  let partners = null, fixedExpenses = null, capital = null, pgDirectRates = null;
+  try { const raw = localStorage.getItem(PG_DIRECT_RATES_KEY); if (raw) pgDirectRates = JSON.parse(raw); } catch {}
   try { const raw = localStorage.getItem(PARTNERS_KEY); if (raw) partners = JSON.parse(raw); } catch {}
   try { const raw = localStorage.getItem(FIXED_EXPENSES_KEY); if (raw) fixedExpenses = JSON.parse(raw); } catch {}
   try { const raw = localStorage.getItem(CAPITAL_KEY); if (raw) capital = JSON.parse(raw); } catch {}
@@ -2985,7 +3014,9 @@ function collectAppSettings() {
     capital,
     distSubtractDiscounts: localStorage.getItem(DIST_DISCOUNT_KEY) === 'true',
     hometax,
-    pgSettle
+    pgSettle,
+    pgVan,
+    pgDirectRates
   };
 }
 
@@ -3006,6 +3037,14 @@ function applyAppSettings(s) {
     Object.entries(s.pgSettle).forEach(([month, arr]) => {
       if (Array.isArray(arr)) localStorage.setItem(PG_KEY_PREFIX + month, JSON.stringify(arr));
     });
+  }
+  if (s.pgVan && typeof s.pgVan === 'object') {
+    Object.entries(s.pgVan).forEach(([month, arr]) => {
+      if (Array.isArray(arr)) localStorage.setItem(PG_VAN_KEY_PREFIX + month, JSON.stringify(arr));
+    });
+  }
+  if (s.pgDirectRates && typeof s.pgDirectRates === 'object') {
+    localStorage.setItem(PG_DIRECT_RATES_KEY, JSON.stringify(s.pgDirectRates));
   }
   // UI 즉시 반영
   if (typeof renderPartners === 'function') renderPartners();
@@ -3224,6 +3263,160 @@ function reconcilePgDailyCard(month) {
   return { month, rows };
 }
 
+/* ========================================================================
+   대사 ③: 직승인(PG 외 카드) ↔ 통장 직접입금 역산 (2026-06-15)
+   - 이지피지 "매출내역" xlsx의 VAN 시트 = PG 안 거친 직승인 매출(삼성·해외) 발급사별 요약
+   - 카드사가 통장에 직접 넣는 입금을 인식 → 적용 수수료율을 역산
+       수수료율 = (VAN매출 − 통장입금합) / VAN매출,  역산매출 = 입금 / (1 − 율)
+   - 정상범위 0.5~4% 벗어나면: 율<0.5%는 이상(over), 율>4%는 입금 부족=부분/익월 정산(partial)
+   - 발급사별 역산율을 저장 → 다음달 매출×(1−율)=예상입금 대조에 활용
+   ======================================================================== */
+const PG_VAN_KEY_PREFIX = 'pg_van_';
+const PG_DIRECT_RATES_KEY = 'pg_direct_rates';
+
+function getPgVanKey(month) { return PG_VAN_KEY_PREFIX + month; }
+function getPgVanData(month) {
+  if (!month) return [];
+  try {
+    const arr = JSON.parse(localStorage.getItem(getPgVanKey(month)) || '[]');
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function savePgVanData(month, rows) {
+  localStorage.setItem(getPgVanKey(month), JSON.stringify(rows));
+  _queueSettingsCloudUpload();
+}
+function clearPgVanData(month) {
+  localStorage.removeItem(getPgVanKey(month));
+  _queueSettingsCloudUpload();
+}
+function clearPgVanCurrentMonth() {
+  const mm = document.getElementById('monthlyMonth');
+  if (!mm || !mm.value) { toast('월을 먼저 선택하세요', 'warn'); return; }
+  if (!confirm(`${mm.value}월 적재된 VAN(직승인) 매출을 지울까요?`)) return;
+  clearPgVanData(mm.value);
+  updatePgVanStatus();
+  renderPgReconcile(mm.value);
+  toast('VAN 매출 초기화됨', 'ok');
+}
+
+// 발급사별 역산율 저장소 { '삼성': 0.035, '해외': 0.025, ... } (월 무관 누적, 최신값 갱신)
+function getPgDirectRates() {
+  try {
+    const o = JSON.parse(localStorage.getItem(PG_DIRECT_RATES_KEY) || '{}');
+    return (o && typeof o === 'object') ? o : {};
+  } catch { return {}; }
+}
+function savePgDirectRate(issuer, rate) {
+  if (!issuer || !(rate >= 0)) return;
+  const o = getPgDirectRates();
+  o[issuer] = rate;
+  localStorage.setItem(PG_DIRECT_RATES_KEY, JSON.stringify(o));
+  _queueSettingsCloudUpload();
+}
+
+/**
+ * VAN 시트(2차원 배열) → 발급사별 직승인 매출 [{issuer, count, gross}]
+ * 예) '삼성 합계' 3건 140400, '해외 합계' 5건 322900. 전체합계('합계'/'총계')는 스킵.
+ */
+function parseVanSalesRows(aoa) {
+  if (!aoa || !aoa.length) return [];
+  let hIdx = -1, cntCol = -1, grossCol = -1;
+  for (let i = 0; i < aoa.length; i++) {
+    const row = (aoa[i] || []).map(c => String(c).replace(/\s+/g, ''));
+    const ci = row.findIndex(c => c === '거래건수' || c === '건수' || c === '승인건수');
+    const gi = row.findIndex(c => c === '거래금액' || c === '매출금액' || c === '승인금액' || c === '금액');
+    if (ci >= 0 && gi >= 0) { hIdx = i; cntCol = ci; grossCol = gi; break; }
+  }
+  if (hIdx < 0) return [];
+  const out = [];
+  for (let i = hIdx + 1; i < aoa.length; i++) {
+    const label = String((aoa[i] || [])[0] || '').trim();
+    const m = label.match(/^(.+?)\s*합계$/);
+    if (!m) continue;
+    const issuer = m[1].trim();
+    if (!issuer || issuer === '총' || issuer === '소') continue; // '총계'/'소계' 류 방어
+    const gross = num(String((aoa[i] || [])[grossCol]).replace(/[,\s원]/g, ''));
+    const count = num(String((aoa[i] || [])[cntCol]).replace(/[,\s건]/g, ''));
+    if (!gross) continue;
+    out.push({ issuer, count, gross });
+  }
+  return out;
+}
+
+// 통장 입금 → VAN 발급사 버킷 분류 규칙 (적요 기준). PG(에비뉴=대사①)·노이즈는 제외.
+const DIRECT_CARD_ISSUERS = [
+  { key: '삼성', bank: /삼성/ },
+  { key: '해외', bank: /하나|비씨|\bBC\b|비자|마스타|마스터|VISA|MASTER|해외/i }
+];
+// 직승인 후보에서 제외: 에비뉴(PG 대사①), 쿠팡/쿠페이(체크카드 취소환입), 계좌인증(1원)
+const DIRECT_CARD_EXCLUDE = /에비뉴|쿠팡|쿠페이/;
+
+/**
+ * 역산 수수료율 + 상태 판정 (pure)
+ * @returns {rate, status}  status: ok | partial | over | no_van | no_deposit
+ */
+function _reverseFeeRate(vanGross, depSum) {
+  if (!(vanGross > 0)) return { rate: 0, status: 'no_van' };
+  if (!(depSum > 0)) return { rate: 0, status: 'no_deposit' };
+  const rate = (vanGross - depSum) / vanGross;
+  let status;
+  if (rate < 0.005) status = 'over';         // 입금 ≥ 매출 → 수수료 음수/0, 이상치
+  else if (rate > 0.04) status = 'partial';  // 입금 부족 → 부분입금/익월 정산 추정
+  else status = 'ok';
+  return { rate, status };
+}
+
+/**
+ * 대사 ③: VAN 직승인 매출(발급사별) ↔ 통장 카드사 직접입금 역산
+ */
+function reconcileDirectCard(month) {
+  const van = getPgVanData(month);
+  const bank = (typeof getKbBankData === 'function' ? getKbBankData(month) : []) || [];
+  const storedRates = getPgDirectRates();
+  // 통장 직접입금 후보 (입금>10원, PG·노이즈 제외)
+  const candidates = bank
+    .filter(b => num(b.deposit) > 10)
+    .map(b => ({
+      date: b.date, amount: num(b.deposit),
+      text: [b.desc, b.memo, b.myMemo, b.summary].filter(Boolean).join(' '),
+      desc: b.desc || '', issuer: null, used: false
+    }))
+    .filter(c => !DIRECT_CARD_EXCLUDE.test(c.text));
+  candidates.forEach(c => {
+    for (const cfg of DIRECT_CARD_ISSUERS) { if (cfg.bank.test(c.text)) { c.issuer = cfg.key; break; } }
+  });
+  const groups = van.map(v => {
+    const deps = candidates.filter(c => c.issuer === v.issuer && !c.used);
+    deps.forEach(c => c.used = true);
+    const depSum = deps.reduce((s, c) => s + c.amount, 0);
+    const { rate, status } = _reverseFeeRate(v.gross, depSum);
+    const useRate = status === 'ok' ? rate : (storedRates[v.issuer] != null ? storedRates[v.issuer] : rate);
+    const deposits = deps.map(c => ({
+      date: c.date, amount: c.amount, desc: c.desc,
+      reverseGross: (useRate < 1 && useRate >= 0) ? Math.round(c.amount / (1 - useRate)) : 0
+    }));
+    return {
+      issuer: v.issuer, count: v.count, vanGross: v.gross,
+      depCount: deps.length, depSum, rate, status, deposits,
+      storedRate: storedRates[v.issuer] != null ? storedRates[v.issuer] : null
+    };
+  });
+  // VAN에 없는데 카드사 패턴엔 걸린 입금(분류됐으나 미사용) — 점검용
+  const orphanCardDeposits = candidates
+    .filter(c => c.issuer && !c.used)
+    .map(c => ({ date: c.date, amount: c.amount, desc: c.desc, issuer: c.issuer }));
+  return { month, groups, orphanCardDeposits, vanCount: van.length, bankCount: bank.length };
+}
+
+const PG_DIRECT_STATUS = {
+  ok:         { badge: '✅ 역산 정상', color: 'var(--green)' },
+  partial:    { badge: '⏳ 부분/익월 정산', color: 'var(--text-3)' },
+  over:       { badge: '⚠️ 입금>매출 (확인)', color: 'var(--orange)' },
+  no_deposit: { badge: '❌ 통장 입금 없음', color: 'var(--red, #e5484d)' },
+  no_van:     { badge: '· VAN 매출 없음', color: 'var(--text-3)' }
+};
+
 const PG_BANK_STATUS = {
   match:   { badge: '✅ 일치', color: 'var(--green)' },
   diff:    { badge: '⚠️ 차액', color: 'var(--orange)' },
@@ -3333,7 +3526,106 @@ function renderPgReconcile(month) {
       <tbody>${cardRowsHtml}</tbody>
     </table></div>`;
 
-  el.innerHTML = bankSection + cardSection;
+  // ── 대사 ③: VAN 직승인 매출 ↔ 통장 카드사 직접입금 역산 ──
+  const directSection = renderDirectCardSection(month, fmtN);
+
+  el.innerHTML = bankSection + cardSection + directSection;
+}
+
+function renderDirectCardSection(month, fmtN) {
+  const van = getPgVanData(month);
+  if (!van.length) {
+    return `
+    <div style="display:flex;align-items:center;gap:8px;margin:22px 0 10px;">
+      <div style="font-weight:600;font-size:14px;">③ 직승인(PG 외) 매출 ↔ 통장 직접입금 역산</div>
+    </div>
+    <div style="padding:10px 12px;border:1px dashed var(--border);border-radius:8px;font-size:12px;color:var(--text-3);">
+      이지피지 <strong>매출내역</strong> 엑셀(VAN 시트 포함)을 위 "VAN 직승인 매출" 영역에 업로드하면, PG를 거치지 않고 카드사(삼성 직승인·해외 Visa/Master 등)가 통장에 직접 넣는 입금을 인식해 적용 수수료율을 역산합니다.
+    </div>`;
+  }
+  const rd = reconcileDirectCard(month);
+  const fmtPct = r => (r == null || isNaN(r)) ? '-' : (r * 100).toFixed(2) + '%';
+  const anyWarn = rd.groups.some(g => g.status === 'over');
+  const anyOk = rd.groups.filter(g => g.status === 'ok').length;
+
+  const groupRowsHtml = rd.groups.map(g => {
+    const st = PG_DIRECT_STATUS[g.status] || PG_DIRECT_STATUS.no_deposit;
+    const rateCell = g.status === 'ok' ? `<strong style="color:var(--green);">${fmtPct(g.rate)}</strong>`
+      : (g.status === 'partial' || g.status === 'over') ? `<span style="color:var(--orange);">${fmtPct(g.rate)}</span>`
+      : '-';
+    const stored = g.storedRate != null ? `<span style="color:var(--text-3);font-size:10px;">(저장 ${fmtPct(g.storedRate)})</span>` : '';
+    return `<tr>
+      <td style="font-weight:600;">${g.issuer}</td>
+      <td style="text-align:right;">${g.count || ''}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;">${fmtN(g.vanGross)}</td>
+      <td style="text-align:right;color:var(--text-3);">${g.depCount || ''}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;">${g.depSum ? fmtN(g.depSum) : '<span style="color:var(--text-3);">—</span>'}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;">${rateCell} ${stored}</td>
+      <td style="white-space:nowrap;color:${st.color};font-size:11px;font-weight:600;">${st.badge}</td>
+    </tr>`;
+  }).join('');
+
+  // 발급사별 입금 상세 (역산매출 포함)
+  const detailHtml = rd.groups.filter(g => g.deposits.length).map(g => {
+    const rows = g.deposits.map(d => `<tr>
+      <td style="color:var(--text-3);">${g.issuer}</td>
+      <td>${d.date ? d.date.slice(5) : ''}</td>
+      <td style="font-size:11px;color:var(--text-3);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${d.desc || ''}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;">${fmtN(d.amount)}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text-2);">${d.reverseGross ? fmtN(d.reverseGross) : '-'}</td>
+    </tr>`).join('');
+    return rows;
+  }).join('');
+
+  const orphanHtml = rd.orphanCardDeposits.length ? `
+    <div style="margin-top:8px;font-size:12px;color:var(--orange);">
+      ⚠️ VAN에 없는 카드사 직접입금 ${rd.orphanCardDeposits.length}건:
+      ${rd.orphanCardDeposits.map(d => `${d.date ? d.date.slice(5) : ''} ${fmtN(d.amount)}원(${d.issuer})`).join(', ')}
+      <div style="color:var(--text-3);margin-top:2px;">→ 타월 VAN 매출의 익월 정산이거나 분류규칙 점검 필요.</div>
+    </div>` : '';
+
+  const okGroups = rd.groups.filter(g => g.status === 'ok' && g.rate >= 0);
+  const saveBtn = okGroups.length ? `
+    <button class="btn btn-small" onclick="saveDirectRatesFromReconcile('${month}')" style="font-size:11px;margin-top:8px;">
+      역산율 저장 (${okGroups.map(g => `${g.issuer} ${(g.rate * 100).toFixed(1)}%`).join(', ')})
+    </button>
+    <div style="font-size:11px;color:var(--text-3);margin-top:4px;">저장하면 다음달 <strong>매출×(1−율)=예상입금</strong> 대조에 사용됩니다.</div>` : '';
+
+  return `
+    <div style="display:flex;align-items:center;gap:8px;margin:22px 0 10px;">
+      <div style="font-weight:600;font-size:14px;">③ 직승인(PG 외) 매출 ↔ 통장 직접입금 역산</div>
+      <span style="font-size:12px;font-weight:600;color:${anyWarn ? 'var(--orange)' : 'var(--green)'};">
+        ${rd.bankCount === 0 ? '통장내역 미적재' : `정상 ${anyOk}건${anyWarn ? ' · 확인필요 있음' : ''}`}
+      </span>
+    </div>
+    <div style="font-size:11px;color:var(--text-3);margin-bottom:8px;">
+      VAN 발급사별 직승인 매출과 통장 카드사 직접입금을 매칭해 <strong>수수료율=(매출−입금)/매출</strong>로 역산합니다.
+      정상범위 <strong>0.5~4%</strong>. 입금이 부족하면(율&gt;4%) 해외처럼 일부가 익월 정산되는 경우(⏳)입니다.
+      ${rd.bankCount === 0 ? '<br><strong>통장</strong> 탭에서 KB 월 엑셀을 업로드하면 자동 대사됩니다.' : ''}
+    </div>
+    <div class="table-wrap"><table class="data-table" style="font-size:12px;">
+      <thead><tr>
+        <th>발급사</th><th style="text-align:right;">건</th><th style="text-align:right;">VAN매출</th>
+        <th style="text-align:right;">입금건</th><th style="text-align:right;">통장입금합</th>
+        <th style="text-align:right;">역산수수료율</th><th>상태</th>
+      </tr></thead>
+      <tbody>${groupRowsHtml}</tbody>
+    </table></div>
+    ${detailHtml ? `<div style="margin-top:10px;font-size:11px;color:var(--text-3);">입금 상세 (역산매출 = 입금÷(1−율)):</div>
+    <div class="table-wrap"><table class="data-table" style="font-size:12px;">
+      <thead><tr><th>발급사</th><th>입금일</th><th>적요</th><th style="text-align:right;">통장입금</th><th style="text-align:right;">역산매출</th></tr></thead>
+      <tbody>${detailHtml}</tbody>
+    </table></div>` : ''}
+    ${orphanHtml}
+    ${saveBtn}`;
+}
+
+function saveDirectRatesFromReconcile(month) {
+  const rd = reconcileDirectCard(month);
+  let n = 0;
+  rd.groups.filter(g => g.status === 'ok' && g.rate >= 0).forEach(g => { savePgDirectRate(g.issuer, g.rate); n++; });
+  toast(n ? `역산율 ${n}건 저장됨` : '저장할 정상 역산율이 없습니다', n ? 'ok' : 'warn');
+  renderPgReconcile(month);
 }
 
 async function handlePgSettleFile(file) {
@@ -3390,6 +3682,58 @@ function updatePgStatus() {
   const count = month ? getPgSettleData(month).length : 0;
   const c1 = document.getElementById('pgCount');
   const c2 = document.getElementById('pgLoadedCount');
+  if (c1) c1.textContent = month ? `${month} · ${count}건` : '0건';
+  if (c2) c2.textContent = `${count}건`;
+}
+
+// ── VAN 직승인 매출 업로드 (대사 ③) ──
+async function handlePgVanFile(file) {
+  const mm = document.getElementById('monthlyMonth');
+  if (!mm || !mm.value) { toast('월을 먼저 선택하세요 (월정산 탭 상단)', 'warn'); return; }
+  const month = mm.value;
+  try {
+    const data = await file.arrayBuffer();
+    const wb = XLSX.read(data, { type: 'array' });
+    // 'VAN' 시트 우선, 없으면 첫 시트에서 시도
+    const sheetName = wb.SheetNames.find(n => /van/i.test(n)) || wb.SheetNames[0];
+    const ws = wb.Sheets[sheetName];
+    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    const rows = parseVanSalesRows(aoa);
+    if (!rows.length) { toast('VAN 시트에서 발급사별 매출(○○ 합계)을 찾지 못했습니다', 'danger'); return; }
+    savePgVanData(month, rows);
+    updatePgVanStatus();
+    renderPgReconcile(month);
+    toast(`VAN 직승인 매출 ${rows.length}개 발급사 적재 (${rows.map(r => r.issuer).join('·')})`, 'ok');
+  } catch (err) {
+    console.error(err);
+    toast('VAN 파일 처리 실패: ' + err.message, 'danger');
+  }
+}
+
+function setupPgVanUpload() {
+  const zone = document.getElementById('pgVanUpload');
+  const input = document.getElementById('pgVanFile');
+  if (!zone || !input) return;
+  zone.addEventListener('click', () => input.click());
+  input.addEventListener('change', (e) => {
+    if (e.target.files[0]) handlePgVanFile(e.target.files[0]);
+    e.target.value = '';
+  });
+  zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    if (e.dataTransfer.files[0]) handlePgVanFile(e.dataTransfer.files[0]);
+  });
+}
+
+function updatePgVanStatus() {
+  const mm = document.getElementById('monthlyMonth');
+  const month = mm ? mm.value : '';
+  const count = month ? getPgVanData(month).length : 0;
+  const c1 = document.getElementById('pgVanCount');
+  const c2 = document.getElementById('pgVanLoadedCount');
   if (c1) c1.textContent = month ? `${month} · ${count}건` : '0건';
   if (c2) c2.textContent = `${count}건`;
 }
@@ -6830,7 +7174,7 @@ function switchMonthlySubTab(name) {
   }
   if (name === 'pg') {
     const mm = document.getElementById('monthlyMonth');
-    if (mm && mm.value) { updatePgStatus(); renderPgReconcile(mm.value); }
+    if (mm && mm.value) { updatePgStatus(); updatePgVanStatus(); renderPgReconcile(mm.value); }
   }
 }
 

@@ -9,3 +9,6 @@
 Thumbs.db
 .DS_Store
 desktop.ini
+
+# === Node (테스트용 xlsx 의존성 — package.json만 추적, 설치물은 제외) ===
+node_modules/

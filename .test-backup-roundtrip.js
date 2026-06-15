@@ -24,6 +24,10 @@ const src = `
   const PARTNERS_KEY = 'partner_ratios';
   const DIST_DISCOUNT_KEY = 'dist_subtract_discounts';
   const PG_KEY_PREFIX = 'pg_settle_';
+  const PG_VAN_KEY_PREFIX = 'pg_van_';
+  const PG_DIRECT_RATES_KEY = 'pg_direct_rates';
+  const FIXED_EXPENSES_KEY = 'fixed_monthly_expenses';
+  const CAPITAL_KEY = 'initial_capital_v1';
   // UI re-render 호출은 no-op (테스트 환경)
   function renderPartners() {}
   function updateHometaxStatus() {}
@@ -85,6 +89,19 @@ check('3) hometax_2026-05 복원', mod.getStore('hometax_2026-05') !== null);
 check('3) hometax_2026-04 복원', mod.getStore('hometax_2026-04') !== null);
 check('3) pg_settle_2026-05 복원', mod.getStore('pg_settle_2026-05') !== null);
 check('3) pg_settle 내용', JSON.parse(mod.getStore('pg_settle_2026-05'))[0].net === 166029);
+
+// CASE 3-b: VAN(직승인 매출) + 역산율 round-trip
+mod.clearStore();
+mod.setStore('pg_van_2026-05', JSON.stringify([{ issuer: '삼성', count: 3, gross: 140400 }, { issuer: '해외', count: 5, gross: 322900 }]));
+mod.setStore('pg_direct_rates', JSON.stringify({ '삼성': 0.035 }));
+let sv = mod.collectAppSettings();
+check('3b) pgVan collect', Array.isArray(sv.pgVan['2026-05']) && sv.pgVan['2026-05'][0].gross === 140400);
+check('3b) pgDirectRates collect', sv.pgDirectRates && sv.pgDirectRates['삼성'] === 0.035);
+const pjson = JSON.stringify(sv);
+mod.clearStore();
+mod.applyAppSettings(JSON.parse(pjson));
+check('3b) pg_van_2026-05 복원', JSON.parse(mod.getStore('pg_van_2026-05'))[1].gross === 322900);
+check('3b) pg_direct_rates 복원', JSON.parse(mod.getStore('pg_direct_rates'))['삼성'] === 0.035);
 
 // CASE 4: null/undefined settings는 안전하게 무시
 mod.applyAppSettings(null);
