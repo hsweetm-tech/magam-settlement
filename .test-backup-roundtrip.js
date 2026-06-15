@@ -29,6 +29,8 @@ const src = `
   const FIXED_EXPENSES_KEY = 'fixed_monthly_expenses';
   const CAPITAL_KEY = 'initial_capital_v1';
   const KB_BANK_KEY = 'kb_bank_v1';
+  const GOAL_KEY = 'salesGoals_v1';
+  const GOAL_CALC_KEY = 'goal_calc_v1';
   function updateKbBankStatus() {}
   // UI re-render 호출은 no-op (테스트 환경)
   function renderPartners() {}
@@ -117,6 +119,26 @@ check('3c) 클리어 직후 통장 없음', mod.getStore('kb_bank_v1') == null);
 mod.applyAppSettings(JSON.parse(bjson));
 check('3c) kb_bank_v1 복원', mod.getStore('kb_bank_v1') !== null);
 check('3c) 통장 내용 복원', JSON.parse(mod.getStore('kb_bank_v1'))['2026-05'][0].deposit === 283848);
+
+// CASE 3-d: 전체 동시 round-trip — 통장·PG·VAN·홈택스·역산율·목표 한꺼번에 (저장 누락 종합 점검)
+mod.clearStore();
+mod.setStore('kb_bank_v1', JSON.stringify({ '2026-05': [{ date: '2026-05-13', deposit: 283848 }] }));
+mod.setStore('pg_settle_2026-05', JSON.stringify([{ payoutDate: '2026-05-13', net: 166029 }]));
+mod.setStore('pg_van_2026-05', JSON.stringify([{ issuer: '삼성', count: 3, gross: 140400 }]));
+mod.setStore('pg_direct_rates', JSON.stringify({ '삼성': 0.035 }));
+mod.setStore('hometax_2026-05', JSON.stringify([{ date: '2026-05-10', total: 100000 }]));
+mod.setStore('salesGoals_v1', JSON.stringify({ '2026-05': 30000000 }));
+mod.setStore('goal_calc_v1', JSON.stringify({ target: 30000000, days: 27 }));
+const full = JSON.stringify(mod.collectAppSettings());
+mod.clearStore();
+mod.applyAppSettings(JSON.parse(full));
+check('3d) 통장 복원', JSON.parse(mod.getStore('kb_bank_v1') || 'null')?.['2026-05']?.[0].deposit === 283848);
+check('3d) PG정산 복원', JSON.parse(mod.getStore('pg_settle_2026-05') || 'null')?.[0].net === 166029);
+check('3d) VAN 복원', JSON.parse(mod.getStore('pg_van_2026-05') || 'null')?.[0].gross === 140400);
+check('3d) 역산율 복원', JSON.parse(mod.getStore('pg_direct_rates') || 'null')?.['삼성'] === 0.035);
+check('3d) 홈택스 복원', JSON.parse(mod.getStore('hometax_2026-05') || 'null')?.[0].total === 100000);
+check('3d) 매출목표 복원', JSON.parse(mod.getStore('salesGoals_v1') || 'null')?.['2026-05'] === 30000000);
+check('3d) 목표계산기 복원', JSON.parse(mod.getStore('goal_calc_v1') || 'null')?.target === 30000000);
 
 // CASE 4: null/undefined settings는 안전하게 무시
 mod.applyAppSettings(null);
