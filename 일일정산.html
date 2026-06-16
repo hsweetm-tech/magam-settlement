@@ -4414,19 +4414,6 @@ function reconcileKbBank(month) {
       (htRec.matchedN1 || []).forEach(m => (m.appIdxs || []).forEach(markRef));
     }
   } catch (e) { /* 홈택스 대사 실패해도 통장 대사는 진행 */ }
-  // 거래처 단위 커버리지: 같은 거래처(사업자번호/상호)에 세금계산서가 있으면 그 거래처 매입은 '증빙 있음'.
-  // (단지푸드처럼 월 세금계산서가 일부만 발행돼 N:1 부분집합 밖 행도 ✗로 뜨던 문제 보정)
-  const _taxBizSet = new Set(), _taxNames = [];
-  (ht || []).filter(h => !/카드|현금영수/.test(h.docType || '')).forEach(h => {
-    const b = _normalizeBizNo(h.bizNo); if (b) _taxBizSet.add(b);
-    const cn = (typeof _canonVendor === 'function') ? _canonVendor(h.vendor) : ''; if (cn) _taxNames.push(cn);
-  });
-  const _purchaseHasTaxVendor = (s) => {
-    if (s.bizNo && _taxBizSet.has(s.bizNo)) return true;
-    const cn = (typeof _canonVendor === 'function') ? _canonVendor(s.vendor) : '';
-    if (!cn) return false;
-    return _taxNames.some(n => n.length >= 2 && (cn.includes(n) || n.includes(cn) || (typeof _shareCore === 'function' && _shareCore(cn, n, 3))));
-  };
   function isCardOrCashReceipt(method) {
     // 카드/체크카드/법인카드/현금영수증은 세금계산서 발행 안 함 → 홈택스 매칭 대상 아님
     return /카드|체크카드|법인카드|영수증/.test(method || '');
@@ -4448,8 +4435,8 @@ function reconcileKbBank(month) {
   }
   // sysOnly: 카드/현금영수증은 매칭 시도 안 함 (대상 외)
   sysOutUnmatched.forEach(s => {
-    // 월 세금계산서로 N:1 커버되거나 같은 거래처에 세금계산서 있으면 → 증빙 있음(✓)
-    if (s._src === 'purchase' && (coveredPurchaseRefs.has(s._ref) || _purchaseHasTaxVendor(s))) { s._hometaxN1 = true; return; }
+    // 세금계산서로 실제 매칭(1:1/N:1)된 매입행만 증빙 있음(✓). 미발행분은 ✗(정상 — 아직 미발행).
+    if (s._src === 'purchase' && coveredPurchaseRefs.has(s._ref)) { s._hometaxN1 = true; return; }
     if (isCardOrCashReceipt(s.method)) { s._htNa = true; return; }
     const m = findHometax(s.amount, s.date);
     if (m) s._hometax = m;
@@ -5248,7 +5235,8 @@ function reconcilePurchase3Way(month) {
     (all[d].purchaseRows || []).forEach(p => {
       const total = num(p.total) || (num(p.supply) + num(p.vat));
       if (total <= 0) return;
-      buys.push({ vendor: p.vendor || '', bizNo: _normalizeBizNo(p.bizNo), total, category: p.category || '', fixed: false });
+      const card = /카드|법인카드|체크카드/.test(p.method || '');
+      buys.push({ vendor: p.vendor || '', bizNo: _normalizeBizNo(p.bizNo), total, category: p.category || '', fixed: false, card });
       if (p.category) cats.add(p.category);
     });
   });
@@ -5305,11 +5293,11 @@ function reconcilePurchase3Way(month) {
   };
   const G = (v, b) => {
     const k = key(v, b);
-    if (!groups[k]) groups[k] = { key: k, name: v, bizNo: (k.indexOf('b:') === 0 ? k.slice(2) : (b || '')), buy: 0, tax: 0, bank: 0, fixed: false, cats: new Set(), taxItems: [], bankItems: [] };
+    if (!groups[k]) groups[k] = { key: k, name: v, bizNo: (k.indexOf('b:') === 0 ? k.slice(2) : (b || '')), buy: 0, tax: 0, bank: 0, cardBuy: 0, fixed: false, cats: new Set(), taxItems: [], bankItems: [] };
     if (b && !groups[k].bizNo) groups[k].bizNo = b;
     return groups[k];
   };
-  buys.forEach(x => { const g = G(x.vendor, x.bizNo); g.buy += x.total; if (x.fixed) g.fixed = true; if (x.category) g.cats.add(x.category); });
+  buys.forEach(x => { const g = G(x.vendor, x.bizNo); g.buy += x.total; if (x.card) g.cardBuy += x.total; if (x.fixed) g.fixed = true; if (x.category) g.cats.add(x.category); });
   taxes.forEach(x => { const g = G(x.vendor, x.bizNo); g.tax += x.total; if (x.vendor) g.name = x.vendor; g.taxItems.push(x); });
   banks.forEach(x => { const g = G(x.vendor, x.bizNo); g.bank += x.total; g.bankItems.push(x); });
 
@@ -5335,6 +5323,8 @@ function reconcilePurchase3Way(month) {
     else if (B && T && K) status = 'complete';
     else if (B && T && !K) status = 'unpaid';
     else if (B && !T && K) status = 'no_tax';
+    // 매입만 있는 경우: 카드결제분이 대부분이면 정상(카드전표 증빙·카드대금 일괄출금) → 'card'
+    else if (B && g.cardBuy >= g.buy - 10) status = 'card';
     else status = 'pending';
     return {
       name: g.name, bizNo: g.bizNo, buy: Math.round(g.buy), tax: Math.round(g.tax), bank: Math.round(g.bank),
@@ -5357,6 +5347,7 @@ const P3W_STATUS = {
   no_tax:        { badge: '● 계산서 없음', color: 'var(--orange)' },
   missing_buy:   { badge: '● 매입 미입력', color: 'var(--red, #e5484d)' },
   pending:       { badge: '● 증빙·출금 대기', color: 'var(--orange)' },
+  card:          { badge: '· 카드결제', color: 'var(--text-3)' },
   fixed:         { badge: '· 고정비', color: 'var(--text-3)' },
   fixed_matched: { badge: '· 고정비(매칭)', color: 'var(--text-3)' }
 };
@@ -5391,7 +5382,7 @@ function renderPurchase3Way(month) {
     if (bdescs.length) dParts.push('통장 ' + bdescs.slice(0, 2).join(', '));
     const descLine = dParts.length ? `<div style="font-size:10px;color:var(--text-3);margin-top:1px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(dParts.join('  '))}">${escapeHtml(dParts.join('  '))}</div>` : '';
     const enc = encodeURIComponent(x.name || '');
-    const canMark = ['missing_buy', 'pending', 'no_tax', 'unpaid'].includes(x.status);
+    const canMark = ['missing_buy', 'pending', 'no_tax', 'unpaid', 'card'].includes(x.status);
     const isMapped = x.status === 'fixed_matched' && x.mapped;
     const bz = x.bizNo || '';
     const bSmall = 'class="btn btn-small" style="font-size:10px;padding:2px 6px;"';

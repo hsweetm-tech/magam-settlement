@@ -163,5 +163,16 @@ const ktNext = M.reconcilePurchase3Way('2026-05');
 const kt2 = ktNext.rows.find(x => x.bizNo === '9998877777');
 ok(kt2 && kt2.tax === 1980 && kt2.bank === 1980, '수동연결(패턴): 다음달 06도 자동 매칭');
 
+// 카드결제 매입-only(다이소·대진): 세금계산서·통장 없어도 정상 → 'card'
+M.set({ '2026-05-07': { purchaseRows: [
+  { vendor: '다이소', supply: 167727, vat: 16773, total: 184500, category: '소모품', method: '법인카드' },
+  { vendor: '대진종합공사', bizNo: '211-02-41662', supply: 130000, vat: 13000, total: 143000, category: '소모품', method: '법인카드' },
+  { vendor: '어떤거래처', supply: 100000, vat: 10000, total: 110000, category: '식자재', method: '계좌이체' },
+] } }, [], [], []);
+const rcard = M.reconcilePurchase3Way('2026-05');
+eq(rowOf(rcard, '다이소').status, 'card', '카드결제: 다이소 → card(정상)');
+eq(rowOf(rcard, '대진종합공사').status, 'card', '카드결제: 대진 → card(정상)');
+eq(rowOf(rcard, '어떤거래처').status, 'pending', '계좌이체 매입-only → pending 유지');
+
 console.log(`\n3-way 점검 테스트: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
