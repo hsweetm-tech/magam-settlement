@@ -5191,6 +5191,15 @@ function _canonVendor(s) {
   t = t.replace(/[\s.,()\-_·'"\/　]/g, '');
   return t.toLowerCase();
 }
+// 두 문자열이 길이 minLen 이상의 공통 부분문자열을 갖는지 (거래처 자동연결용: 코카콜라음료↔장서아_코카콜라)
+function _shareCore(a, b, minLen) {
+  a = String(a || ''); b = String(b || '');
+  if (a.length < minLen || b.length < minLen) return false;
+  for (let i = 0; i + minLen <= a.length; i++) {
+    if (b.includes(a.substr(i, minLen))) return true;
+  }
+  return false;
+}
 
 // 거래처 예외/고정비 매핑 — 사업자번호(또는 정규화 상호) 기준, 월 무관 영구 적용.
 // 예: 이재선외(임대료 세금계산서)를 '고정비'로 지정 → 다음달부터 자동 고정비 처리(매입누락 제외).
@@ -5248,28 +5257,34 @@ function reconcilePurchase3Way(month) {
     if (bizNo) return bizNo;
     const cn = _canonVendor(vendor); if (!cn) return '';
     if (canonBiz[cn]) return canonBiz[cn];
-    const hit = nameList.find(n => n.length >= 2 && (cn.includes(n) || n.includes(cn)));
+    const hit = nameList.find(n => n.length >= 2 && (cn.includes(n) || n.includes(cn) || _shareCore(cn, n, 3)));
     return hit ? canonBiz[hit] : '';
   };
   buys.forEach(x => { x.bizNo = resolveBiz(x.vendor, x.bizNo); });
   taxes.forEach(x => { x.bizNo = resolveBiz(x.vendor, x.bizNo); });
 
-  // 3) 통장 출금 (카드출금 제외) — 대표자명/상호 포함매칭으로 거래처 추정
+  // 수동 연결(별칭) 맵 — kind:'alias' 항목: 저장키 → 대상키 (KT처럼 한글↔영문 자동불가 건)
+  const vmap = (typeof getP3wMap === 'function') ? getP3wMap() : {};
+  const aliasMap = {};
+  Object.entries(vmap).forEach(([k, v]) => { if (v && v.kind === 'alias' && v.target) aliasMap[k] = v.target; });
+
+  // 3) 통장 출금 (카드출금 제외) — 대표자명/상호 포함·공통글자 매칭으로 거래처 추정
   const banks = bankRows.filter(b => num(b.withdraw) > 0 && b.kind !== '카드출금' && !/체크카드/.test(b.summary || '')).map(b => {
     const desc = (b.desc || '').trim(); const cn = _canonVendor(desc);
     let vendor = desc, bizNo = '';
     const rep = repList.find(r => r.rep.length >= 2 && (cn.includes(r.rep) || r.rep.includes(cn)));
     if (rep) { vendor = rep.vendor; bizNo = rep.bizNo; }
-    else { const nm = nameList.find(n => n.length >= 2 && (cn.includes(n) || n.includes(cn))); if (nm) { bizNo = canonBiz[nm]; vendor = bizName[bizNo] || desc; } }
+    else { const nm = nameList.find(n => n.length >= 2 && (cn.includes(n) || n.includes(cn) || _shareCore(cn, n, 3))); if (nm) { bizNo = canonBiz[nm]; vendor = bizName[bizNo] || desc; } }
     return { date: b.date || '', vendor, bizNo, total: num(b.withdraw), desc };
   });
 
-  // 4) 거래처 그룹핑 (bizNo 우선, 없으면 정규화 상호)
+  // 4) 거래처 그룹핑 (bizNo 우선, 없으면 정규화 상호; 수동 별칭 적용)
   const groups = {};
-  const key = (v, b) => b ? 'b:' + b : 'n:' + _canonVendor(v);
+  const rawKey = (v, b) => b ? 'b:' + b : 'n:' + _canonVendor(v);
+  const key = (v, b) => { const k = rawKey(v, b); return aliasMap[k] || k; };
   const G = (v, b) => {
     const k = key(v, b);
-    if (!groups[k]) groups[k] = { key: k, name: v, bizNo: b || '', buy: 0, tax: 0, bank: 0, fixed: false, cats: new Set(), taxItems: [], bankItems: [] };
+    if (!groups[k]) groups[k] = { key: k, name: v, bizNo: (k.indexOf('b:') === 0 ? k.slice(2) : (b || '')), buy: 0, tax: 0, bank: 0, fixed: false, cats: new Set(), taxItems: [], bankItems: [] };
     if (b && !groups[k].bizNo) groups[k].bizNo = b;
     return groups[k];
   };
@@ -5286,10 +5301,9 @@ function reconcilePurchase3Way(month) {
     if (m) { const tg = m[1]; fg.tax = tg.tax; fg.taxItems = tg.taxItems; fg.name = fg.name + ' / ' + tg.name; tg._merged = true; delete groups[m[0]]; }
   });
 
-  const vmap = (typeof getP3wMap === 'function') ? getP3wMap() : {};
   const rows = Object.values(groups).filter(g => !g._merged && (g.buy || g.tax || g.bank)).map(g => {
     const B = g.buy > 0, T = g.tax > 0, K = g.bank > 0;
-    const mapped = vmap['b:' + g.bizNo] || vmap['n:' + _canonVendor(g.name)] || null;
+    const mapped = vmap[g.key] || vmap['b:' + g.bizNo] || vmap['n:' + _canonVendor(g.name)] || null;
     const isFixed = mapped && mapped.kind === 'fixed';
     const isAuto = mapped && mapped.kind === 'auto';
     let status;
@@ -5344,7 +5358,7 @@ function renderPurchase3Way(month) {
   const cell = (v, strong) => `<td style="text-align:right;font-family:'JetBrains Mono',monospace;${strong ? 'font-weight:600;' : ''}">${fmtN(v)}</td>`;
   const rowsHtml = r.rows.map(x => {
     const st = P3W_STATUS[x.status] || P3W_STATUS.pending;
-    const badge = (x.status === 'fixed_matched' && x.mapped) ? `· 고정비(${escapeHtml(x.mapped)})` : st.badge;
+    const badge = (x.status === 'fixed_matched' && x.mapped) ? `· 점검제외(${escapeHtml(x.mapped)})` : st.badge;
     const note = x.status === 'unpaid' && x.buy > x.tax ? `<span style="color:var(--text-3);font-size:10px;">미발행 ${fmtN(x.buy - x.tax)}</span>`
       : (x.status === 'missing_buy' ? `<span style="color:var(--text-3);font-size:10px;">${x.tax ? '세금계산서' : ''}${x.tax && x.bank ? '+' : ''}${x.bank ? '통장' : ''}</span>` : '');
     const enc = encodeURIComponent(x.name || '');
@@ -5354,8 +5368,8 @@ function renderPurchase3Way(month) {
     const bSmall = 'class="btn btn-small" style="font-size:10px;padding:2px 6px;"';
     let action = '';
     if (x.recurring) action = `<span style="font-size:10px;color:var(--green);">🔁정기(${escapeHtml(x.recurring)})</span> <button ${bSmall} onclick="unmarkP3wFixed('${month}','${bz}','${enc}')">해제</button>`;
-    else if (isMapped) action = `<button ${bSmall} onclick="unmarkP3wFixed('${month}','${bz}','${enc}')">예외해제</button>`;
-    else if (canMark) action = `<button ${bSmall} onclick="markP3wFixed('${month}','${bz}','${enc}')">고정비</button> <button ${bSmall} onclick="markP3wRecurring('${month}','${bz}','${enc}')">정기등록</button>`;
+    else if (isMapped) action = `<button ${bSmall} onclick="unmarkP3wFixed('${month}','${bz}','${enc}')">해제</button>`;
+    else if (canMark) action = `<button ${bSmall} onclick="markP3wFixed('${month}','${bz}','${enc}')" title="이미 손익에 반영된 건(매입/고정비) — 점검에서만 숨김, 손익 변화 없음">점검제외</button> <button ${bSmall} onclick="markP3wRecurring('${month}','${bz}','${enc}')" title="매월 실제금액으로 매입 자동생성(손익 반영)">정기등록</button> <button ${bSmall} onclick="linkP3wVendor('${month}','${bz}','${enc}')" title="쪼개진 같은 거래처를 하나로 연결">연결</button>`;
     return `<tr style="${x.status === 'missing_buy' ? 'background:var(--red-bg, #ffe5e5);' : ''}">
       <td><strong>${escapeHtml(x.name || '-')}</strong> ${note}</td>
       ${cell(x.buy)}${cell(x.tax)}${cell(x.bank)}
@@ -5440,10 +5454,26 @@ function bulkRegisterMissingPurchases(month) {
 // 거래처를 '고정비(예외)'로 지정 — 점검에서 고정비로 빠지고 매입누락/대기에 안 뜸. 사업자번호로 저장돼 다음달 자동.
 function markP3wFixed(month, bizNo, encName) {
   const name = decodeURIComponent(encName || '');
-  const cat = prompt(`'${name}'을(를) 고정비로 처리합니다.\n분류를 입력하세요 (예: 임대료). 이후 이 거래처는 점검에서 '고정비'로 빠지고, 다음 달부터도 자동 적용됩니다.`, '임대료');
+  const cat = prompt(`'${name}'을(를) 점검에서 제외합니다.\n⚠️ 이건 점검 화면에서만 숨기는 것이고, 손익에는 영향이 없습니다(매입 등록 안 함).\n→ 이미 손익에 반영된 건(매입행/고정비 설정)일 때만 쓰세요. 손익에 넣어야 하면 '정기등록'을 쓰세요.\n\n메모용 분류(예: 임대료):`, '임대료');
   if (cat === null) return;
   saveP3wMapEntry(bizNo, name, { kind: 'fixed', category: (cat.trim() || '기타'), label: name });
-  toast(`'${name}' 고정비 처리 — 다음달부터 자동`, 'ok');
+  toast(`'${name}' 점검제외 — 다음달부터 자동`, 'ok');
+  renderPurchase3Way(month);
+}
+
+// 쪼개진 같은 거래처 수동 연결(별칭) — KT처럼 한글↔영문이라 자동연결 안 되는 건
+function linkP3wVendor(month, srcBiz, srcEnc) {
+  const srcName = decodeURIComponent(srcEnc || '');
+  const q = prompt(`'${srcName}'을(를) 어느 거래처와 같은 곳으로 연결할까요?\n연결 대상 상호 일부를 입력하세요 (예: 케이티). 이후 매월 자동으로 한 줄로 묶입니다.`, '');
+  if (q === null) return;
+  const qq = q.trim(); if (!qq) return;
+  const r = reconcilePurchase3Way(month);
+  const cands = r.rows.filter(x => x.name && x.name !== srcName && (x.name.includes(qq) || _canonVendor(x.name).includes(_canonVendor(qq))));
+  if (!cands.length) { toast(`'${qq}'와 일치하는 거래처를 못 찾았습니다`, 'warn'); return; }
+  const target = cands.sort((a, b) => Math.max(b.buy, b.tax, b.bank) - Math.max(a.buy, a.tax, a.bank))[0];
+  const targetKey = target.bizNo ? 'b:' + target.bizNo : 'n:' + _canonVendor(target.name);
+  saveP3wMapEntry(srcBiz, srcName, { kind: 'alias', target: targetKey, label: srcName, targetLabel: target.name });
+  toast(`'${srcName}' → '${target.name}' 연결됨 — 다음달도 자동`, 'ok');
   renderPurchase3Way(month);
 }
 function unmarkP3wFixed(month, bizNo, encName) {

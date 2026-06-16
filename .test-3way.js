@@ -26,6 +26,7 @@ const src = `
   ${grab(/function num\(v\)[\s\S]*?\n\}/, 'num')}
   ${grab(/function _normalizeBizNo[\s\S]*?\n\}/, '_normalizeBizNo')}
   ${grab(/function _canonVendor[\s\S]*?\n\}/, '_canonVendor')}
+  ${grab(/function _shareCore[\s\S]*?\n\}/, '_shareCore')}
   ${fn3way}
   ${grab(/function autoRegisterRecurring[\s\S]*?\n\}/, 'autoRegisterRecurring')}
   return {
@@ -131,6 +132,26 @@ eq(art3.status, 'unpaid', '정기: 매입+세금계산서 → 미출금(통장 �
 eq(art3.recurring, '소모품', '정기: recurring 표시');
 // 멱등: 다시 실행해도 추가 생성 0
 eq(M.autoRegisterRecurring('2026-05'), 0, '정기: 멱등(재실행 0건)');
+
+// 자동연결: 공통글자 ≥3 — 통장 '장서아_코카콜라' ↔ 세금계산서 '코카콜라음료'
+M.set({ '2026-05-03': { purchaseRows: [] } },
+  [{ date: '2026-05-31', vendor: '코카콜라음료(주)', bizNo: '211-88-11111', supply: 100000, vat: 10000, total: 110000, docType: '세금계산서' }],
+  [{ date: '2026-05-10', desc: '장서아_코카콜라', withdraw: 110000, summary: '인터넷뱅킹', kind: '' }], []);
+const rc = M.reconcilePurchase3Way('2026-05');
+const coke2 = rowOf(rc, '코카콜라');
+ok(coke2 && coke2.tax === 110000 && coke2.bank === 110000, '자동연결: 코카콜라 세금계산서↔통장(공통글자)');
+
+// 수동연결(별칭): KT — 통장 'KT통신요금05' ↔ 세금계산서 '주식회사 케이티'(자동불가)
+M.set({ '2026-05-03': { purchaseRows: [] } },
+  [{ date: '2026-05-31', vendor: '주식회사 케이티', bizNo: '999-88-77777', supply: 1700, vat: 170, total: 1870, docType: '세금계산서' }],
+  [{ date: '2026-05-10', desc: 'KT통신요금05', withdraw: 1870, summary: '자동이체', kind: '' }], []);
+const ktBefore = M.reconcilePurchase3Way('2026-05');
+ok(ktBefore.rows.filter(x => /케이티|kt|KT/i.test(x.name)).length >= 2, '연결 전: KT 2줄로 쪼개짐');
+// 별칭: 통장 'KT통신요금05'(n:kt통신요금05) → 세금계산서 b:9998877777
+M.setP3map({ 'n:kt통신요금05': { kind: 'alias', target: 'b:9998877777' } });
+const ktAfter = M.reconcilePurchase3Way('2026-05');
+const kt = ktAfter.rows.find(x => x.bizNo === '9998877777');
+ok(kt && kt.tax === 1870 && kt.bank === 1870, '수동연결: KT 한 줄로 묶임(세금계산서+통장)');
 
 console.log(`\n3-way 점검 테스트: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
