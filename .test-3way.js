@@ -29,8 +29,10 @@ const src = `
   ${grab(/function _shareCore[\s\S]*?\n\}/, '_shareCore')}
   ${fn3way}
   ${grab(/function autoRegisterRecurring[\s\S]*?\n\}/, 'autoRegisterRecurring')}
+  ${grab(/function _p3wDraftFromRow[\s\S]*?\n\}/, '_p3wDraftFromRow')}
+  ${grab(/function _registerP3wDrafts[\s\S]*?\n\}/, '_registerP3wDrafts')}
   return {
-    reconcilePurchase3Way, _canonVendor, setP3map, autoRegisterRecurring,
+    reconcilePurchase3Way, _canonVendor, setP3map, autoRegisterRecurring, _p3wDraftFromRow, _registerP3wDrafts,
     set: (rec, ht, bank, fixed) => { _rec = rec; _ht = { '2026-05': ht }; _bank = { '2026-05': bank }; _fixed = fixed || []; _p3map = {}; }
   };
 `;
@@ -173,6 +175,22 @@ const rcard = M.reconcilePurchase3Way('2026-05');
 eq(rowOf(rcard, '다이소').status, 'card', '카드결제: 다이소 → card(정상)');
 eq(rowOf(rcard, '대진종합공사').status, 'card', '카드결제: 대진 → card(정상)');
 eq(rowOf(rcard, '어떤거래처').status, 'pending', '계좌이체 매입-only → pending 유지');
+
+// 개별 등록: 매입누락 1건만 매입행으로 등록 → 그 거래처는 매입 생김
+M.set({ '2026-05-03': { purchaseRows: [] } },
+  [{ date: '2026-05-31', vendor: '아트팜', bizNo: '666-77-88888', supply: 300000, vat: 0, total: 300000, docType: '계산서' },
+   { date: '2026-05-20', vendor: '더 월드키친', bizNo: '333-44-55555', supply: 500000, vat: 50000, total: 550000, docType: '세금계산서' }], [], []);
+const rOne = M.reconcilePurchase3Way('2026-05');
+const artRow = rOne.rows.find(x => x.name.includes('아트팜'));
+const draft = M._p3wDraftFromRow(artRow, '2026-05');
+eq(draft.total, 300000, '개별등록 초안: 아트팜 합계 300,000');
+eq(draft.vendor, '아트팜', '개별등록 초안: 거래처');
+M._registerP3wDrafts([draft]);
+const rAfter = M.reconcilePurchase3Way('2026-05');
+const artAfter = rAfter.rows.find(x => x.name.includes('아트팜'));
+ok(artAfter.buy === 300000, '개별등록: 아트팜 매입 생성됨');
+ok(artAfter.status !== 'missing_buy', '개별등록: 아트팜 매입누락 해제');
+ok(rAfter.rows.find(x => x.name.includes('월드키친')).status === 'missing_buy', '개별등록: 더월드키친은 그대로(개별만)');
 
 console.log(`\n3-way 점검 테스트: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

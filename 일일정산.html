@@ -5390,7 +5390,10 @@ function renderPurchase3Way(month) {
     let action = '';
     if (x.recurring) action = `<span style="font-size:10px;color:var(--green);font-weight:600;">정기·${escapeHtml(x.recurring)}</span> <button ${bSmall} onclick="unmarkP3wFixed('${month}','${bz}','${enc}')">해제</button>${unlinkBtn}`;
     else if (isMapped) action = `<button ${bSmall} onclick="unmarkP3wFixed('${month}','${bz}','${enc}')">해제</button>${unlinkBtn}`;
-    else if (canMark) action = `<button ${bSmall} onclick="markP3wFixed('${month}','${bz}','${enc}')" title="이미 손익에 반영된 건(매입/고정비) — 점검에서만 숨김, 손익 변화 없음">점검제외</button> <button ${bSmall} onclick="markP3wRecurring('${month}','${bz}','${enc}')" title="매월 실제금액으로 매입 자동생성(손익 반영)">정기등록</button> <button ${bSmall} onclick="linkP3wVendor('${month}','${bz}','${enc}')" title="쪼개진 같은 거래처를 하나로 연결">연결</button>${unlinkBtn}`;
+    else if (canMark) {
+      const regBtn = x.status === 'missing_buy' ? `<button ${bSmall} style="font-size:10px;padding:2px 6px;background:var(--green-bg);color:var(--green);font-weight:600;" onclick="registerOneMissingPurchase('${month}','${bz}','${enc}')" title="이 거래처만 매입으로 등록">등록</button> ` : '';
+      action = `${regBtn}<button ${bSmall} onclick="markP3wFixed('${month}','${bz}','${enc}')" title="이미 손익에 반영된 건(매입/고정비) — 점검에서만 숨김, 손익 변화 없음">점검제외</button> <button ${bSmall} onclick="markP3wRecurring('${month}','${bz}','${enc}')" title="매월 실제금액으로 매입 자동생성(손익 반영)">정기등록</button> <button ${bSmall} onclick="linkP3wVendor('${month}','${bz}','${enc}')" title="쪼개진 같은 거래처를 하나로 연결">연결</button>${unlinkBtn}`;
+    }
     else action = unlinkBtn;
     return `<tr style="${x.status === 'missing_buy' ? 'background:var(--red-bg, #ffe5e5);' : ''}">
       <td><strong>${escapeHtml(x.name || '-')}</strong> ${note}${descLine}</td>
@@ -5429,46 +5432,63 @@ function renderPurchase3Way(month) {
 }
 
 /** 매입 미입력(세금계산서·통장엔 있음) 건을 매입행으로 일괄 등록 */
-function bulkRegisterMissingPurchases(month) {
-  const r = reconcilePurchase3Way(month);
-  const missing = r.rows.filter(x => x.status === 'missing_buy');
-  if (!missing.length) { toast('등록할 매입 미입력 건이 없습니다', 'warn'); return; }
-  // 각 건의 등록 데이터 구성: 세금계산서 우선(공급가/세액/날짜/사업자번호), 없으면 통장
-  const drafts = missing.map(x => {
-    const t = (x.taxItems && x.taxItems[0]) || null;
-    const b = (x.bankItems && x.bankItems[0]) || null;
-    if (t) {
-      // 같은 거래처 세금계산서 합산
-      const supply = x.taxItems.reduce((s, h) => s + num(h.supply), 0);
-      const vat = x.taxItems.reduce((s, h) => s + num(h.vat), 0);
-      const total = x.taxItems.reduce((s, h) => s + num(h.total), 0);
-      const date = x.taxItems.map(h => h.date).filter(Boolean).sort().pop() || (month + '-28');
-      return { date, vendor: t.vendor || x.name, bizNo: t.bizNo || x.bizNo, supply, vat, total, category: '식자재', method: b ? '계좌이체' : '계좌이체', docType: '세금계산서', _src: '세금계산서' };
-    }
-    // 통장만
-    const total = x.bankItems.reduce((s, bb) => s + num(bb.total), 0);
-    const date = (b && b.date) || (month + '-28');
-    return { date, vendor: x.name, bizNo: x.bizNo, supply: Math.round(total / 1.1), vat: total - Math.round(total / 1.1), total, category: '기타', method: '계좌이체', docType: '구매영수증', _src: '통장출금(증빙없음)' };
-  });
-  const fmtN = n => Number(n || 0).toLocaleString();
-  const preview = drafts.map(d => `· ${d.date.slice(5)} ${d.vendor} ${fmtN(d.total)} [${d._src}]`).join('\n');
-  if (!confirm(`${month} 매입 미입력 ${drafts.length}건을 매입으로 등록합니다.\n\n${preview}\n\n분류는 기본값(식자재/기타)으로 들어가니 등록 후 일일정산 탭에서 조정하세요.\n등록할까요?`)) return;
+// 매입누락 row → 등록할 매입 초안 (세금계산서 우선, 없으면 통장)
+function _p3wDraftFromRow(x, month) {
+  const t = (x.taxItems && x.taxItems[0]) || null;
+  if (t) {
+    const supply = x.taxItems.reduce((s, h) => s + num(h.supply), 0);
+    const vat = x.taxItems.reduce((s, h) => s + num(h.vat), 0);
+    const total = x.taxItems.reduce((s, h) => s + num(h.total), 0);
+    const date = x.taxItems.map(h => h.date).filter(Boolean).sort().pop() || (month + '-28');
+    const item = [...new Set(x.taxItems.map(h => h.item).filter(Boolean))].slice(0, 2).join(', ');
+    return { date, vendor: t.vendor || x.name, bizNo: t.bizNo || x.bizNo, supply, vat, total, category: '식자재', method: '계좌이체', docType: '세금계산서', item, _src: '세금계산서' };
+  }
+  const total = x.bankItems.reduce((s, bb) => s + num(bb.total), 0);
+  const b = (x.bankItems && x.bankItems[0]) || null;
+  const date = (b && b.date) || (month + '-28');
+  return { date, vendor: x.name, bizNo: x.bizNo, supply: Math.round(total / 1.1), vat: total - Math.round(total / 1.1), total, category: '기타', method: '계좌이체', docType: '구매영수증', item: (b && b.desc) || '', _src: '통장출금(증빙없음)' };
+}
 
+function _registerP3wDrafts(drafts) {
   const all = getAllRecords();
-  let n = 0;
   drafts.forEach(d => {
     if (!all[d.date]) all[d.date] = { date: d.date, totals: {}, posRows: [], cardRows: [], purchaseRows: [], payrollRows: [], bankRows: [], extras: {}, issues: [], status: 'draft' };
     if (!Array.isArray(all[d.date].purchaseRows)) all[d.date].purchaseRows = [];
     all[d.date].purchaseRows.push({
       date: d.date, vendor: d.vendor, bizNo: d.bizNo, category: d.category, method: d.method,
       supply: d.supply, vat: d.vat, total: d.total, docType: d.docType,
-      memo: `3-way 일괄등록 (${d._src})`, _bulk3way: true
+      memo: `3-way 등록 (${d._src})${d.item ? ' · ' + d.item : ''}`, _bulk3way: true
     });
-    n++;
   });
   localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
   _queueCloudUpload();
-  toast(`매입 ${n}건 등록 완료 — 분류 확인 권장`, 'ok');
+}
+
+function bulkRegisterMissingPurchases(month) {
+  const r = reconcilePurchase3Way(month);
+  const missing = r.rows.filter(x => x.status === 'missing_buy');
+  if (!missing.length) { toast('등록할 매입 미입력 건이 없습니다', 'warn'); return; }
+  const drafts = missing.map(x => _p3wDraftFromRow(x, month));
+  const fmtN = n => Number(n || 0).toLocaleString();
+  const preview = drafts.map(d => `· ${d.date.slice(5)} ${d.vendor} ${fmtN(d.total)} [${d._src}]`).join('\n');
+  if (!confirm(`${month} 매입 미입력 ${drafts.length}건을 매입으로 등록합니다.\n\n${preview}\n\n분류는 기본값(식자재/기타)으로 들어가니 등록 후 일일정산 탭에서 조정하세요.\n등록할까요?`)) return;
+  _registerP3wDrafts(drafts);
+  toast(`매입 ${drafts.length}건 등록 완료 — 분류 확인 권장`, 'ok');
+  renderPurchase3Way(month);
+  if (typeof renderMonthlyReport === 'function') renderMonthlyReport(month);
+}
+
+// 개별 등록 — 한 거래처만 매입으로 등록
+function registerOneMissingPurchase(month, bizNo, encName) {
+  const name = decodeURIComponent(encName || '');
+  const r = reconcilePurchase3Way(month);
+  const row = r.rows.find(x => x.status === 'missing_buy' && (x.name === name || (bizNo && x.bizNo === bizNo)));
+  if (!row) { toast('해당 매입 미입력 건을 찾지 못했습니다', 'warn'); return; }
+  const d = _p3wDraftFromRow(row, month);
+  const fmtN = n => Number(n || 0).toLocaleString();
+  if (!confirm(`${d.date.slice(5)} '${d.vendor}' ${fmtN(d.total)}원을 매입으로 등록합니다. [${d._src}]\n분류 기본값(${d.category})으로 들어가니 등록 후 조정하세요.\n등록할까요?`)) return;
+  _registerP3wDrafts([d]);
+  toast(`'${d.vendor}' 매입 등록 완료`, 'ok');
   renderPurchase3Way(month);
   if (typeof renderMonthlyReport === 'function') renderMonthlyReport(month);
 }
