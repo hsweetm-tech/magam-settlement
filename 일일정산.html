@@ -1843,6 +1843,7 @@ body.tab-summary main { grid-template-columns: 1fr; }
         <div class="msub-nav">
           <button class="msub-btn active" data-msub="profit">손익</button>
           <button class="msub-btn" data-msub="dist">분배</button>
+          <button class="msub-btn" data-msub="check">매입점검</button>
           <button class="msub-btn" data-msub="bank">통장</button>
           <button class="msub-btn" data-msub="pg">PG정산</button>
           <button class="msub-btn" data-msub="proof">증빙</button>
@@ -1889,6 +1890,19 @@ body.tab-summary main { grid-template-columns: 1fr; }
             </label>
           </div>
           <div id="distResultContent" style="margin-top:20px;"></div>
+        </div>
+
+        <!-- 매입점검 sub-panel: 매입 3-way (매입+고정비 ↔ 세금계산서 ↔ 통장출금) (2026-06-15) -->
+        <div class="msub-panel" id="msub-check">
+          <div class="msub-section-head">
+            <div class="msub-section-title">매입 3-way 점검</div>
+            <div class="msub-section-note">매입 · 세금계산서 · 통장출금</div>
+          </div>
+          <div style="padding:4px 0 12px;color:var(--text-3);font-size:12px;">
+            거래처별로 <strong>매입 입력 · 홈택스 세금계산서 · 통장 출금</strong> 셋을 맞춰, 빠진 매입(🔴)·미출금(🟡)·증빙없음(🟠)을 찾습니다.
+            <strong>매입 미입력</strong> 건은 아래에서 <strong>일괄 등록</strong>하면 손익에 바로 반영됩니다. (통장·증빙·고정비 데이터가 있어야 정확합니다.)
+          </div>
+          <div id="purchase3wayContent"></div>
         </div>
 
         <!-- 통장 sub-panel: KB 월 엑셀 업로드 + 자동 대사 (2026-06-02 추가) -->
@@ -2638,7 +2652,7 @@ function init() {
     else if (tabName === 'costs') { renderCostsTab(month); }
   }
   window.syncSelectedMonth = syncSelectedMonth;
-  if (monthlyMonthEl) monthlyMonthEl.addEventListener('change', (e) => { syncSelectedMonth(e.target.value); if (typeof updateKbBankStatus === 'function') updateKbBankStatus(); if (typeof renderBankReconcile === 'function') renderBankReconcile(e.target.value); if (typeof updatePgStatus === 'function') updatePgStatus(); if (typeof updatePgVanStatus === 'function') updatePgVanStatus(); if (typeof renderPgReconcile === 'function') renderPgReconcile(e.target.value); });
+  if (monthlyMonthEl) monthlyMonthEl.addEventListener('change', (e) => { syncSelectedMonth(e.target.value); if (typeof updateKbBankStatus === 'function') updateKbBankStatus(); if (typeof renderBankReconcile === 'function') renderBankReconcile(e.target.value); if (typeof updatePgStatus === 'function') updatePgStatus(); if (typeof updatePgVanStatus === 'function') updatePgVanStatus(); if (typeof renderPgReconcile === 'function') renderPgReconcile(e.target.value); if (typeof renderPurchase3Way === 'function') renderPurchase3Way(e.target.value); });
   if (forecastMonthEl) forecastMonthEl.addEventListener('change', (e) => syncSelectedMonth(e.target.value));
   if (costsMonthEl) costsMonthEl.addEventListener('change', (e) => syncSelectedMonth(e.target.value));
   // 월정산 sub-tab navigation
@@ -5162,6 +5176,225 @@ function _htSubsetSumN1(items, target) {
 }
 
 /* ========================================================================
+   매입 3-way 점검 (2026-06-15): 매입(앱+고정비) ↔ 세금계산서(홈택스) ↔ 통장출금
+   - 거래처를 사업자번호 + 상호(부분일치) + 대표자명 alias로 연결.
+   - 상태: 완전 / 미출금 / 계산서없음 / 매입누락 / 증빙·출금대기 / 고정비.
+   - 매입누락(세금계산서·통장엔 있는데 매입 입력 없음)은 일괄등록 대상.
+   ======================================================================== */
+function _canonVendor(s) {
+  let t = String(s == null ? '' : s);
+  t = t.replace(/주식회사|㈜|（주）|\(주\)|\(유\)|유한회사/g, '');
+  t = t.replace(/[\s.,()\-_·'"\/　]/g, '');
+  return t.toLowerCase();
+}
+
+function reconcilePurchase3Way(month) {
+  const all = (typeof getAllRecords === 'function' ? getAllRecords() : {}) || {};
+  const ht = (typeof getHometaxData === 'function' ? getHometaxData(month) : []) || [];
+  const bankRows = (typeof getKbBankData === 'function' ? getKbBankData(month) : []) || [];
+  const fixed = (typeof getFixedExpenses === 'function' ? getFixedExpenses() : []) || [];
+
+  // 1) 매입 (purchaseRows) — 일괄등록 추적용 _src/_ref 포함
+  const buys = []; const cats = new Set();
+  Object.keys(all).filter(d => d.startsWith(month)).sort().forEach(d => {
+    (all[d].purchaseRows || []).forEach(p => {
+      const total = num(p.total) || (num(p.supply) + num(p.vat));
+      if (total <= 0) return;
+      buys.push({ vendor: p.vendor || '', bizNo: _normalizeBizNo(p.bizNo), total, category: p.category || '', fixed: false });
+      if (p.category) cats.add(p.category);
+    });
+  });
+  // 고정비 (같은 분류 매입행 없을 때 자동반영분)
+  fixed.forEach(e => {
+    if (num(e.amount) <= 0 || cats.has(e.category)) return;
+    buys.push({ vendor: e.name || e.category, bizNo: '', total: num(e.amount), category: e.category, fixed: true });
+  });
+
+  // 2) 세금계산서/계산서 (카드·현금영수증 제외 = 적격증빙 매입)
+  const taxes = ht.filter(h => !/카드|현금영수/.test(h.docType || '')).map(h => ({
+    date: h.date || '', vendor: h.vendor || '', bizNo: _normalizeBizNo(h.bizNo),
+    supply: num(h.supply), vat: num(h.vat), total: num(h.total), item: h.item || '', representative: h.representative || ''
+  }));
+
+  // 사업자번호 역해석 사전 (이름만 있는 행도 bizNo 채워 연결)
+  const repList = []; taxes.forEach(t => { if (t.representative && t.bizNo) repList.push({ rep: _canonVendor(t.representative), vendor: t.vendor, bizNo: t.bizNo }); });
+  const canonBiz = {}, bizName = {};
+  [...buys, ...taxes].forEach(x => { const cn = _canonVendor(x.vendor); if (cn && x.bizNo) { canonBiz[cn] = x.bizNo; bizName[x.bizNo] = x.vendor; } });
+  const nameList = Object.keys(canonBiz);
+  const resolveBiz = (vendor, bizNo) => {
+    if (bizNo) return bizNo;
+    const cn = _canonVendor(vendor); if (!cn) return '';
+    if (canonBiz[cn]) return canonBiz[cn];
+    const hit = nameList.find(n => n.length >= 2 && (cn.includes(n) || n.includes(cn)));
+    return hit ? canonBiz[hit] : '';
+  };
+  buys.forEach(x => { x.bizNo = resolveBiz(x.vendor, x.bizNo); });
+  taxes.forEach(x => { x.bizNo = resolveBiz(x.vendor, x.bizNo); });
+
+  // 3) 통장 출금 (카드출금 제외) — 대표자명/상호 포함매칭으로 거래처 추정
+  const banks = bankRows.filter(b => num(b.withdraw) > 0 && b.kind !== '카드출금' && !/체크카드/.test(b.summary || '')).map(b => {
+    const desc = (b.desc || '').trim(); const cn = _canonVendor(desc);
+    let vendor = desc, bizNo = '';
+    const rep = repList.find(r => r.rep.length >= 2 && (cn.includes(r.rep) || r.rep.includes(cn)));
+    if (rep) { vendor = rep.vendor; bizNo = rep.bizNo; }
+    else { const nm = nameList.find(n => n.length >= 2 && (cn.includes(n) || n.includes(cn))); if (nm) { bizNo = canonBiz[nm]; vendor = bizName[bizNo] || desc; } }
+    return { date: b.date || '', vendor, bizNo, total: num(b.withdraw), desc };
+  });
+
+  // 4) 거래처 그룹핑 (bizNo 우선, 없으면 정규화 상호)
+  const groups = {};
+  const key = (v, b) => b ? 'b:' + b : 'n:' + _canonVendor(v);
+  const G = (v, b) => {
+    const k = key(v, b);
+    if (!groups[k]) groups[k] = { key: k, name: v, bizNo: b || '', buy: 0, tax: 0, bank: 0, fixed: false, cats: new Set(), taxItems: [], bankItems: [] };
+    if (b && !groups[k].bizNo) groups[k].bizNo = b;
+    return groups[k];
+  };
+  buys.forEach(x => { const g = G(x.vendor, x.bizNo); g.buy += x.total; if (x.fixed) g.fixed = true; if (x.category) g.cats.add(x.category); });
+  taxes.forEach(x => { const g = G(x.vendor, x.bizNo); g.tax += x.total; if (x.vendor) g.name = x.vendor; g.taxItems.push(x); });
+  banks.forEach(x => { const g = G(x.vendor, x.bizNo); g.bank += x.total; g.bankItems.push(x); });
+
+  // 고정비-only ↔ 세금계산서-only 금액일치 병합 (임대료 12.1M ↔ 이재선외)
+  const entries = Object.entries(groups);
+  const fixedOnly = entries.filter(([, g]) => g.fixed && g.buy > 0 && !g.tax && !g.bank);
+  const taxOnly = entries.filter(([, g]) => g.tax > 0 && !g.buy && !g.bank && !g._merged);
+  fixedOnly.forEach(([, fg]) => {
+    const m = taxOnly.find(([, tg]) => !tg._merged && Math.abs(tg.tax - fg.buy) <= 10);
+    if (m) { const tg = m[1]; fg.tax = tg.tax; fg.taxItems = tg.taxItems; fg.name = fg.name + ' / ' + tg.name; tg._merged = true; delete groups[m[0]]; }
+  });
+
+  const rows = Object.values(groups).filter(g => !g._merged && (g.buy || g.tax || g.bank)).map(g => {
+    const B = g.buy > 0, T = g.tax > 0, K = g.bank > 0;
+    let status;
+    if (g.fixed && !T && !K) status = 'fixed';
+    else if (g.fixed) status = 'fixed_matched';
+    else if (!B && (T || K)) status = 'missing_buy';
+    else if (B && T && K) status = 'complete';
+    else if (B && T && !K) status = 'unpaid';
+    else if (B && !T && K) status = 'no_tax';
+    else status = 'pending';
+    return {
+      name: g.name, bizNo: g.bizNo, buy: Math.round(g.buy), tax: Math.round(g.tax), bank: Math.round(g.bank),
+      fixed: g.fixed, cats: [...g.cats], status, taxItems: g.taxItems, bankItems: g.bankItems
+    };
+  });
+  rows.sort((a, b) => Math.max(b.buy, b.tax, b.bank) - Math.max(a.buy, a.tax, a.bank));
+  const counts = {};
+  rows.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
+  return { month, rows, counts };
+}
+
+const P3W_STATUS = {
+  complete:      { badge: '✅ 완전', color: 'var(--green)' },
+  unpaid:        { badge: '🟡 미출금', color: 'var(--orange)' },
+  no_tax:        { badge: '🟠 계산서 없음', color: 'var(--orange)' },
+  missing_buy:   { badge: '🔴 매입 미입력', color: 'var(--red, #e5484d)' },
+  pending:       { badge: '🟠 증빙·출금 대기', color: 'var(--orange)' },
+  fixed:         { badge: '· 고정비', color: 'var(--text-3)' },
+  fixed_matched: { badge: '· 고정비(매칭)', color: 'var(--text-3)' }
+};
+
+function renderPurchase3Way(month) {
+  const el = document.getElementById('purchase3wayContent');
+  if (!el) return;
+  if (!month) { el.innerHTML = ''; return; }
+  const r = reconcilePurchase3Way(month);
+  const fmtN = n => (n ? Number(n).toLocaleString() : '<span style="color:var(--text-3);">—</span>');
+  if (!r.rows.length) {
+    el.innerHTML = `<div style="padding:14px;border:1px dashed var(--border);border-radius:8px;font-size:12px;color:var(--text-3);">${month} 매입·세금계산서·통장 데이터가 없습니다.</div>`;
+    return;
+  }
+  const c = r.counts;
+  const missing = r.rows.filter(x => x.status === 'missing_buy');
+  const sumMissing = missing.reduce((s, x) => s + Math.max(x.tax, x.bank), 0);
+
+  const cell = (v, strong) => `<td style="text-align:right;font-family:'JetBrains Mono',monospace;${strong ? 'font-weight:600;' : ''}">${fmtN(v)}</td>`;
+  const rowsHtml = r.rows.map(x => {
+    const st = P3W_STATUS[x.status] || P3W_STATUS.pending;
+    const diff = (x.buy && x.tax) ? x.buy - x.tax : 0;
+    const note = x.status === 'unpaid' && x.buy > x.tax ? `<span style="color:var(--text-3);font-size:10px;">미발행 ${fmtN(x.buy - x.tax)}</span>`
+      : (x.status === 'missing_buy' ? `<span style="color:var(--text-3);font-size:10px;">${x.tax ? '세금계산서' : ''}${x.tax && x.bank ? '+' : ''}${x.bank ? '통장' : ''}</span>` : '');
+    return `<tr style="${x.status === 'missing_buy' ? 'background:var(--red-bg, #ffe5e5);' : ''}">
+      <td><strong>${escapeHtml(x.name || '-')}</strong> ${note}</td>
+      ${cell(x.buy)}${cell(x.tax)}${cell(x.bank)}
+      <td style="white-space:nowrap;color:${st.color};font-size:11px;font-weight:600;">${st.badge}</td>
+    </tr>`;
+  }).join('');
+
+  const summary = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:12px;">
+      <div class="m-card"><div class="m-card-label">완전</div><div class="m-card-value" style="color:var(--green);">${c.complete || 0}</div></div>
+      <div class="m-card"><div class="m-card-label">매입 미입력</div><div class="m-card-value" style="color:var(--red,#e5484d);">${c.missing_buy || 0}</div><div class="m-card-sub">${fmtN(sumMissing)}</div></div>
+      <div class="m-card"><div class="m-card-label">미출금</div><div class="m-card-value" style="color:var(--orange);">${c.unpaid || 0}</div></div>
+      <div class="m-card"><div class="m-card-label">증빙없음/대기</div><div class="m-card-value" style="color:var(--orange);">${(c.no_tax || 0) + (c.pending || 0)}</div></div>
+    </div>`;
+
+  const bulkBtn = missing.length ? `
+    <button class="btn btn-primary btn-small" onclick="bulkRegisterMissingPurchases('${month}')" style="margin-bottom:10px;">
+      🔴 매입 미입력 ${missing.length}건 일괄 등록 (${fmtN(sumMissing)})
+    </button>
+    <div style="font-size:11px;color:var(--text-3);margin:-4px 0 10px;">세금계산서/통장 데이터로 매입행을 자동 생성합니다. 미리보기 후 확정하세요.</div>` : '';
+
+  el.innerHTML = summary + bulkBtn + `
+    <div class="table-wrap"><table class="data-table" style="font-size:12px;">
+      <thead><tr>
+        <th>거래처</th><th style="text-align:right;">매입</th><th style="text-align:right;">세금계산서</th>
+        <th style="text-align:right;">통장출금</th><th>상태</th>
+      </tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table></div>
+    <div style="font-size:11px;color:var(--text-3);margin-top:8px;">
+      🟡 미출금 = 계산서 있는데 통장 출금 전(외상) · 🟠 계산서없음 = 출금됐는데 세금계산서 미발행(간이/카드) · 고정비는 설정 자동반영.
+      이름이 출처마다 다른 건(통장 약칭 등) 일부는 자동연결이 안 될 수 있습니다.
+    </div>`;
+}
+
+/** 매입 미입력(세금계산서·통장엔 있음) 건을 매입행으로 일괄 등록 */
+function bulkRegisterMissingPurchases(month) {
+  const r = reconcilePurchase3Way(month);
+  const missing = r.rows.filter(x => x.status === 'missing_buy');
+  if (!missing.length) { toast('등록할 매입 미입력 건이 없습니다', 'warn'); return; }
+  // 각 건의 등록 데이터 구성: 세금계산서 우선(공급가/세액/날짜/사업자번호), 없으면 통장
+  const drafts = missing.map(x => {
+    const t = (x.taxItems && x.taxItems[0]) || null;
+    const b = (x.bankItems && x.bankItems[0]) || null;
+    if (t) {
+      // 같은 거래처 세금계산서 합산
+      const supply = x.taxItems.reduce((s, h) => s + num(h.supply), 0);
+      const vat = x.taxItems.reduce((s, h) => s + num(h.vat), 0);
+      const total = x.taxItems.reduce((s, h) => s + num(h.total), 0);
+      const date = x.taxItems.map(h => h.date).filter(Boolean).sort().pop() || (month + '-28');
+      return { date, vendor: t.vendor || x.name, bizNo: t.bizNo || x.bizNo, supply, vat, total, category: '식자재', method: b ? '계좌이체' : '계좌이체', docType: '세금계산서', _src: '세금계산서' };
+    }
+    // 통장만
+    const total = x.bankItems.reduce((s, bb) => s + num(bb.total), 0);
+    const date = (b && b.date) || (month + '-28');
+    return { date, vendor: x.name, bizNo: x.bizNo, supply: Math.round(total / 1.1), vat: total - Math.round(total / 1.1), total, category: '기타', method: '계좌이체', docType: '구매영수증', _src: '통장출금(증빙없음)' };
+  });
+  const fmtN = n => Number(n || 0).toLocaleString();
+  const preview = drafts.map(d => `· ${d.date.slice(5)} ${d.vendor} ${fmtN(d.total)} [${d._src}]`).join('\n');
+  if (!confirm(`${month} 매입 미입력 ${drafts.length}건을 매입으로 등록합니다.\n\n${preview}\n\n분류는 기본값(식자재/기타)으로 들어가니 등록 후 일일정산 탭에서 조정하세요.\n등록할까요?`)) return;
+
+  const all = getAllRecords();
+  let n = 0;
+  drafts.forEach(d => {
+    if (!all[d.date]) all[d.date] = { date: d.date, totals: {}, posRows: [], cardRows: [], purchaseRows: [], payrollRows: [], bankRows: [], extras: {}, issues: [], status: 'draft' };
+    if (!Array.isArray(all[d.date].purchaseRows)) all[d.date].purchaseRows = [];
+    all[d.date].purchaseRows.push({
+      date: d.date, vendor: d.vendor, bizNo: d.bizNo, category: d.category, method: d.method,
+      supply: d.supply, vat: d.vat, total: d.total, docType: d.docType,
+      memo: `3-way 일괄등록 (${d._src})`, _bulk3way: true
+    });
+    n++;
+  });
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+  _queueCloudUpload();
+  toast(`매입 ${n}건 등록 완료 — 분류 확인 권장`, 'ok');
+  renderPurchase3Way(month);
+  if (typeof renderMonthlyReport === 'function') renderMonthlyReport(month);
+}
+
+/* ========================================================================
    운영 KPI: 식자재 원가율 · 인건비율 · Prime Cost (식당 핵심 지표)
    - 식자재 원가율 = (식자재 + 주류/음료 매입공급가) / 매출공급가, 목표 ≤ 30%
    - 인건비율     = (payroll + 매입카테고리 인건비) / 매출공급가, 목표 ≤ 30%
@@ -7512,6 +7745,10 @@ function switchMonthlySubTab(name) {
   if (name === 'pg') {
     const mm = document.getElementById('monthlyMonth');
     if (mm && mm.value) { updatePgStatus(); updatePgVanStatus(); renderPgReconcile(mm.value); }
+  }
+  if (name === 'check') {
+    const mm = document.getElementById('monthlyMonth');
+    if (mm && mm.value && typeof renderPurchase3Way === 'function') renderPurchase3Way(mm.value);
   }
 }
 
