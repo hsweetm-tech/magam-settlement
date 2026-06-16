@@ -5263,10 +5263,10 @@ function reconcilePurchase3Way(month) {
   buys.forEach(x => { x.bizNo = resolveBiz(x.vendor, x.bizNo); });
   taxes.forEach(x => { x.bizNo = resolveBiz(x.vendor, x.bizNo); });
 
-  // 수동 연결(별칭) 맵 — kind:'alias' 항목: 저장키 → 대상키 (KT처럼 한글↔영문 자동불가 건)
+  // 수동 연결(별칭) — kind:'alias' 항목: 적요 패턴(끝 숫자 제거) → 대상키.
+  // 'KT통신요금05'는 패턴 'kt통신요금'으로 저장돼 다음달 'KT통신요금06'도 자동 매칭.
   const vmap = (typeof getP3wMap === 'function') ? getP3wMap() : {};
-  const aliasMap = {};
-  Object.entries(vmap).forEach(([k, v]) => { if (v && v.kind === 'alias' && v.target) aliasMap[k] = v.target; });
+  const aliasList = Object.values(vmap).filter(v => v && v.kind === 'alias' && v.target && v.pattern);
 
   // 3) 통장 출금 (카드출금 제외) — 대표자명/상호 포함·공통글자 매칭으로 거래처 추정
   const banks = bankRows.filter(b => num(b.withdraw) > 0 && b.kind !== '카드출금' && !/체크카드/.test(b.summary || '')).map(b => {
@@ -5281,7 +5281,12 @@ function reconcilePurchase3Way(month) {
   // 4) 거래처 그룹핑 (bizNo 우선, 없으면 정규화 상호; 수동 별칭 적용)
   const groups = {};
   const rawKey = (v, b) => b ? 'b:' + b : 'n:' + _canonVendor(v);
-  const key = (v, b) => { const k = rawKey(v, b); return aliasMap[k] || k; };
+  const key = (v, b) => {
+    const k = rawKey(v, b);
+    const cn = _canonVendor(v);
+    for (const a of aliasList) { if (a.pattern && cn.includes(a.pattern)) return a.target; }
+    return k;
+  };
   const G = (v, b) => {
     const k = key(v, b);
     if (!groups[k]) groups[k] = { key: k, name: v, bizNo: (k.indexOf('b:') === 0 ? k.slice(2) : (b || '')), buy: 0, tax: 0, bank: 0, fixed: false, cats: new Set(), taxItems: [], bankItems: [] };
@@ -5320,6 +5325,7 @@ function reconcilePurchase3Way(month) {
       fixed: g.fixed, cats: [...g.cats], status,
       mapped: isFixed ? (mapped.category || '고정비') : null,
       recurring: isAuto ? (mapped.category || '정기') : null,
+      incomingAlias: aliasList.some(a => a.target === g.key),
       taxItems: g.taxItems, bankItems: g.bankItems
     };
   });
@@ -5366,10 +5372,12 @@ function renderPurchase3Way(month) {
     const isMapped = x.status === 'fixed_matched' && x.mapped;
     const bz = x.bizNo || '';
     const bSmall = 'class="btn btn-small" style="font-size:10px;padding:2px 6px;"';
+    const unlinkBtn = x.incomingAlias ? ` <button ${bSmall} onclick="unlinkP3wAliases('${month}','${bz}','${enc}')" title="이 거래처에 연결된 별칭 해제">🔗해제</button>` : '';
     let action = '';
-    if (x.recurring) action = `<span style="font-size:10px;color:var(--green);">🔁정기(${escapeHtml(x.recurring)})</span> <button ${bSmall} onclick="unmarkP3wFixed('${month}','${bz}','${enc}')">해제</button>`;
-    else if (isMapped) action = `<button ${bSmall} onclick="unmarkP3wFixed('${month}','${bz}','${enc}')">해제</button>`;
-    else if (canMark) action = `<button ${bSmall} onclick="markP3wFixed('${month}','${bz}','${enc}')" title="이미 손익에 반영된 건(매입/고정비) — 점검에서만 숨김, 손익 변화 없음">점검제외</button> <button ${bSmall} onclick="markP3wRecurring('${month}','${bz}','${enc}')" title="매월 실제금액으로 매입 자동생성(손익 반영)">정기등록</button> <button ${bSmall} onclick="linkP3wVendor('${month}','${bz}','${enc}')" title="쪼개진 같은 거래처를 하나로 연결">연결</button>`;
+    if (x.recurring) action = `<span style="font-size:10px;color:var(--green);">🔁정기(${escapeHtml(x.recurring)})</span> <button ${bSmall} onclick="unmarkP3wFixed('${month}','${bz}','${enc}')">해제</button>${unlinkBtn}`;
+    else if (isMapped) action = `<button ${bSmall} onclick="unmarkP3wFixed('${month}','${bz}','${enc}')">해제</button>${unlinkBtn}`;
+    else if (canMark) action = `<button ${bSmall} onclick="markP3wFixed('${month}','${bz}','${enc}')" title="이미 손익에 반영된 건(매입/고정비) — 점검에서만 숨김, 손익 변화 없음">점검제외</button> <button ${bSmall} onclick="markP3wRecurring('${month}','${bz}','${enc}')" title="매월 실제금액으로 매입 자동생성(손익 반영)">정기등록</button> <button ${bSmall} onclick="linkP3wVendor('${month}','${bz}','${enc}')" title="쪼개진 같은 거래처를 하나로 연결">연결</button>${unlinkBtn}`;
+    else action = unlinkBtn;
     return `<tr style="${x.status === 'missing_buy' ? 'background:var(--red-bg, #ffe5e5);' : ''}">
       <td><strong>${escapeHtml(x.name || '-')}</strong> ${note}</td>
       ${cell(x.buy)}${cell(x.tax)}${cell(x.bank)}
@@ -5472,8 +5480,25 @@ function linkP3wVendor(month, srcBiz, srcEnc) {
   if (!cands.length) { toast(`'${qq}'와 일치하는 거래처를 못 찾았습니다`, 'warn'); return; }
   const target = cands.sort((a, b) => Math.max(b.buy, b.tax, b.bank) - Math.max(a.buy, a.tax, a.bank))[0];
   const targetKey = target.bizNo ? 'b:' + target.bizNo : 'n:' + _canonVendor(target.name);
-  saveP3wMapEntry(srcBiz, srcName, { kind: 'alias', target: targetKey, label: srcName, targetLabel: target.name });
-  toast(`'${srcName}' → '${target.name}' 연결됨 — 다음달도 자동`, 'ok');
+  // 적요 끝 숫자(월 표기 05/06 등) 제거한 패턴으로 저장 → 다음달도 자동 매칭
+  const pattern = _canonVendor(srcName).replace(/\d+$/, '');
+  if (!pattern) { toast('연결 기준 텍스트가 숫자뿐이라 패턴을 못 만듭니다', 'warn'); return; }
+  saveP3wMapEntry(srcBiz, srcName, { kind: 'alias', target: targetKey, pattern, label: srcName, targetLabel: target.name });
+  toast(`'${srcName}' → '${target.name}' 연결 (패턴 "${pattern}*" — 다음달도 자동)`, 'ok');
+  renderPurchase3Way(month);
+}
+
+// 이 거래처(대상)로 연결된 별칭 모두 해제
+function unlinkP3wAliases(month, bizNo, encName) {
+  const name = decodeURIComponent(encName || '');
+  const targetKey = bizNo ? 'b:' + bizNo : 'n:' + _canonVendor(name);
+  const map = getP3wMap();
+  const removed = [];
+  Object.entries(map).forEach(([k, v]) => { if (v && v.kind === 'alias' && v.target === targetKey) { removed.push(v.label || k); delete map[k]; } });
+  if (!removed.length) { toast('해제할 연결이 없습니다', 'warn'); return; }
+  localStorage.setItem(P3W_MAP_KEY, JSON.stringify(map));
+  if (typeof _queueSettingsCloudUpload === 'function') _queueSettingsCloudUpload();
+  toast(`연결 해제: ${removed.join(', ')}`, 'ok');
   renderPurchase3Way(month);
 }
 function unmarkP3wFixed(month, bizNo, encName) {

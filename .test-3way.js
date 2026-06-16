@@ -147,11 +147,21 @@ M.set({ '2026-05-03': { purchaseRows: [] } },
   [{ date: '2026-05-10', desc: 'KT통신요금05', withdraw: 1870, summary: '자동이체', kind: '' }], []);
 const ktBefore = M.reconcilePurchase3Way('2026-05');
 ok(ktBefore.rows.filter(x => /케이티|kt|KT/i.test(x.name)).length >= 2, '연결 전: KT 2줄로 쪼개짐');
-// 별칭: 통장 'KT통신요금05'(n:kt통신요금05) → 세금계산서 b:9998877777
-M.setP3map({ 'n:kt통신요금05': { kind: 'alias', target: 'b:9998877777' } });
+// 별칭(패턴): 'kt통신요금' 패턴 → b:9998877777 (끝 숫자 무관)
+M.setP3map({ 'n:kt통신요금05': { kind: 'alias', target: 'b:9998877777', pattern: 'kt통신요금' } });
 const ktAfter = M.reconcilePurchase3Way('2026-05');
 const kt = ktAfter.rows.find(x => x.bizNo === '9998877777');
-ok(kt && kt.tax === 1870 && kt.bank === 1870, '수동연결: KT 한 줄로 묶임(세금계산서+통장)');
+ok(kt && kt.tax === 1870 && kt.bank === 1870, '수동연결(패턴): KT 한 줄로 묶임');
+ok(kt && kt.incomingAlias === true, '수동연결: 대상 행 incomingAlias 표시');
+
+// 다음달: 통장 'KT통신요금06' 도 같은 패턴으로 자동 매칭
+M.set({ '2026-05-03': { purchaseRows: [] } },
+  [{ date: '2026-05-31', vendor: '주식회사 케이티', bizNo: '999-88-77777', supply: 1800, vat: 180, total: 1980, docType: '세금계산서' }],
+  [{ date: '2026-05-10', desc: 'KT통신요금06', withdraw: 1980, summary: '자동이체', kind: '' }], []);
+M.setP3map({ 'n:kt통신요금05': { kind: 'alias', target: 'b:9998877777', pattern: 'kt통신요금' } });
+const ktNext = M.reconcilePurchase3Way('2026-05');
+const kt2 = ktNext.rows.find(x => x.bizNo === '9998877777');
+ok(kt2 && kt2.tax === 1980 && kt2.bank === 1980, '수동연결(패턴): 다음달 06도 자동 매칭');
 
 console.log(`\n3-way 점검 테스트: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
