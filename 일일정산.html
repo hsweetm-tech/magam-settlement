@@ -5290,8 +5290,10 @@ function reconcilePurchase3Way(month) {
   const rows = Object.values(groups).filter(g => !g._merged && (g.buy || g.tax || g.bank)).map(g => {
     const B = g.buy > 0, T = g.tax > 0, K = g.bank > 0;
     const mapped = vmap['b:' + g.bizNo] || vmap['n:' + _canonVendor(g.name)] || null;
+    const isFixed = mapped && mapped.kind === 'fixed';
+    const isAuto = mapped && mapped.kind === 'auto';
     let status;
-    if (mapped && mapped.kind === 'fixed') status = 'fixed_matched';  // 예외/고정비 지정 → 점검 제외
+    if (isFixed) status = 'fixed_matched';  // 예외/고정비 지정 → 점검 제외
     else if (g.fixed && !T && !K) status = 'fixed';
     else if (g.fixed) status = 'fixed_matched';
     else if (!B && (T || K)) status = 'missing_buy';
@@ -5301,7 +5303,9 @@ function reconcilePurchase3Way(month) {
     else status = 'pending';
     return {
       name: g.name, bizNo: g.bizNo, buy: Math.round(g.buy), tax: Math.round(g.tax), bank: Math.round(g.bank),
-      fixed: g.fixed, cats: [...g.cats], status, mapped: mapped ? (mapped.category || '고정비') : null,
+      fixed: g.fixed, cats: [...g.cats], status,
+      mapped: isFixed ? (mapped.category || '고정비') : null,
+      recurring: isAuto ? (mapped.category || '정기') : null,
       taxItems: g.taxItems, bankItems: g.bankItems
     };
   });
@@ -5325,7 +5329,9 @@ function renderPurchase3Way(month) {
   const el = document.getElementById('purchase3wayContent');
   if (!el) return;
   if (!month) { el.innerHTML = ''; return; }
+  const autoCreated = (typeof autoRegisterRecurring === 'function') ? autoRegisterRecurring(month) : 0;
   const r = reconcilePurchase3Way(month);
+  if (autoCreated) toast(`정기 거래처 ${autoCreated}건 매입 자동등록됨`, 'ok');
   const fmtN = n => (n ? Number(n).toLocaleString() : '<span style="color:var(--text-3);">—</span>');
   if (!r.rows.length) {
     el.innerHTML = `<div style="padding:14px;border:1px dashed var(--border);border-radius:8px;font-size:12px;color:var(--text-3);">${month} 매입·세금계산서·통장 데이터가 없습니다.</div>`;
@@ -5344,9 +5350,12 @@ function renderPurchase3Way(month) {
     const enc = encodeURIComponent(x.name || '');
     const canMark = ['missing_buy', 'pending', 'no_tax', 'unpaid'].includes(x.status);
     const isMapped = x.status === 'fixed_matched' && x.mapped;
-    const action = isMapped
-      ? `<button class="btn btn-small" style="font-size:10px;padding:2px 6px;" onclick="unmarkP3wFixed('${month}','${x.bizNo || ''}','${enc}')">예외해제</button>`
-      : (canMark ? `<button class="btn btn-small" style="font-size:10px;padding:2px 6px;" onclick="markP3wFixed('${month}','${x.bizNo || ''}','${enc}')">고정비처리</button>` : '');
+    const bz = x.bizNo || '';
+    const bSmall = 'class="btn btn-small" style="font-size:10px;padding:2px 6px;"';
+    let action = '';
+    if (x.recurring) action = `<span style="font-size:10px;color:var(--green);">🔁정기(${escapeHtml(x.recurring)})</span> <button ${bSmall} onclick="unmarkP3wFixed('${month}','${bz}','${enc}')">해제</button>`;
+    else if (isMapped) action = `<button ${bSmall} onclick="unmarkP3wFixed('${month}','${bz}','${enc}')">예외해제</button>`;
+    else if (canMark) action = `<button ${bSmall} onclick="markP3wFixed('${month}','${bz}','${enc}')">고정비</button> <button ${bSmall} onclick="markP3wRecurring('${month}','${bz}','${enc}')">정기등록</button>`;
     return `<tr style="${x.status === 'missing_buy' ? 'background:var(--red-bg, #ffe5e5);' : ''}">
       <td><strong>${escapeHtml(x.name || '-')}</strong> ${note}</td>
       ${cell(x.buy)}${cell(x.tax)}${cell(x.bank)}
@@ -5442,6 +5451,53 @@ function unmarkP3wFixed(month, bizNo, encName) {
   removeP3wMapEntry(bizNo, name);
   toast(`'${name}' 예외 해제`, 'ok');
   renderPurchase3Way(month);
+}
+
+// 거래처를 '정기(자동등록)'으로 지정 — 매월 세금계산서/통장 들어오면 실제 금액으로 매입 자동생성.
+function markP3wRecurring(month, bizNo, encName) {
+  const name = decodeURIComponent(encName || '');
+  const cat = prompt(`'${name}'을(를) 정기 거래처로 등록합니다.\n분류 입력 (예: 세금·공과, 통신비). 이후 매월 이 거래처의 세금계산서/통장이 들어오면 실제 금액으로 매입이 자동 생성됩니다. (확인 불필요)`, '세금·공과');
+  if (cat === null) return;
+  saveP3wMapEntry(bizNo, name, { kind: 'auto', category: (cat.trim() || '기타'), label: name });
+  toast(`'${name}' 정기 거래처 등록 — 매월 자동 매입생성`, 'ok');
+  renderPurchase3Way(month);
+}
+
+/**
+ * 정기(자동) 거래처: 그 달 세금계산서/통장 근거가 있고 아직 매입이 없으면 실제 금액으로 매입 자동생성.
+ * 멱등: 이미 매입이 있으면 건너뜀. 생성 건수 반환.
+ */
+function autoRegisterRecurring(month) {
+  const map = (typeof getP3wMap === 'function') ? getP3wMap() : {};
+  if (!Object.values(map).some(v => v && v.kind === 'auto')) return 0;
+  const r = reconcilePurchase3Way(month);
+  const all = getAllRecords();
+  let created = 0;
+  r.rows.forEach(row => {
+    const entry = map['b:' + row.bizNo] || map['n:' + _canonVendor(row.name)];
+    if (!entry || entry.kind !== 'auto') return;
+    if (row.buy > 0) return;                       // 이미 매입 있음 → 스킵(멱등)
+    if (!(row.tax > 0 || row.bank > 0)) return;    // 근거 없음 → 스킵
+    const t = (row.taxItems && row.taxItems[0]) || null;
+    let date, supply, vat, total, docType, bizNo = row.bizNo, vendor = row.name;
+    if (t) {
+      supply = row.taxItems.reduce((s, h) => s + num(h.supply), 0);
+      vat = row.taxItems.reduce((s, h) => s + num(h.vat), 0);
+      total = row.taxItems.reduce((s, h) => s + num(h.total), 0);
+      date = row.taxItems.map(h => h.date).filter(Boolean).sort().pop() || (month + '-28');
+      docType = '세금계산서'; bizNo = t.bizNo || row.bizNo; vendor = t.vendor || row.name;
+    } else {
+      total = row.bankItems.reduce((s, b) => s + num(b.total), 0);
+      date = (row.bankItems[0] && row.bankItems[0].date) || (month + '-28');
+      supply = Math.round(total / 1.1); vat = total - supply; docType = '구매영수증';
+    }
+    if (!all[date]) all[date] = { date, totals: {}, posRows: [], cardRows: [], purchaseRows: [], payrollRows: [], bankRows: [], extras: {}, issues: [], status: 'draft' };
+    if (!Array.isArray(all[date].purchaseRows)) all[date].purchaseRows = [];
+    all[date].purchaseRows.push({ date, vendor, bizNo, category: entry.category || '기타', method: '계좌이체', supply, vat, total, docType, memo: '정기 거래처 자동등록', _autoRecurring: true });
+    created++;
+  });
+  if (created) { localStorage.setItem(STORAGE_KEY, JSON.stringify(all)); _queueCloudUpload(); }
+  return created;
 }
 
 /* ========================================================================
@@ -7254,6 +7310,8 @@ function renderMonthlyReport(month) {
   const distEl = document.getElementById('distResultContent');
   const proofEl = document.getElementById('proofResultContent');
   if (!profitEl || !month) return;
+  // 정기 거래처 자동 매입생성 (손익에 반영되도록 월정산 렌더 시 멱등 실행, 조용히)
+  try { if (typeof autoRegisterRecurring === 'function') autoRegisterRecurring(month); } catch (e) {}
 
   const data = computeMonthlyData(month);
   if (!data) {

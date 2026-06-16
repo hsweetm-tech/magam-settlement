@@ -18,12 +18,18 @@ const src = `
   function getFixedExpenses() { return _fixed; }
   function getP3wMap() { return _p3map; }
   function setP3map(o) { _p3map = o || {}; }
+  let _ls = {};
+  const STORAGE_KEY = 'dailySettlement_v1';
+  const localStorage = { setItem: (k, v) => { _ls[k] = v; }, getItem: (k) => _ls[k] || null };
+  function _queueCloudUpload() {}
+  function toast() {}
   ${grab(/function num\(v\)[\s\S]*?\n\}/, 'num')}
   ${grab(/function _normalizeBizNo[\s\S]*?\n\}/, '_normalizeBizNo')}
   ${grab(/function _canonVendor[\s\S]*?\n\}/, '_canonVendor')}
   ${fn3way}
+  ${grab(/function autoRegisterRecurring[\s\S]*?\n\}/, 'autoRegisterRecurring')}
   return {
-    reconcilePurchase3Way, _canonVendor, setP3map,
+    reconcilePurchase3Way, _canonVendor, setP3map, autoRegisterRecurring,
     set: (rec, ht, bank, fixed) => { _rec = rec; _ht = { '2026-05': ht }; _bank = { '2026-05': bank }; _fixed = fixed || []; _p3map = {}; }
   };
 `;
@@ -110,6 +116,21 @@ eq(r2.counts.missing_buy, 2, '매핑 후 매입누락 3→2');
 M.setP3map({ 'n:손무경무무앤코': { kind: 'fixed', category: '소모품' } });
 const r3 = M.reconcilePurchase3Way('2026-05');
 eq(rowOf(r3, '손무경').status, 'fixed_matched', '매핑: 이름키 예외 처리');
+
+// 정기(자동등록): 아트팜(세금계산서 300,000, 매입X)을 정기로 → 자동 매입생성
+M.set(rec, ht, bank, fixed); // 초기화(매핑/레코드 리셋)
+M.setP3map({ 'b:6667788888': { kind: 'auto', category: '소모품', label: '아트팜' } });
+const before = M.reconcilePurchase3Way('2026-05');
+eq(rowOf(before, '아트팜').status, 'missing_buy', '정기: 자동등록 전 매입누락');
+const created = M.autoRegisterRecurring('2026-05');
+eq(created, 1, '정기: 1건 자동등록');
+const after = M.reconcilePurchase3Way('2026-05');
+const art3 = rowOf(after, '아트팜');
+eq(art3.buy, 300000, '정기: 매입 자동생성 300,000(세금계산서 금액)');
+eq(art3.status, 'unpaid', '정기: 매입+세금계산서 → 미출금(통장 전)');
+eq(art3.recurring, '소모품', '정기: recurring 표시');
+// 멱등: 다시 실행해도 추가 생성 0
+eq(M.autoRegisterRecurring('2026-05'), 0, '정기: 멱등(재실행 0건)');
 
 console.log(`\n3-way 점검 테스트: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
