@@ -3044,6 +3044,8 @@ function collectAppSettings() {
   try { const raw = localStorage.getItem(KB_BANK_KEY); if (raw) kbBank = JSON.parse(raw); } catch {}
   try { const raw = localStorage.getItem(GOAL_KEY); if (raw) goals = JSON.parse(raw); } catch {}
   try { const raw = localStorage.getItem(GOAL_CALC_KEY); if (raw) goalCalc = JSON.parse(raw); } catch {}
+  let p3wMap = null;
+  try { const raw = localStorage.getItem(P3W_MAP_KEY); if (raw) p3wMap = JSON.parse(raw); } catch {}
   try { const raw = localStorage.getItem(PARTNERS_KEY); if (raw) partners = JSON.parse(raw); } catch {}
   try { const raw = localStorage.getItem(FIXED_EXPENSES_KEY); if (raw) fixedExpenses = JSON.parse(raw); } catch {}
   try { const raw = localStorage.getItem(CAPITAL_KEY); if (raw) capital = JSON.parse(raw); } catch {}
@@ -3058,7 +3060,8 @@ function collectAppSettings() {
     pgDirectRates,
     kbBank,
     goals,
-    goalCalc
+    goalCalc,
+    p3wMap
   };
 }
 
@@ -3094,6 +3097,7 @@ function applyAppSettings(s) {
   }
   if (s.goals && typeof s.goals === 'object') localStorage.setItem(GOAL_KEY, JSON.stringify(s.goals));
   if (s.goalCalc && typeof s.goalCalc === 'object') localStorage.setItem(GOAL_CALC_KEY, JSON.stringify(s.goalCalc));
+  if (s.p3wMap && typeof s.p3wMap === 'object') localStorage.setItem(P3W_MAP_KEY, JSON.stringify(s.p3wMap));
   // UI 즉시 반영
   if (typeof renderPartners === 'function') renderPartners();
   if (typeof renderFixedExpenses === 'function') renderFixedExpenses();
@@ -5188,6 +5192,25 @@ function _canonVendor(s) {
   return t.toLowerCase();
 }
 
+// 거래처 예외/고정비 매핑 — 사업자번호(또는 정규화 상호) 기준, 월 무관 영구 적용.
+// 예: 이재선외(임대료 세금계산서)를 '고정비'로 지정 → 다음달부터 자동 고정비 처리(매입누락 제외).
+const P3W_MAP_KEY = 'p3w_vendor_map';
+function getP3wMap() {
+  try { const o = JSON.parse(localStorage.getItem(P3W_MAP_KEY) || '{}'); return (o && typeof o === 'object') ? o : {}; }
+  catch { return {}; }
+}
+function _p3wKey(bizNo, name) { return bizNo ? ('b:' + _normalizeBizNo(bizNo)) : ('n:' + _canonVendor(name)); }
+function saveP3wMapEntry(bizNo, name, entry) {
+  const o = getP3wMap(); o[_p3wKey(bizNo, name)] = entry;
+  localStorage.setItem(P3W_MAP_KEY, JSON.stringify(o));
+  if (typeof _queueSettingsCloudUpload === 'function') _queueSettingsCloudUpload();
+}
+function removeP3wMapEntry(bizNo, name) {
+  const o = getP3wMap(); delete o[_p3wKey(bizNo, name)];
+  localStorage.setItem(P3W_MAP_KEY, JSON.stringify(o));
+  if (typeof _queueSettingsCloudUpload === 'function') _queueSettingsCloudUpload();
+}
+
 function reconcilePurchase3Way(month) {
   const all = (typeof getAllRecords === 'function' ? getAllRecords() : {}) || {};
   const ht = (typeof getHometaxData === 'function' ? getHometaxData(month) : []) || [];
@@ -5263,10 +5286,13 @@ function reconcilePurchase3Way(month) {
     if (m) { const tg = m[1]; fg.tax = tg.tax; fg.taxItems = tg.taxItems; fg.name = fg.name + ' / ' + tg.name; tg._merged = true; delete groups[m[0]]; }
   });
 
+  const vmap = (typeof getP3wMap === 'function') ? getP3wMap() : {};
   const rows = Object.values(groups).filter(g => !g._merged && (g.buy || g.tax || g.bank)).map(g => {
     const B = g.buy > 0, T = g.tax > 0, K = g.bank > 0;
+    const mapped = vmap['b:' + g.bizNo] || vmap['n:' + _canonVendor(g.name)] || null;
     let status;
-    if (g.fixed && !T && !K) status = 'fixed';
+    if (mapped && mapped.kind === 'fixed') status = 'fixed_matched';  // 예외/고정비 지정 → 점검 제외
+    else if (g.fixed && !T && !K) status = 'fixed';
     else if (g.fixed) status = 'fixed_matched';
     else if (!B && (T || K)) status = 'missing_buy';
     else if (B && T && K) status = 'complete';
@@ -5275,7 +5301,8 @@ function reconcilePurchase3Way(month) {
     else status = 'pending';
     return {
       name: g.name, bizNo: g.bizNo, buy: Math.round(g.buy), tax: Math.round(g.tax), bank: Math.round(g.bank),
-      fixed: g.fixed, cats: [...g.cats], status, taxItems: g.taxItems, bankItems: g.bankItems
+      fixed: g.fixed, cats: [...g.cats], status, mapped: mapped ? (mapped.category || '고정비') : null,
+      taxItems: g.taxItems, bankItems: g.bankItems
     };
   });
   rows.sort((a, b) => Math.max(b.buy, b.tax, b.bank) - Math.max(a.buy, a.tax, a.bank));
@@ -5311,13 +5338,20 @@ function renderPurchase3Way(month) {
   const cell = (v, strong) => `<td style="text-align:right;font-family:'JetBrains Mono',monospace;${strong ? 'font-weight:600;' : ''}">${fmtN(v)}</td>`;
   const rowsHtml = r.rows.map(x => {
     const st = P3W_STATUS[x.status] || P3W_STATUS.pending;
-    const diff = (x.buy && x.tax) ? x.buy - x.tax : 0;
+    const badge = (x.status === 'fixed_matched' && x.mapped) ? `· 고정비(${escapeHtml(x.mapped)})` : st.badge;
     const note = x.status === 'unpaid' && x.buy > x.tax ? `<span style="color:var(--text-3);font-size:10px;">미발행 ${fmtN(x.buy - x.tax)}</span>`
       : (x.status === 'missing_buy' ? `<span style="color:var(--text-3);font-size:10px;">${x.tax ? '세금계산서' : ''}${x.tax && x.bank ? '+' : ''}${x.bank ? '통장' : ''}</span>` : '');
+    const enc = encodeURIComponent(x.name || '');
+    const canMark = ['missing_buy', 'pending', 'no_tax', 'unpaid'].includes(x.status);
+    const isMapped = x.status === 'fixed_matched' && x.mapped;
+    const action = isMapped
+      ? `<button class="btn btn-small" style="font-size:10px;padding:2px 6px;" onclick="unmarkP3wFixed('${month}','${x.bizNo || ''}','${enc}')">예외해제</button>`
+      : (canMark ? `<button class="btn btn-small" style="font-size:10px;padding:2px 6px;" onclick="markP3wFixed('${month}','${x.bizNo || ''}','${enc}')">고정비처리</button>` : '');
     return `<tr style="${x.status === 'missing_buy' ? 'background:var(--red-bg, #ffe5e5);' : ''}">
       <td><strong>${escapeHtml(x.name || '-')}</strong> ${note}</td>
       ${cell(x.buy)}${cell(x.tax)}${cell(x.bank)}
-      <td style="white-space:nowrap;color:${st.color};font-size:11px;font-weight:600;">${st.badge}</td>
+      <td style="white-space:nowrap;color:${st.color};font-size:11px;font-weight:600;">${badge}</td>
+      <td>${action}</td>
     </tr>`;
   }).join('');
 
@@ -5339,7 +5373,7 @@ function renderPurchase3Way(month) {
     <div class="table-wrap"><table class="data-table" style="font-size:12px;">
       <thead><tr>
         <th>거래처</th><th style="text-align:right;">매입</th><th style="text-align:right;">세금계산서</th>
-        <th style="text-align:right;">통장출금</th><th>상태</th>
+        <th style="text-align:right;">통장출금</th><th>상태</th><th></th>
       </tr></thead>
       <tbody>${rowsHtml}</tbody>
     </table></div>
@@ -5392,6 +5426,22 @@ function bulkRegisterMissingPurchases(month) {
   toast(`매입 ${n}건 등록 완료 — 분류 확인 권장`, 'ok');
   renderPurchase3Way(month);
   if (typeof renderMonthlyReport === 'function') renderMonthlyReport(month);
+}
+
+// 거래처를 '고정비(예외)'로 지정 — 점검에서 고정비로 빠지고 매입누락/대기에 안 뜸. 사업자번호로 저장돼 다음달 자동.
+function markP3wFixed(month, bizNo, encName) {
+  const name = decodeURIComponent(encName || '');
+  const cat = prompt(`'${name}'을(를) 고정비로 처리합니다.\n분류를 입력하세요 (예: 임대료). 이후 이 거래처는 점검에서 '고정비'로 빠지고, 다음 달부터도 자동 적용됩니다.`, '임대료');
+  if (cat === null) return;
+  saveP3wMapEntry(bizNo, name, { kind: 'fixed', category: (cat.trim() || '기타'), label: name });
+  toast(`'${name}' 고정비 처리 — 다음달부터 자동`, 'ok');
+  renderPurchase3Way(month);
+}
+function unmarkP3wFixed(month, bizNo, encName) {
+  const name = decodeURIComponent(encName || '');
+  removeP3wMapEntry(bizNo, name);
+  toast(`'${name}' 예외 해제`, 'ok');
+  renderPurchase3Way(month);
 }
 
 /* ========================================================================
