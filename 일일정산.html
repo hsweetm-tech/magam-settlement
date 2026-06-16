@@ -4141,6 +4141,7 @@ function reconcileKbBank(month) {
         date: d,
         amount: total,
         vendor: p.vendor || '',
+        bizNo: _normalizeBizNo(p.bizNo),
         category: p.category || '',
         method: p.method || '',
         _src: 'purchase',
@@ -4413,6 +4414,19 @@ function reconcileKbBank(month) {
       (htRec.matchedN1 || []).forEach(m => (m.appIdxs || []).forEach(markRef));
     }
   } catch (e) { /* 홈택스 대사 실패해도 통장 대사는 진행 */ }
+  // 거래처 단위 커버리지: 같은 거래처(사업자번호/상호)에 세금계산서가 있으면 그 거래처 매입은 '증빙 있음'.
+  // (단지푸드처럼 월 세금계산서가 일부만 발행돼 N:1 부분집합 밖 행도 ✗로 뜨던 문제 보정)
+  const _taxBizSet = new Set(), _taxNames = [];
+  (ht || []).filter(h => !/카드|현금영수/.test(h.docType || '')).forEach(h => {
+    const b = _normalizeBizNo(h.bizNo); if (b) _taxBizSet.add(b);
+    const cn = (typeof _canonVendor === 'function') ? _canonVendor(h.vendor) : ''; if (cn) _taxNames.push(cn);
+  });
+  const _purchaseHasTaxVendor = (s) => {
+    if (s.bizNo && _taxBizSet.has(s.bizNo)) return true;
+    const cn = (typeof _canonVendor === 'function') ? _canonVendor(s.vendor) : '';
+    if (!cn) return false;
+    return _taxNames.some(n => n.length >= 2 && (cn.includes(n) || n.includes(cn) || (typeof _shareCore === 'function' && _shareCore(cn, n, 3))));
+  };
   function isCardOrCashReceipt(method) {
     // 카드/체크카드/법인카드/현금영수증은 세금계산서 발행 안 함 → 홈택스 매칭 대상 아님
     return /카드|체크카드|법인카드|영수증/.test(method || '');
@@ -4434,8 +4448,8 @@ function reconcileKbBank(month) {
   }
   // sysOnly: 카드/현금영수증은 매칭 시도 안 함 (대상 외)
   sysOutUnmatched.forEach(s => {
-    // 월 세금계산서로 N:1 커버되는 매입행 → 행별 금액 안 맞아도 증빙 있음
-    if (s._src === 'purchase' && coveredPurchaseRefs.has(s._ref)) { s._hometaxN1 = true; return; }
+    // 월 세금계산서로 N:1 커버되거나 같은 거래처에 세금계산서 있으면 → 증빙 있음(✓)
+    if (s._src === 'purchase' && (coveredPurchaseRefs.has(s._ref) || _purchaseHasTaxVendor(s))) { s._hometaxN1 = true; return; }
     if (isCardOrCashReceipt(s.method)) { s._htNa = true; return; }
     const m = findHometax(s.amount, s.date);
     if (m) s._hometax = m;
