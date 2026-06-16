@@ -2918,8 +2918,9 @@ const HOMETAX_COLUMNS = {
   supply: ['공급가액','공급가','공급가(원)'],
   vat:    ['세액','부가세','매입세액','부가가치세','부가세액','부가세(원)','세액(원)'],
   total:  ['합계금액','합계','총액','거래금액','총거래금액','금액','승인금액','승인금액(원)','거래금액(원)'],
-  // 품목명만 — '품목일자/품목규격/품목공급가액' 등에 오매칭되지 않도록 구체 후보만. (비고는 컬럼 순서상 앞서서 제외)
-  item:   ['품목명','품명','상품명','품목내역','거래내용']
+  // 품목명만 — '품목일자/품목규격/품목공급가액' 등에 오매칭되지 않도록 구체 후보만.
+  item:   ['품목명','품명','상품명','품목내역','거래내용'],
+  note:   ['비고', '적요']  // 품목명 보조 설명 (예: '양식(돈까스/파스타…)')
 };
 
 function detectHometaxDocType(rows, filename) {
@@ -2973,7 +2974,7 @@ function parseHometaxRows(rawRows, filename, fallbackMonth) {
   // 구체적인 필드(사업자번호·대표자명·날짜·금액)를 먼저 잡고 그 컬럼은 제외한 뒤 vendor(상호)를 매핑.
   // 그래야 '공급자' 같은 느슨한 vendor 후보가 '공급자사업자등록번호'를 잘못 집어 상호=사업자번호 되는 버그를 막음.
   const used = new Set();
-  ['date', 'bizNo', 'representative', 'supply', 'vat', 'total', 'item', 'vendor'].forEach(k => {
+  ['date', 'bizNo', 'representative', 'supply', 'vat', 'total', 'item', 'note', 'vendor'].forEach(k => {
     const c = _matchHometaxCol(cols, HOMETAX_COLUMNS[k], used);
     detected[k] = c;
     if (c) used.add(c);
@@ -2990,6 +2991,7 @@ function parseHometaxRows(rawRows, filename, fallbackMonth) {
       bizNo: detected.bizNo ? _normalizeBizNo(r[detected.bizNo]) : '',
       representative: detected.representative ? String(r[detected.representative] || '').trim() : '',
       item: detected.item ? String(r[detected.item] || '').trim() : '',
+      note: detected.note ? String(r[detected.note] || '').trim() : '',
       supply, vat, total,
       docType
     };
@@ -5245,7 +5247,7 @@ function reconcilePurchase3Way(month) {
   // 2) 세금계산서/계산서 (카드·현금영수증 제외 = 적격증빙 매입)
   const taxes = ht.filter(h => !/카드|현금영수/.test(h.docType || '')).map(h => ({
     date: h.date || '', vendor: h.vendor || '', bizNo: _normalizeBizNo(h.bizNo),
-    supply: num(h.supply), vat: num(h.vat), total: num(h.total), item: h.item || '', representative: h.representative || ''
+    supply: num(h.supply), vat: num(h.vat), total: num(h.total), item: h.item || h.note || '', representative: h.representative || ''
   }));
 
   // 사업자번호 역해석 사전 (이름만 있는 행도 bizNo 채워 연결)
@@ -5367,6 +5369,13 @@ function renderPurchase3Way(month) {
     const badge = (x.status === 'fixed_matched' && x.mapped) ? `· 점검제외(${escapeHtml(x.mapped)})` : st.badge;
     const note = x.status === 'unpaid' && x.buy > x.tax ? `<span style="color:var(--text-3);font-size:10px;">미발행 ${fmtN(x.buy - x.tax)}</span>`
       : (x.status === 'missing_buy' ? `<span style="color:var(--text-3);font-size:10px;">${x.tax ? '세금계산서' : ''}${x.tax && x.bank ? '+' : ''}${x.bank ? '통장' : ''}</span>` : '');
+    // 적요/내용: 세금계산서 품목명 + 통장 적요 (거래처만으론 뭔지 모를 때)
+    const items = [...new Set((x.taxItems || []).map(t => t.item).filter(Boolean))];
+    const bdescs = [...new Set((x.bankItems || []).map(b => b.desc).filter(Boolean))];
+    const dParts = [];
+    if (items.length) dParts.push('📄 ' + items.slice(0, 2).join(', '));
+    if (bdescs.length) dParts.push('🏦 ' + bdescs.slice(0, 2).join(', '));
+    const descLine = dParts.length ? `<div style="font-size:10px;color:var(--text-3);margin-top:1px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(dParts.join('  '))}">${escapeHtml(dParts.join('  '))}</div>` : '';
     const enc = encodeURIComponent(x.name || '');
     const canMark = ['missing_buy', 'pending', 'no_tax', 'unpaid'].includes(x.status);
     const isMapped = x.status === 'fixed_matched' && x.mapped;
@@ -5379,7 +5388,7 @@ function renderPurchase3Way(month) {
     else if (canMark) action = `<button ${bSmall} onclick="markP3wFixed('${month}','${bz}','${enc}')" title="이미 손익에 반영된 건(매입/고정비) — 점검에서만 숨김, 손익 변화 없음">점검제외</button> <button ${bSmall} onclick="markP3wRecurring('${month}','${bz}','${enc}')" title="매월 실제금액으로 매입 자동생성(손익 반영)">정기등록</button> <button ${bSmall} onclick="linkP3wVendor('${month}','${bz}','${enc}')" title="쪼개진 같은 거래처를 하나로 연결">연결</button>${unlinkBtn}`;
     else action = unlinkBtn;
     return `<tr style="${x.status === 'missing_buy' ? 'background:var(--red-bg, #ffe5e5);' : ''}">
-      <td><strong>${escapeHtml(x.name || '-')}</strong> ${note}</td>
+      <td><strong>${escapeHtml(x.name || '-')}</strong> ${note}${descLine}</td>
       ${cell(x.buy)}${cell(x.tax)}${cell(x.bank)}
       <td style="white-space:nowrap;color:${st.color};font-size:11px;font-weight:600;">${badge}</td>
       <td>${action}</td>
