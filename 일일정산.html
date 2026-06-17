@@ -5486,9 +5486,12 @@ function registerOneMissingPurchase(month, bizNo, encName) {
   if (!row) { toast('해당 매입 미입력 건을 찾지 못했습니다', 'warn'); return; }
   const d = _p3wDraftFromRow(row, month);
   const fmtN = n => Number(n || 0).toLocaleString();
-  if (!confirm(`${d.date.slice(5)} '${d.vendor}' ${fmtN(d.total)}원을 매입으로 등록합니다. [${d._src}]\n분류 기본값(${d.category})으로 들어가니 등록 후 조정하세요.\n등록할까요?`)) return;
+  const catList = (typeof EXPENSE_CATEGORIES !== 'undefined') ? EXPENSE_CATEGORIES : [];
+  const cat = prompt(`${d.date.slice(5)} '${d.vendor}' ${fmtN(d.total)}원 매입 등록 [${d._src}]${d.item ? '\n품목: ' + d.item : ''}\n\n분류를 입력하세요:\n${catList.join(' / ')}`, d.category);
+  if (cat === null) return;
+  d.category = cat.trim() || d.category;
   _registerP3wDrafts([d]);
-  toast(`'${d.vendor}' 매입 등록 완료`, 'ok');
+  toast(`'${d.vendor}' 매입 등록 (${d.category})`, 'ok');
   renderPurchase3Way(month);
   if (typeof renderMonthlyReport === 'function') renderMonthlyReport(month);
 }
