@@ -5301,6 +5301,30 @@ function reconcilePurchase3Way(month) {
   taxes.forEach(x => { const g = G(x.vendor, x.bizNo); g.tax += x.total; if (x.vendor) g.name = x.vendor; g.taxItems.push(x); });
   banks.forEach(x => { const g = G(x.vendor, x.bizNo); g.bank += x.total; g.bankItems.push(x); });
 
+  // 사업자번호 없는 거래처끼리 상호 유사도(3글자+ 공통)로 병합.
+  // 예: 매입 '강성국인테리어커튼구매시공' ↔ 통장 '강성국', 매입 '한국전력전기료' ↔ 통장 '한국전력'.
+  // (세금계산서가 있어 bizNo로 묶이는 건은 제외 — 그쪽은 위 resolveBiz가 이미 처리.)
+  // 매입(buy) 있는 그룹을 anchor로 우선(등록한 거래처명·분류 보존), 동률이면 긴 이름 우선.
+  {
+    const nameOnly = Object.entries(groups).filter(([k, g]) => k.indexOf('n:') === 0 && !g.bizNo && !g._merged && !g.fixed);
+    nameOnly.sort((a, b) => ((b[1].buy > 0) - (a[1].buy > 0)) || (_canonVendor(b[1].name).length - _canonVendor(a[1].name).length));
+    for (let i = 0; i < nameOnly.length; i++) {
+      const ga = nameOnly[i][1]; if (ga._merged) continue;
+      const ca = _canonVendor(ga.name);
+      for (let j = i + 1; j < nameOnly.length; j++) {
+        const kb = nameOnly[j][0], gb = nameOnly[j][1]; if (gb._merged) continue;
+        const cb = _canonVendor(gb.name);
+        if (ca === cb || !_shareCore(ca, cb, 3)) continue;
+        ga.buy += gb.buy; ga.tax += gb.tax; ga.bank += gb.bank; ga.cardBuy += gb.cardBuy;
+        ga.fixed = ga.fixed || gb.fixed;
+        gb.cats.forEach(c => ga.cats.add(c));
+        ga.taxItems.push(...gb.taxItems); ga.bankItems.push(...gb.bankItems);
+        if (!ga.bizNo && gb.bizNo) ga.bizNo = gb.bizNo;
+        gb._merged = true; delete groups[kb];
+      }
+    }
+  }
+
   // 고정비-only ↔ 세금계산서-only 금액일치 병합 (임대료 12.1M ↔ 이재선외)
   const entries = Object.entries(groups);
   const fixedOnly = entries.filter(([, g]) => g.fixed && g.buy > 0 && !g.tax && !g.bank);

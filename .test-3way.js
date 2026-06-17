@@ -215,5 +215,37 @@ M.set({ '2026-05-03': { purchaseRows: [] } },
 const rGuess = M.reconcilePurchase3Way('2026-05');
 eq(M._p3wDraftFromRow(rGuess.rows.find(x => x.name.includes('코카콜라')), '2026-05').category, '주류/음료', '초안: 코카콜라 추천분류 반영');
 
+// 사업자번호 없는 거래처: 매입(긴 이름) ↔ 통장(짧은 약칭) 유사도 병합
+// 강성국 인테리어: 매입 '강성국 인테리어 커튼구매시공' ↔ 통장 '강성국' (세금계산서 없음)
+M.set({ '2026-05-08': { purchaseRows: [
+  { vendor: '강성국 인테리어 커튼구매시공', bizNo: '', supply: 500000, vat: 50000, total: 550000, category: '수리/비품', method: '계좌이체' },
+] } }, [], [
+  { date: '2026-05-09', desc: '강성국', withdraw: 550000, summary: '인터넷뱅킹', kind: '' },
+], []);
+const rks = M.reconcilePurchase3Way('2026-05');
+const ks = rowOf(rks, '강성국');
+ok(ks && ks.buy === 550000 && ks.bank === 550000, '유사병합: 강성국 매입↔통장 한 줄(bizNo 없이)');
+eq(ks.status, 'no_tax', '유사병합: 강성국 매입+통장(계산서X) → no_tax');
+ok(rks.rows.filter(x => x.name.includes('강성국')).length === 1, '유사병합: 강성국 한 줄로만');
+
+// 전기료: 매입 '한국전력 전기료' ↔ 통장 '한국전력'
+M.set({ '2026-05-10': { purchaseRows: [
+  { vendor: '한국전력 전기료', bizNo: '', supply: 200000, vat: 20000, total: 220000, category: '공과금', method: '계좌이체' },
+] } }, [], [
+  { date: '2026-05-11', desc: '한국전력', withdraw: 220000, summary: '자동이체', kind: '' },
+], []);
+const rel = M.reconcilePurchase3Way('2026-05');
+const elc = rowOf(rel, '한국전력');
+ok(elc && elc.buy === 220000 && elc.bank === 220000, '유사병합: 한국전력 매입↔통장 병합');
+
+// 오병합 방지: 3글자 미만 공통은 병합 안 함 ('가스' vs '전기' 등)
+M.set({ '2026-05-12': { purchaseRows: [
+  { vendor: '대한가스', bizNo: '', supply: 100000, vat: 10000, total: 110000, category: '공과금', method: '계좌이체' },
+] } }, [], [
+  { date: '2026-05-13', desc: '대한제분', withdraw: 90000, summary: '인터넷뱅킹', kind: '' },
+], []);
+const rno = M.reconcilePurchase3Way('2026-05');
+ok(rno.rows.filter(x => x.name.includes('대한')).length === 2, '오병합 방지: 대한가스↔대한제분(공통2글자) 안 묶임');
+
 console.log(`\n3-way 점검 테스트: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
