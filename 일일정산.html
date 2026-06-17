@@ -5477,6 +5477,7 @@ function _p3wDraftFromRow(x, month) {
 
 function _registerP3wDrafts(drafts) {
   const all = getAllRecords();
+  const dates = new Set();
   drafts.forEach(d => {
     if (!all[d.date]) all[d.date] = { date: d.date, totals: {}, posRows: [], cardRows: [], purchaseRows: [], payrollRows: [], bankRows: [], extras: {}, issues: [], status: 'draft' };
     if (!Array.isArray(all[d.date].purchaseRows)) all[d.date].purchaseRows = [];
@@ -5485,9 +5486,14 @@ function _registerP3wDrafts(drafts) {
       supply: d.supply, vat: d.vat, total: d.total, docType: d.docType,
       memo: `3-way 등록 (${d._src})${d.item ? ' · ' + d.item : ''}`, _bulk3way: true
     });
+    dates.add(d.date);
   });
   localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
   _queueCloudUpload();
+  // 드라이브 폴더 연결 시 영향받은 날짜 JSON도 자동 갱신 (미연결/테스트 환경이면 건너뜀)
+  if (typeof _writeRecordsToDriveIfConnected === 'function') {
+    _writeRecordsToDriveIfConnected([...dates].map(d => all[d]));
+  }
 }
 
 function bulkRegisterMissingPurchases(month) {
@@ -5591,6 +5597,7 @@ function autoRegisterRecurring(month) {
   const r = reconcilePurchase3Way(month);
   const all = getAllRecords();
   let created = 0;
+  const dates = new Set();
   r.rows.forEach(row => {
     const entry = map['b:' + row.bizNo] || map['n:' + _canonVendor(row.name)];
     if (!entry || entry.kind !== 'auto') return;
@@ -5612,9 +5619,17 @@ function autoRegisterRecurring(month) {
     if (!all[date]) all[date] = { date, totals: {}, posRows: [], cardRows: [], purchaseRows: [], payrollRows: [], bankRows: [], extras: {}, issues: [], status: 'draft' };
     if (!Array.isArray(all[date].purchaseRows)) all[date].purchaseRows = [];
     all[date].purchaseRows.push({ date, vendor, bizNo, category: entry.category || '기타', method: '계좌이체', supply, vat, total, docType, memo: '정기 거래처 자동등록', _autoRecurring: true });
+    dates.add(date);
     created++;
   });
-  if (created) { localStorage.setItem(STORAGE_KEY, JSON.stringify(all)); _queueCloudUpload(); }
+  if (created) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+    _queueCloudUpload();
+    // 드라이브 폴더 연결 시 새로 생성된 날짜 JSON도 자동 갱신 (미연결/테스트면 건너뜀)
+    if (typeof _writeRecordsToDriveIfConnected === 'function') {
+      _writeRecordsToDriveIfConnected([...dates].map(d => all[d]));
+    }
+  }
   return created;
 }
 
@@ -10084,6 +10099,20 @@ async function writeRecordToDrive(record) {
   await w.write(JSON.stringify(merged, null, 2));
   await w.close();
   return true;
+}
+
+// 드라이브 폴더가 연결돼 있을 때만 record들을 라벨링_정리본/날짜.json에 자동 반영 (fire-and-forget).
+// 미연결이면 조용히 건너뜀 — localStorage·클라우드엔 이미 저장됨. (마감처럼 다운로드 폴백은 안 함.)
+function _writeRecordsToDriveIfConnected(records) {
+  if (!_driveDirHandle || !Array.isArray(records) || !records.length) return;
+  (async () => {
+    let ok = 0;
+    for (const rec of records) {
+      if (!rec || !rec.date) continue;
+      try { if (await writeRecordToDrive(rec)) ok++; } catch (e) { console.error('drive write', rec.date, e); }
+    }
+    if (ok) toast(`구글드라이브 ${ok}일치 자동 갱신됨`, 'ok');
+  })();
 }
 
 function _downloadRecordJson(record) {
