@@ -29,10 +29,11 @@ const src = `
   ${grab(/function _shareCore[\s\S]*?\n\}/, '_shareCore')}
   ${fn3way}
   ${grab(/function autoRegisterRecurring[\s\S]*?\n\}/, 'autoRegisterRecurring')}
+  ${grab(/function _guessP3wCategory[\s\S]*?\n\}/, '_guessP3wCategory')}
   ${grab(/function _p3wDraftFromRow[\s\S]*?\n\}/, '_p3wDraftFromRow')}
   ${grab(/function _registerP3wDrafts[\s\S]*?\n\}/, '_registerP3wDrafts')}
   return {
-    reconcilePurchase3Way, _canonVendor, setP3map, autoRegisterRecurring, _p3wDraftFromRow, _registerP3wDrafts,
+    reconcilePurchase3Way, _canonVendor, setP3map, autoRegisterRecurring, _guessP3wCategory, _p3wDraftFromRow, _registerP3wDrafts,
     set: (rec, ht, bank, fixed) => { _rec = rec; _ht = { '2026-05': ht }; _bank = { '2026-05': bank }; _fixed = fixed || []; _p3map = {}; }
   };
 `;
@@ -191,6 +192,28 @@ const artAfter = rAfter.rows.find(x => x.name.includes('아트팜'));
 ok(artAfter.buy === 300000, '개별등록: 아트팜 매입 생성됨');
 ok(artAfter.status !== 'missing_buy', '개별등록: 아트팜 매입누락 해제');
 ok(rAfter.rows.find(x => x.name.includes('월드키친')).status === 'missing_buy', '개별등록: 더월드키친은 그대로(개별만)');
+
+// 분류 자동추천 (_guessP3wCategory)
+eq(M._guessP3wCategory('코카콜라음료(주)'), '주류/음료', '추천: 코카콜라 → 주류/음료');
+eq(M._guessP3wCategory('참이슬 소주 1박스'), '주류/음료', '추천: 소주 → 주류/음료');
+eq(M._guessP3wCategory('하이트 생수 2L'), '주류/음료', '추천: 생수 → 주류/음료');
+eq(M._guessP3wCategory('주식회사 케이티'), '통신비', '추천: 케이티 → 통신비');
+eq(M._guessP3wCategory('KT통신요금05'), '통신비', '추천: KT통신요금 → 통신비');
+eq(M._guessP3wCategory('한국전력 전기요금'), '공과금', '추천: 한전 → 공과금');
+eq(M._guessP3wCategory('상가 임대료 6월'), '임대료', '추천: 임대료 → 임대료');
+eq(M._guessP3wCategory('OO세무회계 기장료'), '세금·공과', '추천: 세무 → 세금·공과');
+eq(M._guessP3wCategory('배달의민족 광고비'), '배달수수료', '추천: 배민(배달 우선) → 배달수수료');
+eq(M._guessP3wCategory('다이소 주방용품'), '소모품', '추천: 다이소 → 소모품');
+eq(M._guessP3wCategory('에어컨 수리'), '수리/비품', '추천: 수리 → 수리/비품');
+eq(M._guessP3wCategory('한우 정육 도매'), '식자재', '추천: 정육/도매 → 식자재');
+eq(M._guessP3wCategory('네이버 플레이스 광고'), '마케팅', '추천: 플레이스 → 마케팅');
+eq(M._guessP3wCategory('손무경(무무앤코)'), null, '추천: 단서없는 거래처 → null(기본값 사용)');
+eq(M._guessP3wCategory(''), null, '추천: 빈 텍스트 → null');
+// _p3wDraftFromRow가 추천 분류를 채우는지 (코카콜라 세금계산서 → 주류/음료)
+M.set({ '2026-05-03': { purchaseRows: [] } },
+  [{ date: '2026-05-31', vendor: '코카콜라음료(주)', bizNo: '211-88-11111', supply: 100000, vat: 10000, total: 110000, docType: '세금계산서', item: '코카콜라 1.5L' }], [], []);
+const rGuess = M.reconcilePurchase3Way('2026-05');
+eq(M._p3wDraftFromRow(rGuess.rows.find(x => x.name.includes('코카콜라')), '2026-05').category, '주류/음료', '초안: 코카콜라 추천분류 반영');
 
 console.log(`\n3-way 점검 테스트: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

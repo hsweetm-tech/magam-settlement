@@ -5433,6 +5433,30 @@ function renderPurchase3Way(month) {
 
 /** 매입 미입력(세금계산서·통장엔 있음) 건을 매입행으로 일괄 등록 */
 // 매입누락 row → 등록할 매입 초안 (세금계산서 우선, 없으면 통장)
+// 매입 분류 자동추천 — 품목명·거래처명 등 텍스트의 키워드로 EXPENSE_CATEGORIES 중 하나 추정. 못 찾으면 null.
+// (구체적·드문 분류를 먼저 검사해 오매칭 방지. 식자재는 가장 넓어서 맨 뒤.)
+function _guessP3wCategory(text) {
+  // 공백은 제거하지 않음 — 붙이면 인접 단어가 합쳐져 오매칭됨(예: '다이소 주방' → '소주').
+  const s = String(text || '').toLowerCase().trim();
+  if (!s) return null;
+  const rules = [
+    ['주류/음료', ['주류','주정','양조','소주','맥주','와인','막걸리','음료','콜라','코카콜라','펩시','사이다','생수','워터','beverage','beer','wine']],
+    ['배달수수료', ['배달','배민','요기요','쿠팡이츠','배달의민족','땡겨요']],
+    ['통신비', ['통신','케이티','kt','skt','sk텔레콤','텔레콤','유플러스','lgu','인터넷','telecom','전화요금']],
+    ['공과금', ['한국전력','한전','전기요금','도시가스','가스공사','상수도','수도요금','관리비','난방']],
+    ['임대료', ['임대','임차','월세','렌트','임대인']],
+    ['세금·공과', ['세무','부가세','회계','기장','세무사','법무사','노무','4대보험','국민연금','건강보험','산재','고용보험']],
+    ['마케팅', ['광고','마케팅','홍보','플레이스','인스타','블로그','sns']],
+    ['수리/비품', ['수리','수선','설비','에어컨','냉장고','주방기기','집기','비품','인테리어','철물','공조','보일러']],
+    ['소모품', ['소모품','포장','용기','비닐','일회용','종이컵','봉투','세제','위생','장갑','호일','주방용품','다이소','노끈']],
+    ['식자재', ['식자재','식품','푸드','food','농산','축산','수산','정육','청과','야채','채소','과일','곡물','정미','수산물','건어물','한우','돈육','계육','농협','수협','마트','도매','유통']],
+  ];
+  for (const [cat, kws] of rules) {
+    if (kws.some(k => s.includes(k))) return cat;
+  }
+  return null;
+}
+
 function _p3wDraftFromRow(x, month) {
   const t = (x.taxItems && x.taxItems[0]) || null;
   if (t) {
@@ -5441,12 +5465,14 @@ function _p3wDraftFromRow(x, month) {
     const total = x.taxItems.reduce((s, h) => s + num(h.total), 0);
     const date = x.taxItems.map(h => h.date).filter(Boolean).sort().pop() || (month + '-28');
     const item = [...new Set(x.taxItems.map(h => h.item).filter(Boolean))].slice(0, 2).join(', ');
-    return { date, vendor: t.vendor || x.name, bizNo: t.bizNo || x.bizNo, supply, vat, total, category: '식자재', method: '계좌이체', docType: '세금계산서', item, _src: '세금계산서' };
+    const guess = _guessP3wCategory(item + ' ' + (t.vendor || x.name || ''));
+    return { date, vendor: t.vendor || x.name, bizNo: t.bizNo || x.bizNo, supply, vat, total, category: guess || '식자재', method: '계좌이체', docType: '세금계산서', item, _src: '세금계산서' };
   }
   const total = x.bankItems.reduce((s, bb) => s + num(bb.total), 0);
   const b = (x.bankItems && x.bankItems[0]) || null;
   const date = (b && b.date) || (month + '-28');
-  return { date, vendor: x.name, bizNo: x.bizNo, supply: Math.round(total / 1.1), vat: total - Math.round(total / 1.1), total, category: '기타', method: '계좌이체', docType: '구매영수증', item: (b && b.desc) || '', _src: '통장출금(증빙없음)' };
+  const guessB = _guessP3wCategory(((b && b.desc) || '') + ' ' + (x.name || ''));
+  return { date, vendor: x.name, bizNo: x.bizNo, supply: Math.round(total / 1.1), vat: total - Math.round(total / 1.1), total, category: guessB || '기타', method: '계좌이체', docType: '구매영수증', item: (b && b.desc) || '', _src: '통장출금(증빙없음)' };
 }
 
 function _registerP3wDrafts(drafts) {
@@ -5470,8 +5496,8 @@ function bulkRegisterMissingPurchases(month) {
   if (!missing.length) { toast('등록할 매입 미입력 건이 없습니다', 'warn'); return; }
   const drafts = missing.map(x => _p3wDraftFromRow(x, month));
   const fmtN = n => Number(n || 0).toLocaleString();
-  const preview = drafts.map(d => `· ${d.date.slice(5)} ${d.vendor} ${fmtN(d.total)} [${d._src}]`).join('\n');
-  if (!confirm(`${month} 매입 미입력 ${drafts.length}건을 매입으로 등록합니다.\n\n${preview}\n\n분류는 기본값(식자재/기타)으로 들어가니 등록 후 일일정산 탭에서 조정하세요.\n등록할까요?`)) return;
+  const preview = drafts.map(d => `· ${d.date.slice(5)} ${d.vendor} ${fmtN(d.total)} → ${d.category} [${d._src}]`).join('\n');
+  if (!confirm(`${month} 매입 미입력 ${drafts.length}건을 매입으로 등록합니다.\n\n${preview}\n\n분류는 품목·거래처명으로 자동 추천했습니다(틀린 건 등록 후 일일정산 탭에서 조정).\n등록할까요?`)) return;
   _registerP3wDrafts(drafts);
   toast(`매입 ${drafts.length}건 등록 완료 — 분류 확인 권장`, 'ok');
   renderPurchase3Way(month);
