@@ -5272,14 +5272,16 @@ function reconcilePurchase3Way(month) {
   const vmap = (typeof getP3wMap === 'function') ? getP3wMap() : {};
   const aliasList = Object.values(vmap).filter(v => v && v.kind === 'alias' && v.target && v.pattern);
 
-  // 3) 통장 출금 (카드출금 제외) — 대표자명/상호 포함·공통글자 매칭으로 거래처 추정
-  const banks = bankRows.filter(b => num(b.withdraw) > 0 && b.kind !== '카드출금' && !/체크카드/.test(b.summary || '')).map(b => {
+  // 3) 통장 출금 — 대표자명/상호 포함·공통글자 매칭으로 거래처 추정.
+  //    카드대금 일괄출금(kind:'카드출금')만 제외. 체크카드 건별결제(summary:'체크카드')는
+  //    거래처에 직접 나간 실제 매입이므로 포함(킨코스·다이소 등). card 플래그로 등록 시 구분.
+  const banks = bankRows.filter(b => num(b.withdraw) > 0 && b.kind !== '카드출금').map(b => {
     const desc = (b.desc || '').trim(); const cn = _canonVendor(desc);
     let vendor = desc, bizNo = '';
     const rep = repList.find(r => r.rep.length >= 2 && (cn.includes(r.rep) || r.rep.includes(cn)));
     if (rep) { vendor = rep.vendor; bizNo = rep.bizNo; }
     else { const nm = nameList.find(n => n.length >= 2 && (cn.includes(n) || n.includes(cn) || _shareCore(cn, n, 3))); if (nm) { bizNo = canonBiz[nm]; vendor = bizName[bizNo] || desc; } }
-    return { date: b.date || '', vendor, bizNo, total: num(b.withdraw), desc };
+    return { date: b.date || '', vendor, bizNo, total: num(b.withdraw), desc, card: /체크카드|카드/.test(b.summary || '') };
   });
 
   // 4) 거래처 그룹핑 (bizNo 우선, 없으면 정규화 상호; 수동 별칭 적용)
@@ -5346,9 +5348,9 @@ function reconcilePurchase3Way(month) {
     else if (!B && (T || K)) status = 'missing_buy';
     else if (B && T && K) status = 'complete';
     else if (B && T && !K) status = 'unpaid';
-    else if (B && !T && K) status = 'no_tax';
-    // 매입만 있는 경우: 카드결제분이 대부분이면 정상(카드전표 증빙·카드대금 일괄출금) → 'card'
+    // 카드결제분이 대부분인 매입은 정상(카드전표 증빙) — 통장 체크카드 출금과 매칭돼도 'card' 유지.
     else if (B && g.cardBuy >= g.buy - 10) status = 'card';
+    else if (B && !T && K) status = 'no_tax';
     else status = 'pending';
     return {
       name: g.name, bizNo: g.bizNo, buy: Math.round(g.buy), tax: Math.round(g.tax), bank: Math.round(g.bank),
@@ -5496,7 +5498,8 @@ function _p3wDraftFromRow(x, month) {
   const b = (x.bankItems && x.bankItems[0]) || null;
   const date = (b && b.date) || (month + '-28');
   const guessB = _guessP3wCategory(((b && b.desc) || '') + ' ' + (x.name || ''));
-  return { date, vendor: x.name, bizNo: x.bizNo, supply: Math.round(total / 1.1), vat: total - Math.round(total / 1.1), total, category: guessB || '기타', method: '계좌이체', docType: '구매영수증', item: (b && b.desc) || '', _src: '통장출금(증빙없음)' };
+  const isCard = !!(b && b.card);
+  return { date, vendor: x.name, bizNo: x.bizNo, supply: Math.round(total / 1.1), vat: total - Math.round(total / 1.1), total, category: guessB || '기타', method: isCard ? '체크카드' : '계좌이체', docType: isCard ? '카드전표' : '구매영수증', item: (b && b.desc) || '', _src: isCard ? '통장출금(체크카드)' : '통장출금(증빙없음)' };
 }
 
 function _registerP3wDrafts(drafts) {

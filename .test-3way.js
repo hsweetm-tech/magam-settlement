@@ -247,5 +247,29 @@ M.set({ '2026-05-12': { purchaseRows: [
 const rno = M.reconcilePurchase3Way('2026-05');
 ok(rno.rows.filter(x => x.name.includes('대한')).length === 2, '오병합 방지: 대한가스↔대한제분(공통2글자) 안 묶임');
 
+// 체크카드 건별결제: 통장에 거래처별로 찍힌 체크카드 출금은 실제 매입 → 3-way에 포함돼야 함
+// 킨코스(매입X, 체크카드 통장O) → missing_buy로 떠서 등록 가능해야 함
+M.set({ '2026-05-01': { purchaseRows: [
+  { vendor: '다이소', supply: 50000, vat: 5000, total: 55000, category: '소모품', method: '체크카드' }, // 카드매입(이미 입력)
+] } }, [], [
+  { date: '2026-05-26', desc: '킨코스코리아(주)', withdraw: 64800, summary: '체크카드', kind: '기타출금' },
+  { date: '2026-05-08', desc: '다이소', withdraw: 55000, summary: '체크카드', kind: '기타출금' }, // 카드매입과 매칭
+  { date: '2026-05-15', desc: '카드대금결제', withdraw: 999999, summary: '결제', kind: '카드출금' }, // 카드대금 일괄출금 → 제외
+]);
+const rck = M.reconcilePurchase3Way('2026-05');
+const kinko = rowOf(rck, '킨코스');
+ok(kinko && kinko.bank === 64800 && kinko.buy === 0, '체크카드: 킨코스 통장출금 잡힘(매입X)');
+eq(kinko.status, 'missing_buy', '체크카드: 킨코스 → 매입 미입력(등록 가능)');
+// 카드매입(다이소)이 체크카드 통장출금과 매칭돼도 'card' 유지(no_tax 경고로 안 바뀜)
+const daiso = rowOf(rck, '다이소');
+ok(daiso && daiso.buy === 55000 && daiso.bank === 55000, '체크카드: 다이소 매입↔체크카드 통장 매칭');
+eq(daiso.status, 'card', '체크카드: 카드매입+체크카드출금 → card 유지(no_tax 아님)');
+// 카드대금 일괄출금(kind:카드출금)은 여전히 제외
+ok(!rck.rows.some(x => /카드대금/.test(x.name)), '체크카드: 카드대금 일괄출금은 제외');
+// 킨코스 등록 초안: 체크카드 → method/docType 반영
+const kdraft = M._p3wDraftFromRow(kinko, '2026-05');
+eq(kdraft.method, '체크카드', '체크카드 초안: method=체크카드');
+eq(kdraft.docType, '카드전표', '체크카드 초안: docType=카드전표');
+
 console.log(`\n3-way 점검 테스트: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
