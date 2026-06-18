@@ -4554,11 +4554,28 @@ function reconcileKbBank(month) {
     else inBankOnlyReal.push(b);                                          // 진짜 카드매출 미매칭
   });
 
+  // ===== 출금 '매입 등록 필요'를 3-way 매입점검 결과로 통일 =====
+  // 출금매칭(건별)과 3-way(거래처 합계)가 따로 놀아 같은 건이 한쪽엔 매칭·한쪽엔 '등록필요'로 어긋나던 문제.
+  // 3-way가 사업자번호·홈택스 대표자·[연결]별칭·N:1 합산까지 써서 더 정확하므로, 출금매칭의 '매입 등록 필요'는
+  // 3-way가 missing_buy로 보는 통장 건만 남긴다 (강성국=까사뷰·KT=케이티·05월전기료=한국전력 등은 3-way 매칭 → 제외).
+  let bankOnlyOut = bankOutUnmatched, p3wMissingRows = [];
+  try {
+    if (typeof reconcilePurchase3Way === 'function') {
+      const p3 = reconcilePurchase3Way(month);
+      p3wMissingRows = p3.rows.filter(r => r.status === 'missing_buy');
+      const missKey = new Set();
+      p3wMissingRows.forEach(r => (r.bankItems || []).forEach(bi => {
+        missKey.add(`${bi.date}|${Math.round(num(bi.total))}|${(bi.desc || '').trim()}`);
+      }));
+      bankOnlyOut = bankOutUnmatched.filter(b => missKey.has(`${b.date}|${Math.round(num(b.amount))}|${(b.desc || '').trim()}`));
+    }
+  } catch (e) { console.error('3way 통일 실패, 출금매칭 원본 사용', e); }
+
   return {
     month,
     bankRowsCount: rows.length,
     hometaxCount: ht ? ht.length : 0,
-    out: { matched, sysOnly: sysOutUnmatched, bankOnly: bankOutUnmatched, matchedN1 },
+    out: { matched, sysOnly: sysOutUnmatched, bankOnly: bankOnlyOut, bankOnlyRaw: bankOutUnmatched, p3wMissing: p3wMissingRows, matchedN1 },
     in: { matched: matchedIn, sysOnly: sysInUnmatched, bankOnly: inBankOnlyReal, pgDeposits: inPgDeposits, directDeposits: inDirectDeposits }
   };
 }
@@ -4699,6 +4716,7 @@ function renderBankReconcile(month) {
 
     <details ${r.out.sysOnly.length || r.out.bankOnly.length ? 'open' : ''}>
       <summary style="cursor:pointer;font-size:13px;font-weight:600;margin-bottom:8px;">출금 매칭 상세 (매입·인건비·고정비)</summary>
+      <div style="font-size:11px;color:var(--text-3);margin-bottom:8px;">'매입 등록 필요'는 <strong>매입점검</strong> 탭 기준과 일치합니다(사업자번호·대표자·연결별칭 반영). 실제 등록·연결은 <strong>월정산 → 매입점검</strong>에서 하세요.</div>
       <div class="table-wrap"><table class="data-table" style="font-size:12px;">
         <thead><tr>
           <th>시스템 일자</th><th>거래처/항목</th><th class="num-cell" style="padding-right:18px;">금액</th>
