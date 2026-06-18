@@ -271,5 +271,42 @@ const kdraft = M._p3wDraftFromRow(kinko, '2026-05');
 eq(kdraft.method, '체크카드', '체크카드 초안: method=체크카드');
 eq(kdraft.docType, '카드전표', '체크카드 초안: docType=카드전표');
 
+// 통장>매입 차액(overBank): 거래처가 매입과 묶였어도 통장이 더 많으면 누락분 표시
+// 대진종합공사: 매입 143,000(카드) ↔ 통장 173,800 → 30,800 누락(5/27건)
+M.set({ '2026-05-13': { purchaseRows: [
+  { vendor: '대진종합공사', supply: 63000, vat: 6300, total: 69300, category: '소모품', method: '법인카드' },
+  { vendor: '대진종합공사', supply: 7000, vat: 700, total: 7700, category: '소모품', method: '법인카드' },
+] }, '2026-05-27': { purchaseRows: [
+  { vendor: '대진종합공사', supply: 60000, vat: 6000, total: 66000, category: '소모품', method: '법인카드' },
+] } }, [], [
+  { date: '2026-05-13', desc: '대진종합공사', withdraw: 69300, summary: '체크카드', kind: '기타출금' },
+  { date: '2026-05-13', desc: '대진종합공사', withdraw: 7700, summary: '체크카드', kind: '기타출금' },
+  { date: '2026-05-27', desc: '대진종합공사', withdraw: 66000, summary: '체크카드', kind: '기타출금' },
+  { date: '2026-05-27', desc: '대진종합공사', withdraw: 30800, summary: '체크카드', kind: '기타출금' }, // 매입 누락분
+]);
+const rdj = M.reconcilePurchase3Way('2026-05');
+const dj2 = rowOf(rdj, '대진');
+ok(dj2 && dj2.buy === 143000 && dj2.bank === 173800, '차액: 대진 매입143,000 통장173,800 한 줄');
+eq(dj2.overBank, 30800, '차액: 통장>매입 30,800 감지');
+eq(dj2.status, 'card', '차액: 상태는 card 유지(통장 초과는 별도 플래그)');
+// 차액 등록 초안: 정확히 일치하는 통장건(5/27 30,800)을 누락분으로 잡음
+const items = (dj2.bankItems || []).slice().sort((a, b) => (a.date < b.date ? 1 : -1));
+const gapSrc = items.find(b => Math.round(b.total) === 30800);
+ok(gapSrc && gapSrc.date === '2026-05-27', '차액: 30,800 일치 통장건(5/27) 식별');
+// 차액 없는 정상 거래처는 overBank 0
+M.set({ '2026-05-01': { purchaseRows: [
+  { vendor: '마니약국', supply: 87273, vat: 8727, total: 96000, category: '소모품', method: '법인카드' },
+] } }, [], [
+  { date: '2026-05-08', desc: '마니약국', withdraw: 96000, summary: '체크카드', kind: '기타출금' },
+]);
+eq(rowOf(M.reconcilePurchase3Way('2026-05'), '마니약국').overBank, 0, '차액: 매입=통장 거래처는 overBank 0');
+// 1,000원 미만 차이는 노이즈로 무시
+M.set({ '2026-05-01': { purchaseRows: [
+  { vendor: '소소상회', supply: 9091, vat: 909, total: 10000, category: '식자재', method: '계좌이체' },
+] } }, [], [
+  { date: '2026-05-08', desc: '소소상회', withdraw: 10500, summary: '인터넷출금이체', kind: '기타출금' },
+]);
+eq(rowOf(M.reconcilePurchase3Way('2026-05'), '소소상회').overBank, 0, '차액: 1,000원 미만(500) 차이는 무시');
+
 console.log(`\n3-way 점검 테스트: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

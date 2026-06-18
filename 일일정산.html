@@ -5352,9 +5352,12 @@ function reconcilePurchase3Way(month) {
     else if (B && g.cardBuy >= g.buy - 10) status = 'card';
     else if (B && !T && K) status = 'no_tax';
     else status = 'pending';
+    // 통장>매입 차액: 거래처가 매입과 묶였어도 통장 출금이 매입보다 많으면 그만큼 매입 누락(예: 대진 5/27 30,800).
+    // 고정비·매핑 제외, 1,000원 미만 차이는 노이즈로 무시.
+    const overBank = (!g.fixed && !isFixed && g.buy > 0 && g.bank - g.buy >= 1000) ? Math.round(g.bank - g.buy) : 0;
     return {
       name: g.name, bizNo: g.bizNo, buy: Math.round(g.buy), tax: Math.round(g.tax), bank: Math.round(g.bank),
-      fixed: g.fixed, cats: [...g.cats], status,
+      fixed: g.fixed, cats: [...g.cats], status, overBank,
       mapped: isFixed ? (mapped.category || '고정비') : null,
       recurring: isAuto ? (mapped.category || '정기') : null,
       incomingAlias: aliasList.some(a => a.target === g.key),
@@ -5400,6 +5403,8 @@ function renderPurchase3Way(month) {
     const badge = (x.status === 'fixed_matched' && x.mapped) ? `· 점검제외(${escapeHtml(x.mapped)})` : st.badge;
     const note = x.status === 'unpaid' && x.buy > x.tax ? `<span style="color:var(--text-3);font-size:10px;">미발행 ${fmtN(x.buy - x.tax)}</span>`
       : (x.status === 'missing_buy' ? `<span style="color:var(--text-3);font-size:10px;">${x.tax ? '세금계산서' : ''}${x.tax && x.bank ? '+' : ''}${x.bank ? '통장' : ''}</span>` : '');
+    // 통장>매입 차액: 거래처가 매입과 묶였어도 통장이 더 많으면 그만큼 매입 누락
+    const gapNote = x.overBank ? `<span style="color:var(--red,#e5484d);font-size:10px;font-weight:600;">통장>매입 +${fmtN(x.overBank)}</span>` : '';
     // 적요/내용: 세금계산서 품목명 + 통장 적요 (거래처만으론 뭔지 모를 때)
     const items = [...new Set((x.taxItems || []).map(t => t.item).filter(Boolean))];
     const bdescs = [...new Set((x.bankItems || []).map(b => b.desc).filter(Boolean))];
@@ -5421,8 +5426,13 @@ function renderPurchase3Way(month) {
       action = `${regBtn}<button ${bSmall} onclick="markP3wFixed('${month}','${bz}','${enc}')" title="이미 손익에 반영된 건(매입/고정비) — 점검에서만 숨김, 손익 변화 없음">점검제외</button> <button ${bSmall} onclick="markP3wRecurring('${month}','${bz}','${enc}')" title="매월 실제금액으로 매입 자동생성(손익 반영)">정기등록</button> <button ${bSmall} onclick="linkP3wVendor('${month}','${bz}','${enc}')" title="쪼개진 같은 거래처를 하나로 연결">연결</button>${unlinkBtn}`;
     }
     else action = unlinkBtn;
-    return `<tr style="${x.status === 'missing_buy' ? 'background:var(--red-bg, #ffe5e5);' : ''}">
-      <td><strong>${escapeHtml(x.name || '-')}</strong> ${note}${descLine}</td>
+    // 통장 초과분(매입 누락)이 있으면 차액 매입 등록 버튼 — 상태 무관(card·complete 등에도 노출)
+    if (x.overBank && !x.recurring && !isMapped) {
+      const gapBtn = `<button ${bSmall} style="font-size:10px;padding:2px 6px;background:var(--red-bg,#ffe5e5);color:var(--red,#e5484d);font-weight:600;" onclick="registerBankGapPurchase('${month}','${bz}','${enc}')" title="통장 출금이 매입보다 ${fmtN(x.overBank)}원 많음 — 차액을 매입으로 등록">차액등록 ${fmtN(x.overBank)}</button> `;
+      action = gapBtn + action;
+    }
+    return `<tr style="${x.status === 'missing_buy' ? 'background:var(--red-bg, #ffe5e5);' : (x.overBank ? 'background:var(--orange-bg,#fff4e5);' : '')}">
+      <td><strong>${escapeHtml(x.name || '-')}</strong> ${note}${gapNote}${descLine}</td>
       ${cell(x.buy)}${cell(x.tax)}${cell(x.bank)}
       <td style="white-space:nowrap;color:${st.color};font-size:11px;font-weight:600;">${badge}</td>
       <td>${action}</td>
@@ -5434,6 +5444,7 @@ function renderPurchase3Way(month) {
       <div class="m-card"><div class="m-card-label">완전</div><div class="m-card-value" style="color:var(--green);">${c.complete || 0}</div></div>
       <div class="m-card"><div class="m-card-label">매입 미입력</div><div class="m-card-value" style="color:var(--red,#e5484d);">${c.missing_buy || 0}</div><div class="m-card-sub">${fmtN(sumMissing)}</div></div>
       <div class="m-card"><div class="m-card-label">미출금</div><div class="m-card-value" style="color:var(--orange);">${c.unpaid || 0}</div></div>
+      <div class="m-card"><div class="m-card-label">통장>매입(누락)</div><div class="m-card-value" style="color:var(--red,#e5484d);">${r.rows.filter(x => x.overBank).length}</div><div class="m-card-sub">${fmtN(r.rows.reduce((s, x) => s + (x.overBank || 0), 0))}</div></div>
       <div class="m-card"><div class="m-card-label">증빙없음/대기</div><div class="m-card-value" style="color:var(--orange);">${(c.no_tax || 0) + (c.pending || 0)}</div></div>
     </div>`;
 
@@ -5551,6 +5562,35 @@ function registerOneMissingPurchase(month, bizNo, encName) {
   d.category = cat.trim() || d.category;
   _registerP3wDrafts([d]);
   toast(`'${d.vendor}' 매입 등록 (${d.category})`, 'ok');
+  renderPurchase3Way(month);
+  if (typeof renderMonthlyReport === 'function') renderMonthlyReport(month);
+}
+
+// 통장 초과분 등록 — 거래처는 매입과 묶였지만 통장 출금이 매입보다 많을 때(예: 대진 5/27 30,800) 차액을 매입으로 등록
+function registerBankGapPurchase(month, bizNo, encName) {
+  const name = decodeURIComponent(encName || '');
+  const r = reconcilePurchase3Way(month);
+  const row = r.rows.find(x => x.overBank > 0 && (x.name === name || (bizNo && x.bizNo === bizNo)));
+  if (!row) { toast('통장 초과분(차액) 건을 찾지 못했습니다', 'warn'); return; }
+  const gap = row.overBank;
+  const fmtN = n => Number(n || 0).toLocaleString();
+  // 차액과 정확히 일치하는 통장 건을 우선(그 건이 누락분), 없으면 최근 통장 건
+  const items = (row.bankItems || []).slice().sort((a, b) => (a.date < b.date ? 1 : -1));
+  const src = items.find(b => Math.round(num(b.total)) === gap) || items[0] || null;
+  const date = (src && src.date) || (month + '-28');
+  const desc = (src && src.desc) || name;
+  const isCard = !!(src && src.card);
+  const guess = _guessP3wCategory(desc + ' ' + name);
+  const catList = (typeof EXPENSE_CATEGORIES !== 'undefined') ? EXPENSE_CATEGORIES : [];
+  const cat = prompt(`${date.slice(5)} '${name}' 통장 초과분 ${fmtN(gap)}원을 매입으로 등록합니다.\n(통장 ${fmtN(row.bank)} − 매입 ${fmtN(row.buy)})${desc ? '\n적요: ' + desc : ''}\n\n분류를 입력하세요:\n${catList.join(' / ')}`, guess || (isCard ? '소모품' : '기타'));
+  if (cat === null) return;
+  const d = {
+    date, vendor: name, bizNo: row.bizNo, supply: Math.round(gap / 1.1), vat: gap - Math.round(gap / 1.1), total: gap,
+    category: cat.trim() || guess || '기타', method: isCard ? '체크카드' : '계좌이체', docType: isCard ? '카드전표' : '구매영수증',
+    item: desc, _src: isCard ? '통장 초과분(체크카드)' : '통장 초과분'
+  };
+  _registerP3wDrafts([d]);
+  toast(`'${name}' 차액 ${fmtN(gap)} 매입 등록 (${d.category})`, 'ok');
   renderPurchase3Way(month);
   if (typeof renderMonthlyReport === 'function') renderMonthlyReport(month);
 }
