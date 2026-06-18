@@ -4194,7 +4194,14 @@ function reconcileKbBank(month) {
   // 통장 출금 행 (대표자명 → 상호 alias 적용, myMemo/memo 보존)
   const bankOut = rows.filter(r => r.withdraw > 0).map((r, idx) => {
     const desc = (r.desc || '').trim();
-    const aliasVendor = repToVendor[desc] || '';
+    let aliasVendor = repToVendor[desc] || '';
+    // 적요가 '강성국(CASAVI'처럼 대표자명+부가문구라 정확일치 실패 시: 대표자명이 적요에 포함되면 그 상호로 alias.
+    // (3-way와 동일하게 대표자명→상호 부분매칭 — 까사뷰(대표 강성국) ↔ 통장 '강성국(CASAVI')
+    if (!aliasVendor) {
+      for (const rep in repToVendor) {
+        if (rep.length >= 2 && desc.includes(rep)) { aliasVendor = repToVendor[rep]; break; }
+      }
+    }
     return {
       date: r.date,
       amount: r.withdraw,
