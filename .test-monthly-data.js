@@ -16,6 +16,7 @@ const resolveFx = grab(/function resolveFixedExpensesForMonth[\s\S]*?\n\}/, 'res
 const ratFn = grab(/function computeCostRatios[\s\S]*?\n\}/, 'computeCostRatios');
 const ratLvl = grab(/function _ratioLevel[\s\S]*?\n\}/, '_ratioLevel');
 const thresh = grab(/const COST_RATIO_THRESHOLDS = \{[\s\S]*?\};/, 'thresholds');
+const prorateFn = grab(/function _proratedMonthFactor[\s\S]*?\n\}/, '_proratedMonthFactor');
 
 const src = `
   let _records = {};
@@ -35,10 +36,11 @@ const src = `
   ${ratFn}
   ${purchaseFn}
   ${resolveFx}
+  ${prorateFn}
   ${distFn}
   ${computeMD}
   return {
-    num, computeMonthlyData,
+    num, computeMonthlyData, _proratedMonthFactor,
     setRecords: (r) => { _records = r; },
     setPartners: (p) => { _partners = p; },
     setSubtract: (v) => { _subtract = v; }
@@ -119,5 +121,20 @@ check('6) 빈 records라도 dailyRows=[]', Array.isArray(d.dailyRows) && d.daily
 // CASE 7: month 미지정 → null
 d = mod.computeMonthlyData('');
 check('7) month 빈값 → null', d === null);
+
+// ===== 진행 중인 달 인건비 안분 (_proratedMonthFactor) =====
+check('안분: 진행중 달(마지막6/12, today6/18) → 12/30=0.4', Math.abs(mod._proratedMonthFactor('2026-06', '2026-06-12', '2026-06-18') - 0.4) < 1e-9);
+check('안분: 지난 달(5월, today6/18) → 1', mod._proratedMonthFactor('2026-05', '2026-05-31', '2026-06-18') === 1);
+check('안분: 기록 없음 → 1', mod._proratedMonthFactor('2026-06', '', '2026-06-18') === 1);
+check('안분: 말일 기록(6/30) → 1', mod._proratedMonthFactor('2026-06', '2026-06-30', '2026-06-18') === 1);
+// computeMonthlyData에서 진행중 달이면 고정 인건비가 안분돼 인건비율이 내려가야 함
+mod.setRecords({
+  '2026-06-01': { totals: { posTotal: 1100000, supply: 1000000, vat: 100000 }, purchaseRows: [], payrollRows: [], extras: {} },
+  '2026-06-12': { totals: { posTotal: 1100000, supply: 1000000, vat: 100000 }, purchaseRows: [], payrollRows: [], extras: {} },
+});
+mod.setPartners([]);
+// 고정 인건비 월 3,000,000 — 6월(진행중)이면 안분, today는 실제일이라 6월이 아닐 수 있어 계수만 비교
+const dJune = mod.computeMonthlyData('2026-06');
+check('안분: computeMonthlyData가 laborFactor·coveredDays 반환', dJune.laborFactor != null && dJune.daysInMonth === 30, 'factor=' + dJune.laborFactor + ' days=' + dJune.daysInMonth);
 
 if (!process.exitCode) console.log('\n전체 통과');

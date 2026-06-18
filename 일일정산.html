@@ -6929,6 +6929,14 @@ function renderCostRatioCards(cr, subLabel) {
 /** 월정산 데이터 집계 — render/export 공용
  *  마감 record 없는 월(미래·미마감)도 고정비 자동반영을 반영해 손익 미리보기.
  *  완전 빈 배열이면 for loop가 skip되고 모든 매출/매입 합은 0. 고정비만 적용. */
+// 진행 중인 달이면 (매출 마지막 기록일 / 그 달 총일수)로 안분 계수 반환. 지난 달(완료월)·기록없음은 1.
+// 고정비(월 전액 인건비·임대료 등)를 부분월에 통으로 넣으면 인건비율·PrimeCost가 폭증해서, 매출 커버 기간에 맞춰 안분.
+function _proratedMonthFactor(month, lastDateStr, todayStr) {
+  if (!month || !lastDateStr || !todayStr || todayStr.slice(0, 7) !== month) return 1;
+  const daysInMonth = new Date(+month.slice(0, 4), +month.slice(5, 7), 0).getDate();
+  return Math.min(1, (+lastDateStr.slice(8, 10)) / daysInMonth);
+}
+
 function computeMonthlyData(month) {
   if (!month) return null;
   const all = getAllRecords();
@@ -6994,7 +7002,13 @@ function computeMonthlyData(month) {
   const monthPL = sumSalesSupply - (sumPSupply + sumExtra + sumPayroll + sumFixedApplied);
   const payableVat = sumSalesVat - sumPVat;
   const fixedLaborForMonth = num(fixedResolved.appliedByCategory['인건비']);
-  const costRatios = computeCostRatios(dates.map(d => all[d]), { extraLabor: fixedLaborForMonth });
+  // 진행 중인 달: 고정 인건비(월 전액)를 매출 커버 일수로 안분 → 부분월 인건비율·PrimeCost 폭증 방지
+  const _t = new Date();
+  const _todayStr = _t.getFullYear() + '-' + String(_t.getMonth() + 1).padStart(2, '0') + '-' + String(_t.getDate()).padStart(2, '0');
+  const laborFactor = _proratedMonthFactor(month, dates.length ? dates[dates.length - 1] : '', _todayStr);
+  const daysInMonth = new Date(+month.slice(0, 4), +month.slice(5, 7), 0).getDate();
+  const coveredDays = Math.round(laborFactor * daysInMonth);
+  const costRatios = computeCostRatios(dates.map(d => all[d]), { extraLabor: Math.round(fixedLaborForMonth * laborFactor) });
   return {
     month, dates, sumSales, sumSalesSupply, sumSalesVat,
     sumPTotal, sumPSupply, sumPVat, sumExtra, sumPayroll, sumDiscounts,
@@ -7004,6 +7018,7 @@ function computeMonthlyData(month) {
     monthPL, payableVat, byCategory, bySupplyCategory, dailyRows,
     dist: computeMonthlyDistribution(monthPL, sumDiscounts),
     costRatios,
+    laborFactor, coveredDays, daysInMonth, fixedLaborFull: fixedLaborForMonth,
     fixedExpensesResolved: fixedResolved
   };
 }
@@ -7947,7 +7962,7 @@ function renderMonthlyProfitContent(data) {
         })()}
       </div>
 
-      ${renderCostRatioCards(data.costRatios, '월 평균 (영업일 ' + dates.length + '일)')}
+      ${renderCostRatioCards(data.costRatios, '월 평균 (영업일 ' + dates.length + '일)' + (data.laborFactor < 1 ? ` · 진행중: 인건비 ${data.coveredDays}/${data.daysInMonth}일 안분` : ''))}
 
       ${renderIncomeStatement(data)}
 

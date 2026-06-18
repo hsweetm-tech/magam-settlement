@@ -178,6 +178,7 @@ const purchaseFn = grab(/function computePurchaseFromRec[\s\S]*?\n\}/, 'computeP
 const resolveFx = grab(/function resolveFixedExpensesForMonth[\s\S]*?\n\}/, 'resolveFixedExpensesForMonth');
 const distFn = grab(/function computeMonthlyDistribution[\s\S]*?\n\}/, 'computeMonthlyDistribution');
 const monthDataFn = grab(/function computeMonthlyData[\s\S]*?\n\}/, 'computeMonthlyData');
+const prorateFn2 = grab(/function _proratedMonthFactor[\s\S]*?\n\}/, '_proratedMonthFactor');
 
 const src2 = `
   let _all = {};
@@ -207,6 +208,7 @@ const src2 = `
   ${computeForecast}
   ${purchaseFn}
   ${resolveFx}
+  ${prorateFn2}
   ${distFn}
   ${monthDataFn}
   ${monthForecastFn}

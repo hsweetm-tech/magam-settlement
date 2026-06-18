@@ -15,6 +15,7 @@ const distFn = grab(/function computeMonthlyDistribution[\s\S]*?\n\}/, 'computeM
 const ratFn = grab(/function computeCostRatios[\s\S]*?\n\}/, 'computeCostRatios');
 const purchaseFn = grab(/function computePurchaseFromRec[\s\S]*?\n\}/, 'computePurchaseFromRec');
 const monthFn = grab(/function computeMonthlyData[\s\S]*?\n\}/, 'computeMonthlyData');
+const prorateFn = grab(/function _proratedMonthFactor[\s\S]*?\n\}/, '_proratedMonthFactor');
 const ratLvl = grab(/function _ratioLevel[\s\S]*?\n\}/, '_ratioLevel');
 const thresh = grab(/const COST_RATIO_THRESHOLDS = \{[\s\S]*?\};/, 'thresholds');
 const cogs = grab(/const COGS_CATEGORIES = \[[\s\S]*?\];/, 'COGS_CATEGORIES');
@@ -38,6 +39,7 @@ const src = `
   ${ratFn}
   ${purchaseFn}
   ${resolveFn}
+  ${prorateFn}
   ${distFn}
   ${monthFn}
   return {
