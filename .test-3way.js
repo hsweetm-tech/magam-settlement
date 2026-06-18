@@ -323,5 +323,16 @@ ok(rowOf(rgn, '꾸아'), '오병합 방지: 꾸아 별도 행으로 존재');
 eq(rowOf(rgn, '모닝글로리').status, 'missing_buy', '오병합 방지: 모닝글로리 매입 미입력으로 노출');
 eq(rowOf(rgn, '롯데슈퍼').bank, 6990, '오병합 방지: 롯데슈퍼 통장 6,990만(모닝·꾸아 안 섞임)');
 
+// 오연결 방지(공통 3글자 경계 겹침): 버텍스서초점(통장) ↔ 에스케이쉴더스(주)서초지점(세금계산서) 안 묶임
+// 둘 다 '...스 서초...'라 '스서초' 3글자가 겹치지만 다른 거래처 → 공통 4글자 기준으로 차단
+M.set({ '2026-05-16': { purchaseRows: [] } },
+  [{ date: '2026-05-31', vendor: '에스케이쉴더스(주) 서초지점', representative: '민기식', bizNo: '644-85-01451', supply: 68000, vat: 6800, total: 74800, docType: '세금계산서' }],
+  [{ date: '2026-05-16', desc: '버텍스서초점', withdraw: 44300, summary: '체크카드', kind: '기타출금' }], []);
+const rvx = M.reconcilePurchase3Way('2026-05');
+ok(rvx.rows.find(x => x.name.includes('버텍스')), '오연결 방지: 버텍스서초점 별도 행 존재');
+ok(rvx.rows.find(x => x.name.includes('쉴더스')), '오연결 방지: 에스케이쉴더스 별도 행 존재');
+ok(rvx.rows.filter(x => /버텍스|쉴더스/.test(x.name)).length === 2, '오연결 방지: 버텍스↔쉴더스 안 묶임(2행)');
+// 진짜 공통 4글자(코카콜라)는 여전히 연결돼야 함 — 기존 자동연결 테스트가 이미 커버(코카콜라음료↔장서아_코카콜라)
+
 console.log(`\n3-way 점검 테스트: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

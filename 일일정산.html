@@ -5286,7 +5286,8 @@ function reconcilePurchase3Way(month) {
     if (bizNo) return bizNo;
     const cn = _canonVendor(vendor); if (!cn) return '';
     if (canonBiz[cn]) return canonBiz[cn];
-    const hit = nameList.find(n => n.length >= 2 && (cn.includes(n) || n.includes(cn) || _shareCore(cn, n, 3)));
+    // 공통 부분문자열은 4글자+만 인정 — 3글자는 '스서초'(버텍스서초점↔쉴더스서초지점)·'강남역'처럼 경계에서 우연히 겹쳐 오연결됨.
+    const hit = nameList.find(n => n.length >= 2 && (cn.includes(n) || n.includes(cn) || _shareCore(cn, n, 4)));
     return hit ? canonBiz[hit] : '';
   };
   buys.forEach(x => { x.bizNo = resolveBiz(x.vendor, x.bizNo); });
@@ -5305,7 +5306,7 @@ function reconcilePurchase3Way(month) {
     let vendor = desc, bizNo = '';
     const rep = repList.find(r => r.rep.length >= 2 && (cn.includes(r.rep) || r.rep.includes(cn)));
     if (rep) { vendor = rep.vendor; bizNo = rep.bizNo; }
-    else { const nm = nameList.find(n => n.length >= 2 && (cn.includes(n) || n.includes(cn) || _shareCore(cn, n, 3))); if (nm) { bizNo = canonBiz[nm]; vendor = bizName[bizNo] || desc; } }
+    else { const nm = nameList.find(n => n.length >= 2 && (cn.includes(n) || n.includes(cn) || _shareCore(cn, n, 4))); if (nm) { bizNo = canonBiz[nm]; vendor = bizName[bizNo] || desc; } }
     return { date: b.date || '', vendor, bizNo, total: num(b.withdraw), desc, card: /체크카드|카드/.test(b.summary || '') };
   });
 
