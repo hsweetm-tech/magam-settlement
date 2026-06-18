@@ -2927,10 +2927,13 @@ function detectHometaxDocType(rows, filename) {
   const fn = String(filename || '').toLowerCase();
   if (/카드|신용/.test(fn)) return '카드전표';
   if (/현금|현금영수/.test(fn)) return '현금영수증';
-  if (/세금계산서|계산서/.test(fn)) return '세금계산서';
+  if (/세금계산서/.test(fn)) return '세금계산서';
+  if (/계산서/.test(fn)) return '계산서';  // 면세 계산서 (세금계산서는 위에서 이미 처리) — 농·축·수산물 등 면세 매입
   const cols = Object.keys(rows[0] || {}).join('|');
   if (/카드번호|승인번호|가맹점/.test(cols)) return '카드전표';
   if (/용도|소득공제/.test(cols)) return '현금영수증';
+  // 파일명 단서 없을 때: 세액 컬럼이 아예 없으면 면세 계산서로 추정 (세금계산서는 세액 컬럼 필수)
+  if (!_matchHometaxCol(cols.split('|'), HOMETAX_COLUMNS.vat)) return '계산서';
   return '세금계산서';
 }
 

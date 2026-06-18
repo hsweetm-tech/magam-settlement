@@ -203,4 +203,16 @@ check('14) 면세 500,000 = 2건 부분집합', n1by[500000] === 2, JSON.stringi
 check('14) 입력 5건 모두 묶임(orphan 0)', r.orphanApp.length === 0);
 check('14) 홈택스 orphan 0', r.orphanHometax.length === 0);
 
+// ===== docType 감지: 면세 계산서 vs 세금계산서 =====
+const taxRow = [{ '작성일자': 'x', '공급가액': 1, '세액': 1, '합계금액': 2 }];
+const myeonRow = [{ '작성일자': 'x', '공급가액': 1, '합계금액': 1 }];
+check('docType: 세금계산서 파일명', mod.detectHometaxDocType(taxRow, '홈택스 세금계산서 매입내역.xlsx') === '세금계산서');
+check('docType: 계산서(면세) 파일명 → 계산서', mod.detectHometaxDocType(myeonRow, '홈택스 계산서 매입내역.xlsx') === '계산서');
+check('docType: 카드 파일명 → 카드전표', mod.detectHometaxDocType(taxRow, '카드매입.xlsx') === '카드전표');
+check('docType: 파일명없음+세액있음 → 세금계산서', mod.detectHometaxDocType(taxRow, '') === '세금계산서');
+check('docType: 파일명없음+세액컬럼없음 → 계산서(면세 추정)', mod.detectHometaxDocType(myeonRow, '') === '계산서');
+// 면세 계산서도 파싱돼야(세액 0) + 3-way에서 계산서-only는 missing_buy로 떠야 함
+const myeonParsed = mod.parseHometaxRows([{ '작성일자': '2026-05-21', '공급자상호': '동해수산', '공급자사업자등록번호': '123-45-67890', '공급가액': 500000, '합계금액': 500000 }], '홈택스 계산서 매입내역.xlsx', '2026-05');
+check('면세 계산서 파싱: 세액 0·공급가 보존', myeonParsed.records.length === 1 && myeonParsed.records[0].vat === 0 && myeonParsed.records[0].supply === 500000, JSON.stringify(myeonParsed.records[0]));
+
 if (!process.exitCode) console.log('\n전체 통과');
