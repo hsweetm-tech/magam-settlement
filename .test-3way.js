@@ -308,5 +308,20 @@ M.set({ '2026-05-01': { purchaseRows: [
 ]);
 eq(rowOf(M.reconcilePurchase3Way('2026-05'), '소소상회').overBank, 0, '차액: 1,000원 미만(500) 차이는 무시');
 
+// 오병합 방지(강남역 등 공통 지역명): 포함관계 아니면 안 묶임
+// 모닝글로리강남역점 / 꾸아강남역CGV점 / 롯데슈퍼강남역가맹 — 모두 '강남역' 공유하지만 서로 포함 아님 → 별도 행
+M.set({ '2026-05-23': { purchaseRows: [
+  { vendor: '롯데슈퍼강남역가맹', supply: 6354, vat: 636, total: 6990, category: '식자재', method: '체크카드' },
+] } }, [], [
+  { date: '2026-05-23', desc: '롯데슈퍼강남역가맹', withdraw: 6990, summary: '체크카드', kind: '기타출금' },
+  { date: '2026-05-15', desc: '모닝글로리강남역점', withdraw: 13000, summary: '체크카드', kind: '기타출금' },
+  { date: '2026-05-01', desc: '꾸아강남역CGV점', withdraw: 24500, summary: '체크카드', kind: '기타출금' },
+]);
+const rgn = M.reconcilePurchase3Way('2026-05');
+ok(rowOf(rgn, '모닝글로리'), '오병합 방지: 모닝글로리 별도 행으로 존재');
+ok(rowOf(rgn, '꾸아'), '오병합 방지: 꾸아 별도 행으로 존재');
+eq(rowOf(rgn, '모닝글로리').status, 'missing_buy', '오병합 방지: 모닝글로리 매입 미입력으로 노출');
+eq(rowOf(rgn, '롯데슈퍼').bank, 6990, '오병합 방지: 롯데슈퍼 통장 6,990만(모닝·꾸아 안 섞임)');
+
 console.log(`\n3-way 점검 테스트: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

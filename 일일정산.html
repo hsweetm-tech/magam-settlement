@@ -5310,8 +5310,9 @@ function reconcilePurchase3Way(month) {
   taxes.forEach(x => { const g = G(x.vendor, x.bizNo); g.tax += x.total; if (x.vendor) g.name = x.vendor; g.taxItems.push(x); });
   banks.forEach(x => { const g = G(x.vendor, x.bizNo); g.bank += x.total; g.bankItems.push(x); });
 
-  // 사업자번호 없는 거래처끼리 상호 유사도(3글자+ 공통)로 병합.
-  // 예: 매입 '강성국인테리어커튼구매시공' ↔ 통장 '강성국', 매입 '한국전력전기료' ↔ 통장 '한국전력'.
+  // 사업자번호 없는 거래처끼리 병합 — 한쪽 정규화명이 다른쪽을 통째 포함할 때만(짧은 쪽 3글자+).
+  // 예: 통장 '강성국' ⊂ 매입 '강성국인테리어커튼구매시공', 통장 '한국전력' ⊂ 매입 '한국전력전기료'.
+  // ⚠️ 단순 공통 3글자(_shareCore)는 '강남역' 같은 지역명으로 모닝글로리·꾸아·롯데를 오병합시켜서 포함관계로 한정.
   // (세금계산서가 있어 bizNo로 묶이는 건은 제외 — 그쪽은 위 resolveBiz가 이미 처리.)
   // 매입(buy) 있는 그룹을 anchor로 우선(등록한 거래처명·분류 보존), 동률이면 긴 이름 우선.
   {
@@ -5323,7 +5324,9 @@ function reconcilePurchase3Way(month) {
       for (let j = i + 1; j < nameOnly.length; j++) {
         const kb = nameOnly[j][0], gb = nameOnly[j][1]; if (gb._merged) continue;
         const cb = _canonVendor(gb.name);
-        if (ca === cb || !_shareCore(ca, cb, 3)) continue;
+        const shortN = ca.length <= cb.length ? ca : cb;
+        const longN = ca.length <= cb.length ? cb : ca;
+        if (ca === cb || shortN.length < 3 || !longN.includes(shortN)) continue;
         ga.buy += gb.buy; ga.tax += gb.tax; ga.bank += gb.bank; ga.cardBuy += gb.cardBuy;
         ga.fixed = ga.fixed || gb.fixed;
         gb.cats.forEach(c => ga.cats.add(c));
