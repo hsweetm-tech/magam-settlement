@@ -2043,7 +2043,7 @@ body.tab-summary main { grid-template-columns: 1fr; }
             <div class="msub-section-note" id="otherFixedExpenseTotal">월 합계 ₩0</div>
           </div>
           <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
-            임대료·관리비·통신비·보험료·기타 등 인건비 외 정기 비용. 매월 손익계산서 매입 카드의 "고정비 자동반영"에 합산. 매입행에 같은 분류가 있으면 그 달은 매입행 우선.
+            임대료·관리비·통신비·보험료·기타 등 인건비 외 정기 비용. 매월 손익계산서 매입 카드의 "고정비 자동반영"에 합산. 매입행에 같은 분류가 있으면 그 달은 매입행 우선 — 단 <strong>"항상 적용"</strong> 체크 시 매입행과 무관하게 매월 반영(캐치테이블·4대보험처럼 매입행과 별개인 고정비용).
           </div>
           <div class="table-wrap">
             <table class="data-table">
@@ -2054,6 +2054,7 @@ body.tab-summary main { grid-template-columns: 1fr; }
                   <th class="num-cell">월 금액 (원)</th>
                   <th>메모</th>
                   <th title="자동반영 OFF 월 (YYYY-MM, 콤마구분). 예: 2026-05">OFF 월</th>
+                  <th title="체크 시 같은 분류 매입행이 있어도 매월 반영 (매입행과 중복 합산 주의)">항상 적용</th>
                   <th class="action-cell"></th>
                 </tr>
               </thead>
@@ -4173,9 +4174,9 @@ function reconcileKbBank(month) {
   const fixedExp = getFixedExpenses();
   fixedExp.forEach((e, idx) => {
     if (num(e.amount) <= 0) return;
-    // 매입행 같은 카테고리 있으면 skip
+    // 매입행 같은 카테고리 있으면 skip ('항상 적용'은 매입행 있어도 별도 출금으로 반영)
     const hasInPurchase = sysOut.some(s => s.category === e.category && s._src === 'purchase');
-    if (!hasInPurchase) {
+    if (e.alwaysApply || !hasInPurchase) {
       sysOut.push({ date: month + '-15', amount: num(e.amount), vendor: e.name || e.category, category: e.category, method: '자동이체', _src: 'fixed', _ref: `fixed#${idx}` });
     }
   });
@@ -5296,9 +5297,9 @@ function reconcilePurchase3Way(month) {
       if (p.category) cats.add(p.category);
     });
   });
-  // 고정비 (같은 분류 매입행 없을 때 자동반영분)
+  // 고정비 (같은 분류 매입행 없을 때 자동반영분; '항상 적용'은 매입행 있어도 반영)
   fixed.forEach(e => {
-    if (num(e.amount) <= 0 || cats.has(e.category)) return;
+    if (num(e.amount) <= 0 || (!e.alwaysApply && cats.has(e.category))) return;
     buys.push({ vendor: e.name || e.category, bizNo: '', total: num(e.amount), category: e.category, fixed: true });
   });
 
@@ -5940,9 +5941,10 @@ function updateFixedExpense(i, key, value) {
   const list = getFixedExpenses();
   if (!list[i]) return;
   if (key === 'amount') list[i][key] = num(value);
+  else if (key === 'alwaysApply') list[i][key] = !!value;
   else list[i][key] = String(value || '');
   saveFixedExpenses(list);
-  if (key === 'amount' || key === 'category' || key === 'skipMonths') refreshMonthlyDistribution();
+  if (key === 'amount' || key === 'category' || key === 'skipMonths' || key === 'alwaysApply') refreshMonthlyDistribution();
 }
 function renderFixedExpenses() {
   const list = getFixedExpenses();
@@ -5977,7 +5979,7 @@ function renderFixedExpenses() {
   if (otherTbody) {
     const otherRows = list.map((e, i) => ({ e, i })).filter(x => x.e.category !== '인건비');
     if (!otherRows.length) {
-      otherTbody.innerHTML = `<tr><td colspan="6" style="padding:16px;text-align:center;color:var(--text-3);font-size:12px;">기타 고정비를 추가하세요. 예: 임대료 ₩6,000,000 · 관리비 ₩200,000 · 통신비 ₩100,000</td></tr>`;
+      otherTbody.innerHTML = `<tr><td colspan="7" style="padding:16px;text-align:center;color:var(--text-3);font-size:12px;">기타 고정비를 추가하세요. 예: 임대료 ₩6,000,000 · 관리비 ₩200,000 · 통신비 ₩100,000</td></tr>`;
     } else {
       const nonLaborCats = EXPENSE_CATEGORIES.filter(c => c !== '인건비');
       otherTbody.innerHTML = otherRows.map(({ e, i }) => `
@@ -5987,6 +5989,7 @@ function renderFixedExpenses() {
           <td class="num-cell"><input type="number" class="num-cell" value="${e.amount||0}" onchange="updateFixedExpense(${i},'amount',this.value)"></td>
           <td><input value="${escapeHtml(e.memo)}" placeholder="(메모)" onchange="updateFixedExpense(${i},'memo',this.value)"></td>
           <td><input value="${escapeHtml(e.skipMonths || '')}" placeholder="2026-05" title="자동반영 OFF 월 (YYYY-MM, 콤마구분)" style="width:120px;font-family:JetBrains Mono,monospace;font-size:11px;" onchange="updateFixedExpense(${i},'skipMonths',this.value)"></td>
+          <td style="text-align:center;"><input type="checkbox" ${e.alwaysApply ? 'checked' : ''} title="체크 시 같은 분류 매입행이 있어도 매월 반영" onchange="updateFixedExpense(${i},'alwaysApply',this.checked)"></td>
           <td class="action-cell"><button class="delete-row" onclick="deleteFixedExpense(${i})">×</button></td>
         </tr>
       `).join('');
@@ -6006,13 +6009,17 @@ function resolveFixedExpensesForMonth(monthCategoryActuals, month) {
     const actual = num(monthCategoryActuals[e.category]);
     const skipList = (e.skipMonths || '').split(',').map(s => s.trim()).filter(Boolean);
     const skipped = month && skipList.includes(month);
-    const applied = num(e.amount) > 0 && actual === 0 && !skipped;
+    // 항상 적용(alwaysApply): 같은 분류 매입행이 있어도 매월 반영 (매입행과 별개인 고정비용 — 캐치테이블·4대보험 등)
+    const always = !!e.alwaysApply;
+    const applied = num(e.amount) > 0 && (always || actual === 0) && !skipped;
     if (applied) {
       appliedByCategory[e.category] = (appliedByCategory[e.category] || 0) + num(e.amount);
     }
     let reason;
     if (skipped) reason = `${month} 자동반영 OFF (사장님 설정)`;
     else if (!e.amount) reason = '금액 0';
+    else if (always && actual > 0) reason = `항상 적용 — ${e.category} 매입행(₩${Math.round(actual).toLocaleString()})과 별도 합산`;
+    else if (always) reason = '항상 적용 — 설정값 반영';
     else if (actual > 0) reason = `해당 월에 ${e.category} 매입행 있음 (₩${Math.round(actual).toLocaleString()})`;
     else reason = '월 매입행 없음 — 설정값 적용';
     return {

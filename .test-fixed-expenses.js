@@ -136,4 +136,36 @@ check('6) 임대료 applied=true', r.items[0].applied === true);
 check('6) 관리비 applied=false (매입행 있음)', r.items[1].applied === false);
 check('6) appliedByCategory only 임대료', r.appliedByCategory['임대료'] === 3000000 && !r.appliedByCategory['관리비']);
 
+// CASE 7: alwaysApply — 같은 분류 매입행이 있어도 매월 반영 (캐치테이블·4대보험 실사례)
+// 5월: 마케팅 매입행 3,039,082 / 세금·공과 매입행 90,000 있음. 캐치테이블(마케팅)·4대보험(세금·공과)은 항상 적용.
+mod.setRecords({
+  '2026-05-10': {
+    totals: { posTotal: 11000000, supply: 10000000, vat: 1000000 },
+    purchaseRows: [
+      { category: '마케팅', supply: 3039082, vat: 303908, total: 3342990 },
+      { category: '세금·공과', supply: 90000, vat: 0, total: 90000 },
+      { category: '임대료', supply: 3120000, vat: 0, total: 3120000 }  // 5월 실제 임대료(매입행 우선)
+    ],
+    payrollRows: [], extras: { expenses: 0 }
+  }
+});
+mod.setFixed([
+  { name: '캐치테이블', category: '마케팅', amount: 2200000, alwaysApply: true },
+  { name: '4대보험 회사부담분', category: '세금·공과', amount: 1136000, alwaysApply: true },
+  { name: '임대료', category: '임대료', amount: 6000000 }  // alwaysApply 없음 → 매입행 있으면 무시
+]);
+d = mod.computeMonthlyData('2026-05');
+check('7) 캐치+4대보험 항상적용 합산 = 3,336,000', d.sumFixedApplied === 2200000 + 1136000, `got ${d.sumFixedApplied}`);
+check('7) 마케팅 = 매입행 + 캐치테이블', d.bySupplyCategory['마케팅'] === 3039082 + 2200000, `got ${d.bySupplyCategory['마케팅']}`);
+check('7) 세금·공과 = 매입행 + 4대보험', d.bySupplyCategory['세금·공과'] === 90000 + 1136000, `got ${d.bySupplyCategory['세금·공과']}`);
+check('7) 임대료(항상적용X) = 매입행만', d.bySupplyCategory['임대료'] === 3120000, `got ${d.bySupplyCategory['임대료']}`);
+
+// CASE 7b: 같은 데이터에서 alwaysApply 빼면 캐치·4대보험 드롭(기존 버그 동작 — 회귀 비교용)
+mod.setFixed([
+  { name: '캐치테이블', category: '마케팅', amount: 2200000 },
+  { name: '4대보험 회사부담분', category: '세금·공과', amount: 1136000 },
+]);
+d = mod.computeMonthlyData('2026-05');
+check('7b) alwaysApply 없으면 둘 다 드롭(sumFixedApplied=0)', d.sumFixedApplied === 0, `got ${d.sumFixedApplied}`);
+
 if (!process.exitCode) console.log('\n전체 통과');
