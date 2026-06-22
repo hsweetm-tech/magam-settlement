@@ -5175,8 +5175,36 @@ function reconcileHometax(month) {
       stillOrphanHt.push(hi);
     }
   });
+  // 4단계: M:1 — 홈택스 '여러' 건 ↔ 매입 '1'건 (매입행 하나에 계산서 여러 장을 합산 등록한 경우).
+  //   N:1의 반대. 예: 킹오더브라더스 매입 517,414 = 카드수수료 467,914 + 영수증 49,500 두 계산서.
+  //   같은 거래처 orphan 계산서 중 부분합이 매입행 합계와 맞으면 묶음. 큰 매입부터(작은 게 먼저 먹히지 않게).
+  const matchedM1 = [];
+  const htRemain = new Set(stillOrphanHt);
+  const _appOrphanSorted = appRows.map((_, i) => i)
+    .filter(i => !usedApp.has(i))
+    .sort((a, b) => num(appRows[b].total) - num(appRows[a].total));
+  _appOrphanSorted.forEach(ai => {
+    const a = appRows[ai];
+    const av = _vkey(a.vendor);
+    const cand = [];
+    htRemain.forEach(hi => {
+      const h = ht[hi];
+      const hv = _vkey(h.vendor);
+      const bizMatch = h.bizNo && a.bizNo && h.bizNo === a.bizNo;
+      const venMatch = hv && av && (hv === av || hv.includes(av) || av.includes(hv));
+      if (bizMatch || venMatch) cand.push({ ai: hi, amt: num(h.total) });
+    });
+    if (cand.length < 2) return; // M:1은 계산서 2건 이상 합산일 때만
+    const picked = _htSubsetSumN1(cand, num(a.total)); // .ai = 홈택스 인덱스
+    if (picked && picked.length >= 2) {
+      usedApp.add(ai);
+      picked.forEach(hi => htRemain.delete(hi));
+      const sum = picked.reduce((s, hi) => s + num(ht[hi].total), 0);
+      matchedM1.push({ appIdx: ai, hometaxIdxs: picked, total: sum, count: picked.length });
+    }
+  });
   const orphanApp = appRows.map((_, i) => i).filter(i => !usedApp.has(i));
-  return { matched, matchedN1, orphanHometax: stillOrphanHt, orphanApp, appRows, hometaxRows: ht };
+  return { matched, matchedN1, matchedM1, orphanHometax: [...htRemain], orphanApp, appRows, hometaxRows: ht };
 }
 
 /**
@@ -8243,12 +8271,13 @@ function renderHometaxReconciliation(month) {
   const allHometaxRows = rec.hometaxRows.map((h, i) => {
     const matchedItem = rec.matched.find(m => m.hometaxIdx === i);
     const matchedN1 = (rec.matchedN1 || []).find(m => m.hometaxIdx === i);
+    const matchedM1 = (rec.matchedM1 || []).find(m => (m.hometaxIdxs || []).includes(i));
     let vendor = h.vendor;
     if (!vendor || _isBizNoLike(vendor)) {
       const looked = bizToVendor[_normalizeBizNo(h.bizNo)];
       if (looked) vendor = looked;
     }
-    return { ...h, vendor, _matched: !orphanSet.has(i), _matchedApp: matchedItem, _matchedN1: matchedN1 };
+    return { ...h, vendor, _matched: !orphanSet.has(i), _matchedApp: matchedItem, _matchedN1: matchedN1, _matchedM1: matchedM1 };
   }).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
   // orphanHometax 섹션 표시용으로도 같은 보강 적용
   const orphanHtEnriched = rec.orphanHometax.map(i => {
@@ -8291,13 +8320,17 @@ function renderHometaxReconciliation(month) {
               const statusBadge = h._matched
                 ? (h._matchedN1
                     ? `<span style="color:var(--green);font-weight:600;font-size:11px;">✓ 매칭 (N:1 ${h._matchedN1.count}건 합산)</span>`
-                    : `<span style="color:var(--green);font-weight:600;font-size:11px;">✓ 매칭</span>`)
+                    : (h._matchedM1
+                        ? `<span style="color:var(--green);font-weight:600;font-size:11px;">✓ 매칭 (M:1 매입 1건에 ${h._matchedM1.count}건 합산)</span>`
+                        : `<span style="color:var(--green);font-weight:600;font-size:11px;">✓ 매칭</span>`))
                 : `<span style="color:var(--orange);font-weight:600;font-size:11px;">⚠ 입력 누락</span>`;
               const matchedAppInfo = h._matchedN1
                 ? `<span style="font-size:10px;color:var(--text-3);">→ 입력 ${h._matchedN1.count}건 합산 ${fmt(num(h._matchedN1.total))}</span>`
-                : (h._matchedApp && h._matchedApp.appIdx != null
-                    ? `<span style="font-size:10px;color:var(--text-3);" title="${escapeHtml(rec.appRows[h._matchedApp.appIdx].vendor || '')}">→ 입력행 #${h._matchedApp.appIdx + 1}</span>`
-                    : '');
+                : (h._matchedM1
+                    ? `<span style="font-size:10px;color:var(--text-3);" title="${escapeHtml(rec.appRows[h._matchedM1.appIdx].vendor || '')}">→ 입력행 #${h._matchedM1.appIdx + 1}에 합산 (${fmt(num(h._matchedM1.total))})</span>`
+                    : (h._matchedApp && h._matchedApp.appIdx != null
+                        ? `<span style="font-size:10px;color:var(--text-3);" title="${escapeHtml(rec.appRows[h._matchedApp.appIdx].vendor || '')}">→ 입력행 #${h._matchedApp.appIdx + 1}</span>`
+                        : ''));
               return `
                 <tr ${h._matched ? '' : 'style="background:var(--orange-bg, #fff4e6);"'}>
                   <td>${escapeHtml(h.date || '-')}</td>

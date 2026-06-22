@@ -203,6 +203,30 @@ check('14) 면세 500,000 = 2건 부분집합', n1by[500000] === 2, JSON.stringi
 check('14) 입력 5건 모두 묶임(orphan 0)', r.orphanApp.length === 0);
 check('14) 홈택스 orphan 0', r.orphanHometax.length === 0);
 
+// CASE 15: M:1 — 홈택스 '여러' 계산서 ↔ 매입 '1'건 합산 (N:1의 반대; 킹오더브라더스 실사례 회귀방지)
+// 매입 1건 517,414 = 카드수수료 467,914 + 영수증 49,500 두 세금계산서를 합쳐 등록.
+mod.setRecords({
+  '2026-04-30': { purchaseRows: [{ date: '2026-04-30', vendor: '주식회사 킹오더브라더스', bizNo: '6858801297', supply: 470376, vat: 47038, total: 517414, category: '카드수수료' }] },
+});
+mod.setHometax('2026-04', [
+  { date: '2026-04-30', vendor: '주식회사 킹오더브라더스', bizNo: '6858801297', supply: 425376, vat: 42538, total: 467914, docType: '세금계산서' },
+  { date: '2026-04-07', vendor: '주식회사 킹오더브라더스', bizNo: '6858801297', supply: 45000, vat: 4500, total: 49500, docType: '세금계산서' },
+]);
+r = mod.reconcileHometax('2026-04');
+check('15) M:1 매칭 1건', (r.matchedM1 || []).length === 1, `matchedM1 ${(r.matchedM1||[]).length}`);
+check('15) M:1 계산서 2건 합산', r.matchedM1 && r.matchedM1[0].count === 2, `count ${r.matchedM1 && r.matchedM1[0].count}`);
+check('15) M:1 합계 517,414', r.matchedM1 && r.matchedM1[0].total === 517414);
+check('15) 홈택스 orphan 0 (두 계산서 다 묶임)', r.orphanHometax.length === 0, `orphanHt ${r.orphanHometax.length}`);
+check('15) 입력 orphan 0 (매입 묶임)', r.orphanApp.length === 0, `orphanApp ${r.orphanApp.length}`);
+
+// CASE 15b: M:1도 합 안 맞으면 매칭 안 함 (49,500만 있고 467,914 없음 → 합 49,500 ≠ 517,414)
+mod.setRecords({ '2026-04-30': { purchaseRows: [{ date: '2026-04-30', vendor: '킹오더브라더스', bizNo: '6858801297', total: 517414, supply: 470376, vat: 47038 }] } });
+mod.setHometax('2026-04', [
+  { date: '2026-04-07', vendor: '킹오더브라더스', bizNo: '6858801297', total: 49500, supply: 45000, vat: 4500, docType: '세금계산서' },
+]);
+r = mod.reconcileHometax('2026-04');
+check('15b) 계산서 1건뿐 → M:1 매칭 안 함', (r.matchedM1 || []).length === 0 && r.orphanHometax.length === 1 && r.orphanApp.length === 1);
+
 // ===== docType 감지: 면세 계산서 vs 세금계산서 =====
 const taxRow = [{ '작성일자': 'x', '공급가액': 1, '세액': 1, '합계금액': 2 }];
 const myeonRow = [{ '작성일자': 'x', '공급가액': 1, '합계금액': 1 }];
