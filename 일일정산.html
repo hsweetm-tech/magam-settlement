@@ -8275,7 +8275,14 @@ function renderHometaxReconciliation(month) {
         </div>
       </div>`;
   }
-  const m = rec.matched.length, oh = rec.orphanHometax.length, oa = rec.orphanApp.length;
+  const m = rec.matched.length, oh = rec.orphanHometax.length;
+  // 입력만 있음(홈택스 없음)을 둘로 분리: 카드/현금영수증 결제분은 카드 매출전표·현금영수증이 적격증빙이라
+  // 세금계산서가 없는 게 정상 → 누락 아님. 나머지(간이영수증 등)만 실제 검토 대상.
+  const _isCardProof = (a) => /카드/.test(a.method || '') || /카드|현금영수/.test(a.docType || '');
+  const cardOrphanIdx = rec.orphanApp.filter(i => _isCardProof(rec.appRows[i]));
+  const realOrphanIdx = rec.orphanApp.filter(i => !_isCardProof(rec.appRows[i]));
+  const oa = realOrphanIdx.length;        // 검토 필요한 '입력만' (카드 정상분 제외)
+  const oaCard = cardOrphanIdx.length;     // 카드/현금영수증 정상분
   const total = rec.hometaxRows.length;
   const sumHometaxTotal = rec.hometaxRows.reduce((s, r) => s + num(r.total), 0);
   const sumAppTotal = rec.appRows.reduce((s, r) => s + num(r.total), 0);
@@ -8334,7 +8341,7 @@ function renderHometaxReconciliation(month) {
         <div class="m-card"><div class="m-card-label">홈택스 (전체)</div><div class="m-card-value">${total}건</div><div class="m-card-sub">합계 ${fmt(Math.round(sumHometaxTotal))}</div></div>
         <div class="m-card"><div class="m-card-label">입력 매입 (월 전체)</div><div class="m-card-value">${rec.appRows.length}건</div><div class="m-card-sub">합계 ${fmt(Math.round(sumAppTotal))}</div></div>
         <div class="m-card"><div class="m-card-label">일치</div><div class="m-card-value" style="color:var(--green);">${m}건</div></div>
-        <div class="m-card"><div class="m-card-label">홈택스만 / 입력만</div><div class="m-card-value" style="color:${statusColor};">${oh} / ${oa}</div><div class="m-card-sub">차이 ${fmt(Math.round(diff))}</div></div>
+        <div class="m-card"><div class="m-card-label">홈택스만 / 입력만</div><div class="m-card-value" style="color:${statusColor};">${oh} / ${oa}</div><div class="m-card-sub">차이 ${fmt(Math.round(diff))}${oaCard ? ` · 카드/현금영수증 ${oaCard}건 정상` : ''}</div></div>
       </div>
 
       <details open style="margin-bottom: 20px;">
@@ -8411,12 +8418,12 @@ function renderHometaxReconciliation(month) {
       ` : ''}
 
       ${oa > 0 ? `
-        <div>
-          <div style="font-weight: 600; font-size: 12px; color: var(--orange); margin-bottom: 6px;">입력만 있음 (홈택스에 없음 — 간이영수증 등) · ${oa}건</div>
+        <div style="margin-bottom: 14px;">
+          <div style="font-weight: 600; font-size: 12px; color: var(--orange); margin-bottom: 6px;">입력만 있음 (홈택스에 없음 — 간이영수증 등, 검토) · ${oa}건</div>
           <table class="m-table">
             <thead><tr><th>일자</th><th>상호 (업체명)</th><th>분류</th><th>결제수단</th><th style="text-align:right;">공급가</th><th style="text-align:right;">세액</th><th style="text-align:right;">합계</th><th>종류</th></tr></thead>
             <tbody>
-              ${rec.orphanApp.slice(0, 30).map(i => { const a = rec.appRows[i]; return `
+              ${realOrphanIdx.slice(0, 30).map(i => { const a = rec.appRows[i]; return `
                 <tr>
                   <td>${escapeHtml(a.date || '-')}</td>
                   <td><strong>${escapeHtml(a.vendor || '-')}</strong></td>
@@ -8431,6 +8438,29 @@ function renderHometaxReconciliation(month) {
           </table>
           ${oa > 30 ? `<div style="font-size:11px;color:var(--text-3);margin-top:4px;">외 ${oa - 30}건 더</div>` : ''}
         </div>
+      ` : ''}
+
+      ${oaCard > 0 ? `
+        <details style="margin-bottom: 14px;">
+          <summary style="cursor:pointer;font-weight:600;font-size:12px;color:var(--text-3);">카드·현금영수증 결제 (카드 매출전표·현금영수증이 적격증빙 — 세금계산서 없음이 정상) · ${oaCard}건</summary>
+          <table class="m-table" style="margin-top:6px;">
+            <thead><tr><th>일자</th><th>상호 (업체명)</th><th>분류</th><th>결제수단</th><th style="text-align:right;">공급가</th><th style="text-align:right;">세액</th><th style="text-align:right;">합계</th><th>종류</th></tr></thead>
+            <tbody>
+              ${cardOrphanIdx.slice(0, 50).map(i => { const a = rec.appRows[i]; return `
+                <tr>
+                  <td>${escapeHtml(a.date || '-')}</td>
+                  <td><strong>${escapeHtml(a.vendor || '-')}</strong></td>
+                  <td><span style="font-size:11px;color:var(--text-3);">${escapeHtml(a.category || '-')}</span></td>
+                  <td><span style="font-size:11px;color:var(--text-3);">${escapeHtml(a.method || '-')}</span></td>
+                  <td style="text-align:right;">${fmt(num(a.supply))}</td>
+                  <td style="text-align:right;">${fmt(num(a.vat))}</td>
+                  <td style="text-align:right;"><strong>${fmt(num(a.total))}</strong></td>
+                  <td><span style="color:var(--green);font-size:11px;">${escapeHtml(a.docType || '카드전표')} ✓</span></td>
+                </tr>`; }).join('')}
+            </tbody>
+          </table>
+          ${oaCard > 50 ? `<div style="font-size:11px;color:var(--text-3);margin-top:4px;">외 ${oaCard - 50}건 더</div>` : ''}
+        </details>
       ` : ''}
 
       ${m > 0 && oh === 0 && oa === 0 ? `
