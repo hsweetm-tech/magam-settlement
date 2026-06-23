@@ -5442,12 +5442,39 @@ const P3W_STATUS = {
   fixed_matched: { badge: '· 고정비(매칭)', color: 'var(--text-3)' }
 };
 
+// 매입점검 그리드 정렬 상태 (헤더 클릭). key=null → 기본(금액 max 내림차순).
+let _p3wSort = { key: null, dir: -1 };
+let _p3wMonth = '';
+function sortP3w(key) {
+  if (_p3wSort.key === key) _p3wSort.dir *= -1;          // 같은 컬럼 재클릭 → 방향 토글
+  else _p3wSort = { key, dir: key === 'name' ? 1 : -1 }; // 새 컬럼: 이름은 오름차순, 금액/상태는 내림차순
+  renderPurchase3Way(_p3wMonth);
+}
 function renderPurchase3Way(month) {
   const el = document.getElementById('purchase3wayContent');
   if (!el) return;
   if (!month) { el.innerHTML = ''; return; }
+  _p3wMonth = month;
   const autoCreated = (typeof autoRegisterRecurring === 'function') ? autoRegisterRecurring(month) : 0;
   const r = reconcilePurchase3Way(month);
+  // 헤더 클릭 정렬 적용 (기본은 reconcile이 매긴 금액 max 내림차순 유지)
+  if (_p3wSort.key) {
+    const sv = (x) => {
+      switch (_p3wSort.key) {
+        case 'name': return _canonVendor(x.name || '');
+        case 'buy': return x.buy || 0;
+        case 'tax': return x.tax || 0;
+        case 'bank': return x.bank || 0;
+        case 'status': return x.status || '';
+        default: return Math.max(x.buy || 0, x.tax || 0, x.bank || 0);
+      }
+    };
+    r.rows.sort((a, b) => {
+      const va = sv(a), vb = sv(b);
+      const cmp = (typeof va === 'number' && typeof vb === 'number') ? (va - vb) : String(va).localeCompare(String(vb));
+      return cmp * _p3wSort.dir;
+    });
+  }
   if (autoCreated) toast(`정기 거래처 ${autoCreated}건 매입 자동등록됨`, 'ok');
   const fmtN = n => (n ? Number(n).toLocaleString() : '<span style="color:var(--text-3);">—</span>');
   if (!r.rows.length) {
@@ -5515,11 +5542,13 @@ function renderPurchase3Way(month) {
     </button>
     <div style="font-size:11px;color:var(--text-3);margin:-4px 0 10px;">세금계산서/통장 데이터로 매입행을 자동 생성합니다. 미리보기 후 확정하세요.</div>` : '';
 
+  const _arrow = (k) => _p3wSort.key === k ? (_p3wSort.dir < 0 ? ' ▼' : ' ▲') : '<span style="color:var(--text-3);opacity:.4;"> ↕</span>';
+  const _sortableTh = (k, label, right) => `<th style="cursor:pointer;user-select:none;${right ? 'text-align:right;' : ''}" onclick="sortP3w('${k}')" title="클릭하여 정렬">${label}${_arrow(k)}</th>`;
   el.innerHTML = summary + bulkBtn + `
     <div class="table-wrap"><table class="data-table" style="font-size:12px;">
       <thead><tr>
-        <th>거래처</th><th style="text-align:right;">매입</th><th style="text-align:right;">세금계산서</th>
-        <th style="text-align:right;">통장출금</th><th>상태</th><th></th>
+        ${_sortableTh('name', '거래처', false)}${_sortableTh('buy', '매입', true)}${_sortableTh('tax', '세금계산서', true)}
+        ${_sortableTh('bank', '통장출금', true)}${_sortableTh('status', '상태', false)}<th></th>
       </tr></thead>
       <tbody>${rowsHtml}</tbody>
     </table></div>
