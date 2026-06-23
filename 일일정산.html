@@ -5871,7 +5871,8 @@ function getFixedExpenses() {
       amount: num(e.amount),
       category: EXPENSE_CATEGORIES.includes(e.category) ? e.category : '임대료',
       memo: String(e.memo || ''),
-      skipMonths: String(e.skipMonths || '')
+      skipMonths: String(e.skipMonths || ''),
+      alwaysApply: !!e.alwaysApply
     }));
   } catch { return []; }
 }

@@ -168,4 +168,28 @@ mod.setFixed([
 d = mod.computeMonthlyData('2026-05');
 check('7b) alwaysApply 없으면 둘 다 드롭(sumFixedApplied=0)', d.sumFixedApplied === 0, `got ${d.sumFixedApplied}`);
 
+// CASE 8: 저장→읽기 왕복 — 실제 getFixedExpenses/saveFixedExpenses가 alwaysApply를 보존해야 함
+// (화이트리스트 누락 회귀 방지: stub이 아닌 진짜 함수로 검증)
+{
+  const realGet = grab(/function getFixedExpenses\(\)[\s\S]*?\n\}/, 'getFixedExpenses');
+  const realSave = grab(/function saveFixedExpenses\(arr\)[\s\S]*?\n\}/, 'saveFixedExpenses');
+  const expCatsC = grab(/const EXPENSE_CATEGORIES = \[[\s\S]*?\];/, 'EXPENSE_CATEGORIES');
+  const numC = grab(/function num\(v\)[\s\S]*?\n\}/, 'num');
+  const rt = new Function(`
+    let _s = {};
+    const localStorage = { setItem:(k,v)=>{_s[k]=v;}, getItem:(k)=>_s[k]||null };
+    const FIXED_EXPENSES_KEY = 'fixed_expenses_v1';
+    function _queueCloudUpload(){}
+    ${numC} ${expCatsC} ${realGet} ${realSave}
+    return { getFixedExpenses, saveFixedExpenses };
+  `)();
+  rt.saveFixedExpenses([
+    { name: '캐치테이블', category: '마케팅', amount: 2200000, alwaysApply: true },
+    { name: '임대료', category: '임대료', amount: 6000000 },
+  ]);
+  const back = rt.getFixedExpenses();
+  check('8) 저장→읽기 후 alwaysApply=true 보존', back[0].alwaysApply === true, JSON.stringify(back[0]));
+  check('8) alwaysApply 미설정 → false', back[1].alwaysApply === false, JSON.stringify(back[1]));
+}
+
 if (!process.exitCode) console.log('\n전체 통과');
