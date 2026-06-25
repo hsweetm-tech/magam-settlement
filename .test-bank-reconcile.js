@@ -22,6 +22,7 @@ const src = `
   ${grab(/function _normalizeBizNo[\s\S]*?\n\}/, '_normalizeBizNo')}
   ${grab(/function _canonVendor[\s\S]*?\n\}/, '_canonVendor')}
   ${grab(/function _shareCore[\s\S]*?\n\}/, '_shareCore')}
+  ${grab(/function _fixedExpenseMatched[\s\S]*?\n\}/, '_fixedExpenseMatched')}
   ${slice('function reconcileKbBank(month) {', 'function renderBankReconcile')}
   ${slice('function reconcilePurchase3Way(month) {', 'const P3W_STATUS')}
   return {

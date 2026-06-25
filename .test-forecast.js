@@ -179,6 +179,8 @@ const resolveFx = grab(/function resolveFixedExpensesForMonth[\s\S]*?\n\}/, 'res
 const distFn = grab(/function computeMonthlyDistribution[\s\S]*?\n\}/, 'computeMonthlyDistribution');
 const monthDataFn = grab(/function computeMonthlyData[\s\S]*?\n\}/, 'computeMonthlyData');
 const prorateFn2 = grab(/function _proratedMonthFactor[\s\S]*?\n\}/, '_proratedMonthFactor');
+const canonFn2 = grab(/function _canonVendor[\s\S]*?\n\}/, '_canonVendor');
+const fxMatchFn2 = grab(/function _fixedExpenseMatched[\s\S]*?\n\}/, '_fixedExpenseMatched');
 
 const src2 = `
   let _all = {};
@@ -207,6 +209,8 @@ const src2 = `
   ${wdBaseline}
   ${computeForecast}
   ${purchaseFn}
+  ${canonFn2}
+  ${fxMatchFn2}
   ${resolveFx}
   ${prorateFn2}
   ${distFn}

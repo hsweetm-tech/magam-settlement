@@ -4148,6 +4148,7 @@ function reconcileKbBank(month) {
         bizNo: _normalizeBizNo(p.bizNo),
         category: p.category || '',
         method: p.method || '',
+        memo: p.memo || '', item: p.item || '',
         _src: 'purchase',
         _ref: `${d}#${idx}`
       });
@@ -4170,13 +4171,12 @@ function reconcileKbBank(month) {
       sysOut.push({ date: d, amount: exp, vendor: '기타지출', category: '기타비용', method: '현금', _src: 'expense', _ref: `${d}#exp` });
     }
   });
-  // 고정비 — 매입행 없는 카테고리는 자동반영 가정 (월 1회 출금)
+  // 고정비 — 이 고정비에 해당하는 매입행이 없을 때만 자동반영(항목 단위); '항상 적용'은 매입행 있어도 별도 출금으로 반영.
   const fixedExp = getFixedExpenses();
+  const kbFixedRows = sysOut.filter(s => s._src === 'purchase').map(s => ({ category: s.category, vendor: s.vendor, memo: s.memo, item: s.item }));
   fixedExp.forEach((e, idx) => {
     if (num(e.amount) <= 0) return;
-    // 매입행 같은 카테고리 있으면 skip ('항상 적용'은 매입행 있어도 별도 출금으로 반영)
-    const hasInPurchase = sysOut.some(s => s.category === e.category && s._src === 'purchase');
-    if (e.alwaysApply || !hasInPurchase) {
+    if (e.alwaysApply || !_fixedExpenseMatched(e, kbFixedRows)) {
       sysOut.push({ date: month + '-15', amount: num(e.amount), vendor: e.name || e.category, category: e.category, method: '자동이체', _src: 'fixed', _ref: `fixed#${idx}` });
     }
   });
@@ -5287,7 +5287,7 @@ function reconcilePurchase3Way(month) {
   const fixed = (typeof getFixedExpenses === 'function' ? getFixedExpenses() : []) || [];
 
   // 1) 매입 (purchaseRows) — 일괄등록 추적용 _src/_ref 포함
-  const buys = []; const cats = new Set();
+  const buys = []; const cats = new Set(); const p3wFixedRows = [];
   Object.keys(all).filter(d => d.startsWith(month)).sort().forEach(d => {
     (all[d].purchaseRows || []).forEach(p => {
       const total = num(p.total) || (num(p.supply) + num(p.vat));
@@ -5295,11 +5295,12 @@ function reconcilePurchase3Way(month) {
       const card = /카드|법인카드|체크카드/.test(p.method || '');
       buys.push({ vendor: p.vendor || '', bizNo: _normalizeBizNo(p.bizNo), total, category: p.category || '', fixed: false, card });
       if (p.category) cats.add(p.category);
+      p3wFixedRows.push({ category: p.category || '', vendor: p.vendor || '', memo: p.memo || '', item: p.item || '' });
     });
   });
-  // 고정비 (같은 분류 매입행 없을 때 자동반영분; '항상 적용'은 매입행 있어도 반영)
+  // 고정비 — 이 고정비에 해당하는 매입행이 없을 때만 자동반영(항목 단위); '항상 적용'은 매입행 있어도 반영.
   fixed.forEach(e => {
-    if (num(e.amount) <= 0 || (!e.alwaysApply && cats.has(e.category))) return;
+    if (num(e.amount) <= 0 || (!e.alwaysApply && _fixedExpenseMatched(e, p3wFixedRows))) return;
     buys.push({ vendor: e.name || e.category, bizNo: '', total: num(e.amount), category: e.category, fixed: true });
   });
 
@@ -6028,29 +6029,53 @@ function renderFixedExpenses() {
 }
 
 /**
+ * 이 고정비(e)에 해당하는 실제 매입행이 그 달에 있는지 — 항목(이름) 단위 매칭.
+ *  - 전용 분류(고정비 이름이 분류명을 포함, 예: '임대료'→분류 '임대료'): 그 분류 매입행이 있으면 매칭.
+ *  - 공유 분류('마케팅' 등): 매입행 텍스트(상호+메모+품목)에 고정비 이름이 들어간 행만 매칭.
+ *    → 캐치테이블 고정비는 '캐치테이블' 매입행(와드)이 있을 때만 억제되고, 다른 마케팅비엔 영향 없음.
+ * @param {{name,category}} e
+ * @param {Array<{category,vendor,memo,item}>} rows 그 달 매입행
+ */
+function _fixedExpenseMatched(e, rows) {
+  const cat = e.category || '';
+  const inCat = (rows || []).filter(r => (r.category || '') === cat);
+  if (!inCat.length) return false;
+  const ename = _canonVendor(e.name || '');
+  const catCanon = _canonVendor(cat);
+  const dedicated = !!(ename && catCanon && ename.includes(catCanon));
+  if (dedicated) return true;                  // 전용 분류: 그 분류 매입행 있으면 매칭(기존 동작)
+  if (!ename) return false;
+  return inCat.some(r => _canonVendor(String(r.vendor || '') + String(r.memo || '') + String(r.item || '')).includes(ename));
+}
+
+/**
  * 월 단위로 적용될 고정비 산출.
- * 규칙: 해당 월에 그 카테고리의 매입공급가 합계가 0이면 설정값 적용. 0보다 크면 무시.
+ * 규칙: 그 달에 이 고정비에 해당하는 매입행이 없으면 설정값 적용(_fixedExpenseMatched). 있으면 매입행 우선(무시).
+ *  - rows(그 달 매입행) 제공 시 항목 단위 매칭, 미제공 시 분류 합계로 폴백(레거시).
+ *  - alwaysApply=true면 매칭과 무관하게 매월 반영.
  * @returns {{ items: [{name, amount, category, applied: boolean, reason: string}], appliedByCategory: {cat: amount} }}
  */
-function resolveFixedExpensesForMonth(monthCategoryActuals, month) {
+function resolveFixedExpensesForMonth(monthCategoryActuals, month, monthRows) {
   const list = getFixedExpenses();
   const appliedByCategory = {};
+  const rows = Array.isArray(monthRows) ? monthRows : null;
   const items = list.map(e => {
     const actual = num(monthCategoryActuals[e.category]);
     const skipList = (e.skipMonths || '').split(',').map(s => s.trim()).filter(Boolean);
     const skipped = month && skipList.includes(month);
-    // 항상 적용(alwaysApply): 같은 분류 매입행이 있어도 매월 반영 (매입행과 별개인 고정비용 — 캐치테이블·4대보험 등)
+    // 항상 적용(alwaysApply): 매입행 있어도 매월 반영. 그 외엔 이 고정비에 해당하는 매입행이 있으면 억제.
     const always = !!e.alwaysApply;
-    const applied = num(e.amount) > 0 && (always || actual === 0) && !skipped;
+    const hasActual = rows ? _fixedExpenseMatched(e, rows) : (actual > 0);
+    const applied = num(e.amount) > 0 && (always || !hasActual) && !skipped;
     if (applied) {
       appliedByCategory[e.category] = (appliedByCategory[e.category] || 0) + num(e.amount);
     }
     let reason;
     if (skipped) reason = `${month} 자동반영 OFF (사장님 설정)`;
     else if (!e.amount) reason = '금액 0';
-    else if (always && actual > 0) reason = `항상 적용 — ${e.category} 매입행(₩${Math.round(actual).toLocaleString()})과 별도 합산`;
+    else if (always && hasActual) reason = `항상 적용 — 해당 매입행과 별도 합산`;
     else if (always) reason = '항상 적용 — 설정값 반영';
-    else if (actual > 0) reason = `해당 월에 ${e.category} 매입행 있음 (₩${Math.round(actual).toLocaleString()})`;
+    else if (hasActual) reason = `해당 월에 '${e.name || e.category}' 매입행 있음 — 매입행 우선`;
     else reason = '월 매입행 없음 — 설정값 적용';
     return {
       name: e.name || '(이름없음)',
@@ -7016,6 +7041,7 @@ function computeMonthlyData(month) {
   const taxableSupplyByCategory = {}; // 카테고리별 과세 공급가
   const exemptByCategory = {};        // 카테고리별 면세 금액
   const dailyRows = [];
+  const monthFixedRows = [];  // 고정비 항목매칭용: 그 달 매입행 (분류·상호·메모·품목)
   for (const d of dates) {
     const rec = all[d];
     const t = computeTotalsFor(rec);
@@ -7036,6 +7062,7 @@ function computeMonthlyData(month) {
       const vat = num(r.vat);
       const total = num(r.total) || (supply + vat);
       if (r.category) bySupplyCategory[r.category] = (bySupplyCategory[r.category] || 0) + supply;
+      monthFixedRows.push({ category: r.category || '', vendor: r.vendor || '', memo: r.memo || '', item: r.item || '' });
       // 과세/면세 분리: vat가 있으면 과세, 없으면 면세
       if (vat > 0) {
         sumTaxableSupply += supply; sumTaxableVat += vat; sumTaxableTotal += total;
@@ -7056,8 +7083,8 @@ function computeMonthlyData(month) {
       status: rec.status === 'closed' ? '마감' : '작성중'
     });
   }
-  // 고정비 자동 반영: 해당 월에 그 카테고리 매입행이 없을 때만
-  const fixedResolved = resolveFixedExpensesForMonth(bySupplyCategory, month);
+  // 고정비 자동 반영: 그 달에 이 고정비에 해당하는 매입행이 없을 때만 (항목 단위 매칭)
+  const fixedResolved = resolveFixedExpensesForMonth(bySupplyCategory, month, monthFixedRows);
   const sumFixedApplied = Object.values(fixedResolved.appliedByCategory).reduce((s, v) => s + v, 0);
   // 적용된 고정비를 카테고리별로 합산에 반영 (display·계산용)
   Object.entries(fixedResolved.appliedByCategory).forEach(([k, v]) => {

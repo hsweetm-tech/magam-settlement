@@ -27,6 +27,7 @@ const src = `
   ${grab(/function _normalizeBizNo[\s\S]*?\n\}/, '_normalizeBizNo')}
   ${grab(/function _canonVendor[\s\S]*?\n\}/, '_canonVendor')}
   ${grab(/function _shareCore[\s\S]*?\n\}/, '_shareCore')}
+  ${grab(/function _fixedExpenseMatched[\s\S]*?\n\}/, '_fixedExpenseMatched')}
   ${fn3way}
   ${grab(/function autoRegisterRecurring[\s\S]*?\n\}/, 'autoRegisterRecurring')}
   ${grab(/function _guessP3wCategory[\s\S]*?\n\}/, '_guessP3wCategory')}

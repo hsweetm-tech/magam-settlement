@@ -20,6 +20,8 @@ const ratLvl = grab(/function _ratioLevel[\s\S]*?\n\}/, '_ratioLevel');
 const thresh = grab(/const COST_RATIO_THRESHOLDS = \{[\s\S]*?\};/, 'thresholds');
 const cogs = grab(/const COGS_CATEGORIES = \[[\s\S]*?\];/, 'COGS_CATEGORIES');
 const expCats = grab(/const EXPENSE_CATEGORIES = \[[\s\S]*?\];/, 'EXPENSE_CATEGORIES');
+const canonFn = grab(/function _canonVendor[\s\S]*?\n\}/, '_canonVendor');
+const fxMatchFn = grab(/function _fixedExpenseMatched[\s\S]*?\n\}/, '_fixedExpenseMatched');
 
 const src = `
   let _records = {};
@@ -35,6 +37,8 @@ const src = `
   ${cogs}
   ${thresh}
   ${numFn}
+  ${canonFn}
+  ${fxMatchFn}
   ${ratLvl}
   ${ratFn}
   ${purchaseFn}
@@ -160,13 +164,34 @@ check('7) 마케팅 = 매입행 + 캐치테이블', d.bySupplyCategory['마케�
 check('7) 세금·공과 = 매입행 + 4대보험', d.bySupplyCategory['세금·공과'] === 90000 + 1136000, `got ${d.bySupplyCategory['세금·공과']}`);
 check('7) 임대료(항상적용X) = 매입행만', d.bySupplyCategory['임대료'] === 3120000, `got ${d.bySupplyCategory['임대료']}`);
 
-// CASE 7b: 같은 데이터에서 alwaysApply 빼면 캐치·4대보험 드롭(기존 버그 동작 — 회귀 비교용)
+// CASE 7b: 항목매칭 — alwaysApply 없어도, 이름 안 맞는 매입행(마케팅·세금공과)엔 억제 안 됨 → 둘 다 적용
+// (기존엔 분류충돌로 드롭됐던 버그. 이제 캐치/4대보험 매입행이 아니므로 고정비가 살아야 함)
 mod.setFixed([
   { name: '캐치테이블', category: '마케팅', amount: 2200000 },
   { name: '4대보험 회사부담분', category: '세금·공과', amount: 1136000 },
 ]);
 d = mod.computeMonthlyData('2026-05');
-check('7b) alwaysApply 없으면 둘 다 드롭(sumFixedApplied=0)', d.sumFixedApplied === 0, `got ${d.sumFixedApplied}`);
+check('7b) 항목매칭: 이름 안 맞는 마케팅·세금공과 매입행엔 억제 안 됨 → 둘 다 적용 3,336,000', d.sumFixedApplied === 3336000, `got ${d.sumFixedApplied}`);
+
+// CASE 9: 항목매칭 핵심 — 같은 분류라도 '그 고정비 매입행'이 있을 때만 억제
+// 9a) 와드(메모 '캐치테이블')가 있으면 캐치 고정비 억제(이중계상 방지)
+mod.setRecords({ '2026-07-10': { totals: { posTotal: 5500000, supply: 5000000, vat: 500000 }, purchaseRows: [
+  { category: '마케팅', vendor: '주식회사 와드', memo: '캐치테이블 광고 이달의 트렌드', supply: 2000000, vat: 200000, total: 2200000 },
+  { category: '마케팅', vendor: '모닝글로리', memo: '전단지 인쇄', supply: 500000, vat: 50000, total: 550000 },
+], payrollRows: [], extras: { expenses: 0 } } });
+mod.setFixed([{ name: '캐치테이블', category: '마케팅', amount: 2000000 }]);
+d = mod.computeMonthlyData('2026-07');
+check('9a) 캐치 매입행(와드) 있음 → 고정비 억제(중복방지)', d.sumFixedApplied === 0, `got ${d.sumFixedApplied}`);
+check('9a) 마케팅 = 매입행만(와드2M+전단지0.5M)', d.bySupplyCategory['마케팅'] === 2500000, `got ${d.bySupplyCategory['마케팅']}`);
+
+// 9b) 캐치 매입행은 없고 '다른 마케팅비'만 있으면 → 캐치 고정비 살아남 (사장님 요구사항)
+mod.setRecords({ '2026-08-10': { totals: { posTotal: 5500000, supply: 5000000, vat: 500000 }, purchaseRows: [
+  { category: '마케팅', vendor: '모닝글로리', memo: '전단지 인쇄', supply: 500000, vat: 50000, total: 550000 },
+], payrollRows: [], extras: { expenses: 0 } } });
+mod.setFixed([{ name: '캐치테이블', category: '마케팅', amount: 2000000 }]);
+d = mod.computeMonthlyData('2026-08');
+check('9b) 다른 마케팅비만 있고 캐치 매입행 없음 → 고정비 200만 적용', d.sumFixedApplied === 2000000, `got ${d.sumFixedApplied}`);
+check('9b) 마케팅 = 전단지0.5M + 캐치고정 2M = 2.5M', d.bySupplyCategory['마케팅'] === 2500000, `got ${d.bySupplyCategory['마케팅']}`);
 
 // CASE 8: 저장→읽기 왕복 — 실제 getFixedExpenses/saveFixedExpenses가 alwaysApply를 보존해야 함
 // (화이트리스트 누락 회귀 방지: stub이 아닌 진짜 함수로 검증)
