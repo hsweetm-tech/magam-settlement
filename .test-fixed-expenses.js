@@ -193,6 +193,27 @@ d = mod.computeMonthlyData('2026-08');
 check('9b) 다른 마케팅비만 있고 캐치 매입행 없음 → 고정비 200만 적용', d.sumFixedApplied === 2000000, `got ${d.sumFixedApplied}`);
 check('9b) 마케팅 = 전단지0.5M + 캐치고정 2M = 2.5M', d.bySupplyCategory['마케팅'] === 2500000, `got ${d.bySupplyCategory['마케팅']}`);
 
+// CASE 10: 전용 분류 '캐치테이블' (사장님 설정 방식) — 분류명=이름이라 그 분류 매입행 있을 때만 억제, 마케팅과 완전 분리
+// 10a) 캐치테이블 분류 매입행(와드 재분류) 있음 → 고정비 억제. 다른 마케팅비는 무관.
+mod.setRecords({ '2026-09-10': { totals: { posTotal: 5500000, supply: 5000000, vat: 500000 }, purchaseRows: [
+  { category: '캐치테이블', vendor: '주식회사 와드', supply: 1800000, vat: 180000, total: 1980000 },
+  { category: '마케팅', vendor: '모닝글로리', memo: '전단지', supply: 500000, vat: 50000, total: 550000 },
+], payrollRows: [], extras: { expenses: 0 } } });
+mod.setFixed([{ name: '캐치테이블', category: '캐치테이블', amount: 1800000 }]);
+d = mod.computeMonthlyData('2026-09');
+check('10a) 캐치테이블 분류 매입행 있음 → 고정비 억제', d.sumFixedApplied === 0, `got ${d.sumFixedApplied}`);
+check('10a) 캐치테이블 분류 = 매입행 1.8M만', d.bySupplyCategory['캐치테이블'] === 1800000, `got ${d.bySupplyCategory['캐치테이블']}`);
+check('10a) 마케팅 = 전단지 0.5M (캐치 영향 없음)', d.bySupplyCategory['마케팅'] === 500000, `got ${d.bySupplyCategory['마케팅']}`);
+
+// 10b) 캐치테이블 분류 매입행 없음(다른 마케팅비만) → 고정비 180만 적용
+mod.setRecords({ '2026-10-10': { totals: { posTotal: 5500000, supply: 5000000, vat: 500000 }, purchaseRows: [
+  { category: '마케팅', vendor: '인바이오젠', memo: '키오스크', supply: 300000, vat: 30000, total: 330000 },
+], payrollRows: [], extras: { expenses: 0 } } });
+mod.setFixed([{ name: '캐치테이블', category: '캐치테이블', amount: 1800000 }]);
+d = mod.computeMonthlyData('2026-10');
+check('10b) 캐치테이블 분류 매입행 없음 → 고정비 180만 적용', d.sumFixedApplied === 1800000, `got ${d.sumFixedApplied}`);
+check('10b) 캐치테이블 분류 = 고정비 180만', d.bySupplyCategory['캐치테이블'] === 1800000, `got ${d.bySupplyCategory['캐치테이블']}`);
+
 // CASE 8: 저장→읽기 왕복 — 실제 getFixedExpenses/saveFixedExpenses가 alwaysApply를 보존해야 함
 // (화이트리스트 누락 회귀 방지: stub이 아닌 진짜 함수로 검증)
 {
