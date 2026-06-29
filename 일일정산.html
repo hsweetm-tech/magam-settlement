@@ -10342,14 +10342,28 @@ async function writeRecordToDrive(record) {
   return true;
 }
 
-// 드라이브 폴더가 연결돼 있을 때만 record들을 라벨링_정리본/날짜.json에 자동 반영 (fire-and-forget).
-// 미연결이면 조용히 건너뜀 — localStorage·클라우드엔 이미 저장됨. (마감처럼 다운로드 폴백은 안 함.)
+// record들을 라벨링_정리본/날짜.json에 자동 반영.
+// 폴더 연결 시: 직접 기록. 미연결 시: 조용히 넘기지 않고 경고 + 일별 JSON 다운로드 폴백
+//   (앱·클라우드엔 저장됐지만 일별파일 미반영 → 그 날짜 재불러오기 시 유실되므로, 사용자가 폴더에 덮어쓰도록 내려줌).
 function _writeRecordsToDriveIfConnected(records) {
-  if (!_driveDirHandle || !Array.isArray(records) || !records.length) return;
+  if (!Array.isArray(records) || !records.length) return;
+  const dated = records.filter(r => r && r.date);
+  if (!dated.length) return;
+  if (!_driveDirHandle) {
+    toast(`⚠ 드라이브 폴더 미연결 — ${dated.map(r => r.date).join(', ')} 일별파일 자동반영 안 됨. JSON을 내려받았으니 '라벨링_정리본' 폴더에 덮어써 주세요. (설정에서 폴더 연결하면 자동 저장돼 이 단계 불필요)`, 'warn');
+    dated.forEach(rec => {
+      try {
+        const blob = new Blob([JSON.stringify(rec, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = `${rec.date}.json`; a.click();
+        URL.revokeObjectURL(url);
+      } catch (e) { console.error('json 다운로드 폴백', rec.date, e); }
+    });
+    return;
+  }
   (async () => {
     let ok = 0;
-    for (const rec of records) {
-      if (!rec || !rec.date) continue;
+    for (const rec of dated) {
       try { if (await writeRecordToDrive(rec)) ok++; } catch (e) { console.error('drive write', rec.date, e); }
     }
     if (ok) toast(`구글드라이브 ${ok}일치 자동 갱신됨`, 'ok');
