@@ -6343,10 +6343,13 @@ function computeMonthlyForecast(month, weatherForecast) {
     const isEvent = rec && rec._meta && rec._meta.excludeFromForecast === true;
 
     let type, sales = 0, factors = [];
-    if (rec && rec.totals && num(rec.totals.posTotal) > 0) {
+    // 월정산과 동일 소스(computeTotalsFor)로 순매출 산출 — rec.totals 직접 읽으면 posRows 합과
+    // 저장 totals가 다른 날(예: 일부 정정분)에 월정산↔손익추정 매출이 어긋남.
+    const _tot = rec ? computeTotalsFor(rec) : null;
+    if (_tot && num(_tot.posTotal) > 0) {
       // 실제 매출
       type = 'actual';
-      sales = num(rec.totals.posTotal);
+      sales = num(_tot.posTotal);
       actualSum += sales;
       if (isEvent) factors.push('이벤트');
     } else if (isClosed) {

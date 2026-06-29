@@ -181,6 +181,7 @@ const monthDataFn = grab(/function computeMonthlyData[\s\S]*?\n\}/, 'computeMont
 const prorateFn2 = grab(/function _proratedMonthFactor[\s\S]*?\n\}/, '_proratedMonthFactor');
 const canonFn2 = grab(/function _canonVendor[\s\S]*?\n\}/, '_canonVendor');
 const fxMatchFn2 = grab(/function _fixedExpenseMatched[\s\S]*?\n\}/, '_fixedExpenseMatched');
+const totalsForFn = grab(/function computeTotalsFor[\s\S]*?\n\}/, 'computeTotalsFor');
 
 const src2 = `
   let _all = {};
@@ -191,8 +192,8 @@ const src2 = `
   function getFixedExpenses() { return _fixedExpenses; }
   function getPartners() { return _partners; }
   function getDistSubtractDiscounts() { return _subtract; }
-  function computeTotalsFor(rec) { return rec.totals || { supply: 0, posTotal: 0, vat: 0 }; }
   ${numFn}
+  ${totalsForFn}
   ${holConst}
   ${wxConst}
   ${thresh}
@@ -217,7 +218,7 @@ const src2 = `
   ${monthDataFn}
   ${monthForecastFn}
   return {
-    computeMonthlyForecast,
+    computeMonthlyForecast, computeMonthlyData,
     setAll: (a) => { _all = a; },
     setFixed: (f) => { _fixedExpenses = f; }
   };
@@ -265,5 +266,21 @@ check('16) actualOpProfit은 monthData.monthPL과 동일', typeof m.actualOpProf
 // CASE 14: 잘못된 month → null 안전
 check('14) 잘못된 month', mod2.computeMonthlyForecast('not-a-month', []) === null);
 check('14) 빈 month', mod2.computeMonthlyForecast('', []) === null);
+
+// CASE 15: 완료월은 손익추정 월예상매출 == 월정산 매출 (추정 0) — posRows≠저장posTotal 날이 있어도 일치
+// (회귀: 손익추정이 rec.totals.posTotal 직접 읽어 computeTotalsFor와 갈리던 버그)
+const pastMonth = '2026-01'; // today(6월) 기준 완료월 → estimateSum 0
+mod2.setAll({
+  '2026-01-07': { date: '2026-01-07', totals: { posTotal: 100000, supply: 90909, vat: 9091 }, posRows: [] }, // totals-only
+  // posRows 합(150,000) ≠ 저장 posTotal(200,000), posCard/posCash 없음 → computeTotalsFor는 150,000 사용
+  '2026-01-08': { date: '2026-01-08', totals: { posTotal: 200000, supply: 181818, vat: 18182 },
+                  posRows: [{ menu: '메뉴A', qty: 1, amount: 150000, method: '카드' }], extras: { vatRate: 10 } },
+});
+mod2.setFixed([]);
+const md15 = mod2.computeMonthlyData(pastMonth);
+const fc15 = mod2.computeMonthlyForecast(pastMonth, []);
+check('15) 완료월 추정 0', fc15.estimateSum === 0, `estimateSum ${fc15.estimateSum}`);
+check('15) 손익추정 월예상매출 == 월정산 매출', fc15.monthExpected === md15.sumSales, `손익추정 ${fc15.monthExpected} vs 월정산 ${md15.sumSales}`);
+check('15) 값은 computeTotalsFor 기준(100,000+150,000)', md15.sumSales === 250000, `sumSales ${md15.sumSales}`);
 
 if (!process.exitCode) console.log('\n전체 통과');
