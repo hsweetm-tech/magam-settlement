@@ -7829,9 +7829,21 @@ function _autoColWidths(rows) {
   });
   return widths.map(w => ({ wch: Math.min(Math.max(Math.ceil(w) + 2, 8), 80) }));
 }
+// 정수 숫자셀에 천단위 콤마 서식(#,##0) 적용. 비율(문자열 "38.1%")·연월(문자열)·소수는 안 건드림.
+function _formatSheetNumbers(ws) {
+  if (!ws || !ws['!ref']) return;
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  for (let R = range.s.r; R <= range.e.r; R++) {
+    for (let C = range.s.c; C <= range.e.c; C++) {
+      const cell = ws[XLSX.utils.encode_cell({ r: R, c: C })];
+      if (cell && cell.t === 'n' && Number.isInteger(cell.v)) cell.z = '#,##0';
+    }
+  }
+}
 function _addSheet(wb, rows, name) {
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws['!cols'] = _autoColWidths(rows);
+  _formatSheetNumbers(ws);
   XLSX.utils.book_append_sheet(wb, ws, name);
 }
 
