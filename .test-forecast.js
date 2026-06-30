@@ -283,4 +283,11 @@ check('15) 완료월 추정 0', fc15.estimateSum === 0, `estimateSum ${fc15.esti
 check('15) 손익추정 월예상매출 == 월정산 매출', fc15.monthExpected === md15.sumSales, `손익추정 ${fc15.monthExpected} vs 월정산 ${md15.sumSales}`);
 check('15) 값은 computeTotalsFor 기준(100,000+150,000)', md15.sumSales === 250000, `sumSales ${md15.sumSales}`);
 
+// CASE 16: 날짜↔요일 정합 (타임존 버그 회귀 — toISOString UTC로 KST에서 하루 밀려 요일 어긋났음)
+const fc16 = mod2.computeMonthlyForecast('2026-03', []);
+check('16) 1일은 month-01 (밀림 없음)', fc16.days[0].date === '2026-03-01', `첫날 ${fc16.days[0].date}`);
+check('16) 마지막날 3-31', fc16.days[fc16.days.length - 1].date === '2026-03-31', `끝날 ${fc16.days[fc16.days.length-1].date}`);
+const wdOk = fc16.days.every(d => { const [y, m, dd] = d.date.split('-').map(Number); return new Date(y, m - 1, dd).getDay() === d.weekday; });
+check('16) 모든 날 date↔weekday 정합', wdOk);
+
 if (!process.exitCode) console.log('\n전체 통과');

@@ -6315,8 +6315,10 @@ function computeMonthlyForecast(month, weatherForecast) {
   if (!yr || !mo) return null;
   const firstDay = new Date(yr, mo - 1, 1);
   const lastDay = new Date(yr, mo, 0);
+  // 로컬 날짜 문자열 (toISOString은 UTC라 KST에서 하루 밀림 → 요일·record 조회 어긋남)
+  const _ymd = (dd) => dd.getFullYear() + '-' + String(dd.getMonth() + 1).padStart(2, '0') + '-' + String(dd.getDate()).padStart(2, '0');
   const today = new Date(); today.setHours(0,0,0,0);
-  const todayStr = today.toISOString().slice(0,10);
+  const todayStr = _ymd(today);
 
   // 학습 데이터 (전체 records)
   const trainRecords = Object.entries(all).map(([d, r]) => ({ date: d, ...r }));
@@ -6331,7 +6333,7 @@ function computeMonthlyForecast(month, weatherForecast) {
   const days = [];
   let actualSum = 0, estimateSum = 0;
   for (let dt = new Date(firstDay); dt <= lastDay; dt.setDate(dt.getDate() + 1)) {
-    const dateStr = new Date(dt).toISOString().slice(0,10);
+    const dateStr = _ymd(dt);
     const w = new Date(dt).getDay();
     const rec = all[dateStr];
     const isClosed = FORECAST_CLOSED_DOW.includes(w);
