@@ -8732,23 +8732,27 @@ async function parseExcel(file) {
 async function parseExcelAutoHeader(file, headerKeywords) {
   const data = await file.arrayBuffer();
   const wb = XLSX.read(data, { type: 'array' });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-  // 헤더 행 찾기: keywords 중 최소 N개 포함하는 행 (또는 가장 많이 일치하는 행)
-  let bestIdx = -1, bestHits = 0;
-  for (let i = 0; i < Math.min(aoa.length, 20); i++) {
-    const cells = aoa[i].map(c => String(c).replace(/\s+/g, ''));
-    let hits = 0;
-    for (const kw of headerKeywords) {
-      const k = String(kw).replace(/\s+/g, '');
-      if (cells.some(c => c === k || c.includes(k))) hits++;
+  // 모든 시트를 스캔해 헤더 키워드가 가장 많이 일치하는 시트+행 선택.
+  // (요약 시트가 앞에 와도 상세 시트를 찾음 — 예: 이지피지 6월 포맷은 pg매출·van매출·pg정산내역 3시트라
+  //  첫 시트만 보면 상세를 놓침.)
+  let bestAoa = null, bestIdx = -1, bestHits = 0;
+  for (const sn of wb.SheetNames) {
+    const a = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, defval: '' });
+    for (let i = 0; i < Math.min(a.length, 20); i++) {
+      const cells = (a[i] || []).map(c => String(c).replace(/\s+/g, ''));
+      let hits = 0;
+      for (const kw of headerKeywords) {
+        const k = String(kw).replace(/\s+/g, '');
+        if (cells.some(c => c === k || c.includes(k))) hits++;
+      }
+      if (hits > bestHits) { bestHits = hits; bestIdx = i; bestAoa = a; }
     }
-    if (hits > bestHits) { bestHits = hits; bestIdx = i; }
   }
-  if (bestIdx < 0 || bestHits < 2) {
-    // 폴백: 첫 행 헤더
-    return XLSX.utils.sheet_to_json(ws, { defval: '' });
+  if (bestIdx < 0 || bestHits < 2 || !bestAoa) {
+    // 폴백: 첫 시트 첫 행 헤더
+    return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
   }
+  const aoa = bestAoa;
   const headers = aoa[bestIdx].map(h => String(h).trim());
   // 중복 헤더 처리: 홈택스 양식의 '상호'/'대표자명'은 G/H (공급자) + L/M (공급받는자=우리회사)에 중복 등장
   // 첫 번째(공급자=매입처) 우선 사용, 이후 중복은 무시
