@@ -131,6 +131,20 @@ eq(byDate['2026-06-01'].status, 'pending', 'PG↔통장: 06-01 익월 정산예�
 eq(rb.unmatchedDeposits.length, 0, 'PG↔통장: 에비뉴 외 입금은 후보 아님');
 eq(rb.bankDepositCount, 2, 'PG↔통장: 에비뉴 입금 2건만 후보');
 
+// ── 3b. 회귀: 대형 지급을 같은 날 소액 입금에 억지 매칭하지 않음 ──
+// (실지급 4,596,825 ↔ 같은날 96,114 → 예전엔 diff -4,500,711로 잘못 뜸. 이제 missing)
+M.setPg('2026-05', [
+  { payoutDate:'2026-05-28', txnDate:'2026-05-25', gross:4700000, fee:98000, feeVat:9800, net:4596825, issuer:'현대' },
+]);
+M.setBank('2026-05', [
+  { date:'2026-05-28', deposit:96114, withdraw:0, desc:'에비뉴에이치', summary:'전자금융' },
+]);
+const rbBig = M.reconcilePgBank('2026-05');
+const p28 = rbBig.payouts.find(p => p.date === '2026-05-28');
+eq(p28.status, 'missing', '회귀: 대형지급↔소액입금 억지매칭 안 함(missing)');
+eq(p28.diff, 0, '회귀: 억지 차액 안 만듦(diff 0)');
+eq(rbBig.unmatchedDeposits.length, 1, '회귀: 소액 입금은 미매칭으로 남음');
+
 // ── 4. PG ↔ 마감 카드매출 대사 ──
 // 거래일자별 gross 합계 vs record 카드매출 (cardRows 우선, 없으면 totals.posCard)
 M.setPg('2026-05', [

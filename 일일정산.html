@@ -3267,9 +3267,12 @@ function reconcilePgBank(month) {
   });
   rows.forEach(p => {
     if (p.status) return;
-    // 금액 매칭 실패 → 같은 날짜(±1일) 미사용 입금이 있으면 차액(수수료 등)으로 간주
-    let hit = deposits.find(d => !d.used && d.date === p.date);
-    if (!hit) hit = deposits.find(d => !d.used && _dd(p.date, d.date) <= 1);
+    // 금액 매칭 실패 → 같은 날짜(±1일) 미사용 입금 중 '금액이 근접한' 것만 차액(수수료 등)으로 간주.
+    // 근접 조건이 없으면, 같은 날 엉뚱한 소액 입금에 대형 지급을 억지 매칭해 거대한 가짜 차액이 발생함
+    // (예: 실지급 4,596,825를 같은 날 96,114에 붙여 -4,500,711). 금액 차가 크면 '통장입금 못 찾음(missing)'.
+    const near = (d) => Math.abs(d.amount - p.net) <= Math.max(p.net * 0.05, 20000);
+    let hit = deposits.find(d => !d.used && d.date === p.date && near(d));
+    if (!hit) hit = deposits.find(d => !d.used && _dd(p.date, d.date) <= 1 && near(d));
     if (hit) { hit.used = true; p.bankDate = hit.date; p.bankAmt = hit.amount; p.diff = hit.amount - p.net; p.status = 'diff'; }
     else { p.status = (p.date.slice(0, 7) > month) ? 'pending' : 'missing'; }
   });
