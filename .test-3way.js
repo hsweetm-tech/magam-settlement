@@ -371,5 +371,25 @@ const wade2 = rCarry2.rows.find(x => /와드/.test(x.name));
 eq(wade2 && wade2.prevOpen, 0, '이월: 전월에 이미 결제됐으면 미지급 0 (이월 안 됨)');
 ok(wade2 && wade2.status !== 'paid_prev', '이월: 전월 결제 완료분은 paid_prev 아님');
 
+// ── 별칭 방향 자동 교정 (거꾸로/월고정 저장 치유) ──
+// 안정적인 KT(사업자번호)를 소스로, 가변 통장행 'KT통신요금05'를 대상으로 반대로 연결한 케이스.
+// 저장된 별칭: pattern '케이티' → target 'n:kt통신요금05'(월고정). 5월은 우연히 붙지만 6월(요금06)엔 깨짐.
+// reconcile가 pattern 'kt통신요금' → target 'b:<KT사업자번호>'로 자동 교정해 매월 한 줄로 병합돼야 함.
+M.setMulti(
+  { '2026-05-06': { purchaseRows: [ { date: '2026-05-06', vendor: '주식회사 케이티', bizNo: '1028142945', category: '통신비', supply: 1700, vat: 170, total: 1870, method: '계좌이체' } ] },
+    '2026-06-06': { purchaseRows: [ { date: '2026-06-06', vendor: '주식회사 케이티', bizNo: '1028142945', category: '통신비', supply: 1700, vat: 170, total: 1870, method: '계좌이체' } ] } },
+  { '2026-05': [ { date: '2026-05-06', vendor: '주식회사 케이티', bizNo: '1028142945', supply: 1700, vat: 170, total: 1870, docType: '세금계산서' } ],
+    '2026-06': [ { date: '2026-06-06', vendor: '주식회사 케이티', bizNo: '1028142945', supply: 1700, vat: 170, total: 1870, docType: '세금계산서' } ] },
+  { '2026-05': [ { date: '2026-05-10', desc: 'KT통신요금05', withdraw: 1870, summary: 'FBS출금', kind: '통신비' } ],
+    '2026-06': [ { date: '2026-06-10', desc: 'KT통신요금06', withdraw: 1870, summary: 'FBS출금', kind: '통신비' } ] },
+);
+M.setP3map({ 'b:1028142945': { kind: 'alias', target: 'n:kt통신요금05', pattern: '케이티', label: '주식회사 케이티', targetLabel: 'KT통신요금05' } });
+const kt5 = M.reconcilePurchase3Way('2026-05').rows.filter(x => /케이티|kt통신/i.test(x.name));
+eq(kt5.length, 1, '별칭교정: 5월 KT 한 줄로 병합(매입+계산서+통장)');
+eq(kt5[0] && kt5[0].status, 'complete', '별칭교정: 5월 KT complete');
+const kt6 = M.reconcilePurchase3Way('2026-06').rows.filter(x => /케이티|kt통신/i.test(x.name));
+eq(kt6.length, 1, '별칭교정: 6월도 한 줄(월고정 아님 — KT통신요금06도 매칭)');
+eq(kt6[0] && kt6[0].status, 'complete', '별칭교정: 6월 KT complete');
+
 console.log(`\n3-way 점검 테스트: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

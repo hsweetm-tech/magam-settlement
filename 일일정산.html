@@ -5333,6 +5333,16 @@ function reconcilePurchase3Way(month) {
   // 'KT통신요금05'는 패턴 'kt통신요금'으로 저장돼 다음달 'KT통신요금06'도 자동 매칭.
   const vmap = (typeof getP3wMap === 'function') ? getP3wMap() : {};
   const aliasList = Object.values(vmap).filter(v => v && v.kind === 'alias' && v.target && v.pattern);
+  // 별칭 방향 자동 교정: 대상이 '월번호가 섞인 이름키'(예: n:kt통신요금05)로 잘못 저장된 경우
+  //   — 연결 시 안정적인 사업자번호행을 소스로, 가변 통장행을 대상으로 반대로 고른 데이터 —
+  //   같은 패턴을 가진 사업자번호 거래처가 있으면 그쪽(안정 식별자)으로 대상을 돌리고
+  //   패턴은 가변 적요(끝 월번호 제거) 기준으로 다시 잡아 매월 자동 매칭되게 한다. (in-memory only)
+  aliasList.forEach(a => {
+    if (a.target.indexOf('n:') === 0 && /\d$/.test(a.target)) {
+      const bizHit = [...buys, ...taxes].find(x => x.bizNo && _canonVendor(x.vendor).includes(a.pattern));
+      if (bizHit) { const p2 = a.target.slice(2).replace(/\d+$/, ''); a.target = 'b:' + bizHit.bizNo; if (p2) a.pattern = p2; }
+    }
+  });
 
   // 3) 통장 출금 — 대표자명/상호 포함·공통글자 매칭으로 거래처 추정.
   //    카드대금 일괄출금(kind:'카드출금')만 제외. 체크카드 건별결제(summary:'체크카드')는
@@ -5749,13 +5759,19 @@ function linkP3wVendor(month, srcBiz, srcEnc) {
   const r = reconcilePurchase3Way(month);
   const cands = r.rows.filter(x => x.name && x.name !== srcName && (x.name.includes(qq) || _canonVendor(x.name).includes(_canonVendor(qq))));
   if (!cands.length) { toast(`'${qq}'와 일치하는 거래처를 못 찾았습니다`, 'warn'); return; }
-  const target = cands.sort((a, b) => Math.max(b.buy, b.tax, b.bank) - Math.max(a.buy, a.tax, a.bank))[0];
-  const targetKey = target.bizNo ? 'b:' + target.bizNo : 'n:' + _canonVendor(target.name);
+  const matched = cands.sort((a, b) => Math.max(b.buy, b.tax, b.bank) - Math.max(a.buy, a.tax, a.bank))[0];
+  // 클릭 방향 무관: 사업자번호가 있는 쪽을 '대상(anchor)'으로, 없는 쪽(적요·월번호 가변)에서 패턴 생성.
+  //  → KT처럼 통장 적요가 매월 바뀌어도(KT통신요금05/06…) 안정적인 사업자번호 거래처로 매월 자동 매칭.
+  let anchorKey, anchorName, varName, varBiz;
+  const srcHasBiz = !!srcBiz, tgtHasBiz = !!matched.bizNo;
+  if (srcHasBiz && !tgtHasBiz) { anchorKey = 'b:' + srcBiz; anchorName = srcName; varName = matched.name; varBiz = matched.bizNo; }
+  else if (tgtHasBiz && !srcHasBiz) { anchorKey = 'b:' + matched.bizNo; anchorName = matched.name; varName = srcName; varBiz = srcBiz; }
+  else { anchorKey = matched.bizNo ? 'b:' + matched.bizNo : 'n:' + _canonVendor(matched.name); anchorName = matched.name; varName = srcName; varBiz = srcBiz; }
   // 적요 끝 숫자(월 표기 05/06 등) 제거한 패턴으로 저장 → 다음달도 자동 매칭
-  const pattern = _canonVendor(srcName).replace(/\d+$/, '');
+  const pattern = _canonVendor(varName).replace(/\d+$/, '');
   if (!pattern) { toast('연결 기준 텍스트가 숫자뿐이라 패턴을 못 만듭니다', 'warn'); return; }
-  saveP3wMapEntry(srcBiz, srcName, { kind: 'alias', target: targetKey, pattern, label: srcName, targetLabel: target.name });
-  toast(`'${srcName}' → '${target.name}' 연결 (패턴 "${pattern}*" — 다음달도 자동)`, 'ok');
+  saveP3wMapEntry(varBiz, varName, { kind: 'alias', target: anchorKey, pattern, label: varName, targetLabel: anchorName });
+  toast(`'${varName}' → '${anchorName}' 연결 (패턴 "${pattern}*" — 다음달도 자동)`, 'ok');
   renderPurchase3Way(month);
 }
 
