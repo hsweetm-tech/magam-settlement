@@ -5365,6 +5365,42 @@ function reconcilePurchase3Way(month) {
   taxes.forEach(x => { const g = G(x.vendor, x.bizNo); g.tax += x.total; if (x.vendor) g.name = x.vendor; g.taxItems.push(x); });
   banks.forEach(x => { const g = G(x.vendor, x.bizNo); g.bank += x.total; g.bankItems.push(x); });
 
+  // 4-b) 전월 미지급 이월 (1개월). 외상매입→월말 세금계산서→익월 결제 패턴 때문에 월 컷으로만 보면
+  //   전월 매입의 결제(이번 달 통장 출금)가 '매입 미입력'으로 오탐됨. 전월(1개월) 매입−결제=미지급을
+  //   상호(정규화명) 기준으로 산출해 각 그룹에 prevOpen으로 붙인다. 카드결제분은 이월 대상 아님(카드전표 증빙).
+  {
+    const [_py, _pm] = month.split('-').map(Number);
+    const _pd = new Date(_py, _pm - 2, 1);
+    const prevMonth = _pd.getFullYear() + '-' + String(_pd.getMonth() + 1).padStart(2, '0');
+    const guessVendorCanon = (desc) => {
+      const cn = _canonVendor(desc);
+      const rep = repList.find(r => r.rep.length >= 2 && (cn.includes(r.rep) || r.rep.includes(cn)));
+      if (rep) return _canonVendor(rep.vendor);
+      const nm = nameList.find(n => n.length >= 2 && (cn.includes(n) || n.includes(cn) || _shareCore(cn, n, 4)));
+      if (nm) return _canonVendor(bizName[canonBiz[nm]] || desc);
+      return cn;
+    };
+    const prevBuyN = {}, prevBankN = {};
+    Object.keys(all).filter(d => d.startsWith(prevMonth)).forEach(d => {
+      (all[d].purchaseRows || []).forEach(p => {
+        const t = num(p.total) || (num(p.supply) + num(p.vat));
+        if (t <= 0 || /카드|법인카드|체크카드/.test(p.method || '')) return;
+        const cn = _canonVendor(p.vendor); if (!cn) return;
+        prevBuyN[cn] = (prevBuyN[cn] || 0) + t;
+      });
+    });
+    ((typeof getKbBankData === 'function' ? getKbBankData(prevMonth) : []) || [])
+      .filter(b => num(b.withdraw) > 0 && b.kind !== '카드출금')
+      .forEach(b => { const cn = guessVendorCanon((b.desc || '').trim()); if (cn) prevBankN[cn] = (prevBankN[cn] || 0) + num(b.withdraw); });
+    const prevOpenN = {};
+    Object.keys(prevBuyN).forEach(cn => { const open = Math.round(prevBuyN[cn] - (prevBankN[cn] || 0)); if (open >= 1000) prevOpenN[cn] = open; });
+    Object.values(groups).forEach(g => {
+      const cn = _canonVendor(g.name);
+      if (cn && prevOpenN[cn]) g.prevOpen = prevOpenN[cn];
+      else if (g.bizNo && bizName[g.bizNo]) { const c2 = _canonVendor(bizName[g.bizNo]); if (prevOpenN[c2]) g.prevOpen = prevOpenN[c2]; }
+    });
+  }
+
   // 사업자번호 없는 거래처끼리 병합 — 한쪽 정규화명이 다른쪽을 통째 포함할 때만(짧은 쪽 3글자+).
   // 예: 통장 '강성국' ⊂ 매입 '강성국인테리어커튼구매시공', 통장 '한국전력' ⊂ 매입 '한국전력전기료'.
   // ⚠️ 단순 공통 3글자(_shareCore)는 '강남역' 같은 지역명으로 모닝글로리·꾸아·롯데를 오병합시켜서 포함관계로 한정.
@@ -5406,10 +5442,13 @@ function reconcilePurchase3Way(month) {
     const mapped = vmap[g.key] || vmap['b:' + g.bizNo] || vmap['n:' + _canonVendor(g.name)] || null;
     const isFixed = mapped && mapped.kind === 'fixed';
     const isAuto = mapped && mapped.kind === 'auto';
+    const prevOpen = Math.round(g.prevOpen || 0);
     let status;
     if (isFixed) status = 'fixed_matched';  // 예외/고정비 지정 → 점검 제외
     else if (g.fixed && !T && !K) status = 'fixed';
     else if (g.fixed) status = 'fixed_matched';
+    // 이번 달 매입·계산서 없이 통장 출금만 있고 전월 미지급이 있으면 → 전월분 결제(정상), 매입누락 오탐 아님.
+    else if (!B && !T && K && prevOpen > 0) status = 'paid_prev';
     else if (!B && (T || K)) status = 'missing_buy';
     else if (B && T && K) status = 'complete';
     else if (B && T && !K) status = 'unpaid';
@@ -5417,11 +5456,11 @@ function reconcilePurchase3Way(month) {
     else if (B && g.cardBuy >= g.buy - 10) status = 'card';
     else if (B && !T && K) status = 'no_tax';
     else status = 'pending';
-    // 통장>매입 차액: 거래처가 매입과 묶였어도 통장 출금이 매입보다 많으면 그만큼 매입 누락(예: 대진 5/27 30,800).
-    // 고정비·매핑 제외, 1,000원 미만 차이는 노이즈로 무시.
-    const overBank = (!g.fixed && !isFixed && g.buy > 0 && g.bank - g.buy >= 1000) ? Math.round(g.bank - g.buy) : 0;
+    // 통장>매입 차액: 거래처가 매입과 묶였어도 통장 출금이 (당월매입+전월미지급)보다 많으면 그만큼 매입 누락.
+    // 전월분 결제(prevOpen)는 당월 매입 누락이 아니므로 차감. 고정비·매핑 제외, 1,000원 미만은 노이즈.
+    const overBank = (!g.fixed && !isFixed && g.buy > 0 && (g.bank - g.buy - prevOpen) >= 1000) ? Math.round(g.bank - g.buy - prevOpen) : 0;
     return {
-      name: g.name, bizNo: g.bizNo, buy: Math.round(g.buy), tax: Math.round(g.tax), bank: Math.round(g.bank),
+      name: g.name, bizNo: g.bizNo, buy: Math.round(g.buy), tax: Math.round(g.tax), bank: Math.round(g.bank), prevOpen,
       fixed: g.fixed, cats: [...g.cats], status, overBank,
       mapped: isFixed ? (mapped.category || '고정비') : null,
       recurring: isAuto ? (mapped.category || '정기') : null,
@@ -5441,6 +5480,7 @@ const P3W_STATUS = {
   no_tax:        { badge: '● 계산서 없음', color: 'var(--orange)' },
   missing_buy:   { badge: '● 매입 미입력', color: 'var(--red, #e5484d)' },
   pending:       { badge: '● 증빙·출금 대기', color: 'var(--orange)' },
+  paid_prev:     { badge: '· 전월분 결제', color: 'var(--text-3)' },
   card:          { badge: '· 카드결제', color: 'var(--text-3)' },
   fixed:         { badge: '· 고정비', color: 'var(--text-3)' },
   fixed_matched: { badge: '· 고정비(매칭)', color: 'var(--text-3)' }
@@ -5494,7 +5534,8 @@ function renderPurchase3Way(month) {
     const st = P3W_STATUS[x.status] || P3W_STATUS.pending;
     const badge = (x.status === 'fixed_matched' && x.mapped) ? `· 점검제외(${escapeHtml(x.mapped)})` : st.badge;
     const note = x.status === 'unpaid' && x.buy > x.tax ? `<span style="color:var(--text-3);font-size:10px;">미발행 ${fmtN(x.buy - x.tax)}</span>`
-      : (x.status === 'missing_buy' ? `<span style="color:var(--text-3);font-size:10px;">${x.tax ? '세금계산서' : ''}${x.tax && x.bank ? '+' : ''}${x.bank ? '통장' : ''}</span>` : '');
+      : (x.status === 'paid_prev' ? `<span style="color:var(--text-3);font-size:10px;">전월 미지급 ${fmtN(x.prevOpen)} 결제</span>`
+      : (x.status === 'missing_buy' ? `<span style="color:var(--text-3);font-size:10px;">${x.tax ? '세금계산서' : ''}${x.tax && x.bank ? '+' : ''}${x.bank ? '통장' : ''}</span>` : ''));
     // 통장>매입 차액: 거래처가 매입과 묶였어도 통장이 더 많으면 그만큼 매입 누락
     const gapNote = x.overBank ? `<span style="color:var(--red,#e5484d);font-size:10px;font-weight:600;">통장>매입 +${fmtN(x.overBank)}</span>` : '';
     // 적요/내용: 세금계산서 품목명 + 통장 적요 (거래처만으론 뭔지 모를 때)

@@ -35,7 +35,8 @@ const src = `
   ${grab(/function _registerP3wDrafts[\s\S]*?\n\}/, '_registerP3wDrafts')}
   return {
     reconcilePurchase3Way, _canonVendor, setP3map, autoRegisterRecurring, _guessP3wCategory, _p3wDraftFromRow, _registerP3wDrafts,
-    set: (rec, ht, bank, fixed) => { _rec = rec; _ht = { '2026-05': ht }; _bank = { '2026-05': bank }; _fixed = fixed || []; _p3map = {}; }
+    set: (rec, ht, bank, fixed) => { _rec = rec; _ht = { '2026-05': ht }; _bank = { '2026-05': bank }; _fixed = fixed || []; _p3map = {}; },
+    setMulti: (rec, htByMonth, bankByMonth, fixed) => { _rec = rec; _ht = htByMonth || {}; _bank = bankByMonth || {}; _fixed = fixed || []; _p3map = {}; }
   };
 `;
 const M = new Function(src)();
@@ -334,6 +335,41 @@ ok(rvx.rows.find(x => x.name.includes('버텍스')), '오연결 방지: 버텍�
 ok(rvx.rows.find(x => x.name.includes('쉴더스')), '오연결 방지: 에스케이쉴더스 별도 행 존재');
 ok(rvx.rows.filter(x => /버텍스|쉴더스/.test(x.name)).length === 2, '오연결 방지: 버텍스↔쉴더스 안 묶임(2행)');
 // 진짜 공통 4글자(코카콜라)는 여전히 연결돼야 함 — 기존 자동연결 테스트가 이미 커버(코카콜라음료↔장서아_코카콜라)
+
+// ── 전월 미지급 이월 (1개월) ──
+// 외상매입: 5월 와드 매입 2,200,000(계좌이체), 5월 통장 결제 0 → 6월에 통장으로 결제.
+// 6월 3-way: 와드 통장출금만 있고 매입/계산서 없음 → 예전엔 missing_buy(오탐), 이제 paid_prev.
+M.setMulti(
+  {
+    '2026-05-26': { purchaseRows: [
+      { date: '2026-05-26', vendor: '주식회사 와드', bizNo: '6148800597', category: '마케팅', supply: 2000000, vat: 200000, total: 2200000, method: '계좌이체' },
+    ] },
+    '2026-06-05': { purchaseRows: [
+      { date: '2026-06-05', vendor: '(주)단지푸드', bizNo: '5478102961', category: '식자재', supply: 300000, vat: 30000, total: 330000, method: '계좌이체' },
+    ] },
+  },
+  {}, // 홈택스 없음
+  { '2026-06': [ { date: '2026-06-03', desc: '주식회사 와드', withdraw: 2200000, summary: '전자금융', kind: '기타출금' } ] }, // 6월 통장: 와드 결제
+);
+const rCarry1 = M.reconcilePurchase3Way('2026-06');
+const wade = rCarry1.rows.find(x => /와드/.test(x.name));
+eq(wade && wade.status, 'paid_prev', '이월: 6월 와드 통장출금 → 전월분 결제(paid_prev, missing_buy 아님)');
+eq(wade && wade.prevOpen, 2200000, '이월: 전월 미지급 2,200,000 인식');
+eq(rCarry1.rows.filter(x => x.status === 'missing_buy').length, 0, '이월: missing_buy 오탐 0건');
+
+// 전월에 이미 결제된 경우엔 이월 안 됨: 5월 와드 매입 O + 5월 통장 결제 O → 6월 와드 출금은 그냥 missing_buy(전월분 아님)
+M.setMulti(
+  { '2026-05-26': { purchaseRows: [ { date: '2026-05-26', vendor: '주식회사 와드', bizNo: '6148800597', category: '마케팅', supply: 2000000, vat: 200000, total: 2200000, method: '계좌이체' } ] } },
+  {},
+  {
+    '2026-05': [ { date: '2026-05-28', desc: '주식회사 와드', withdraw: 2200000, summary: '전자금융', kind: '기타출금' } ], // 5월에 이미 결제
+    '2026-06': [ { date: '2026-06-03', desc: '주식회사 와드', withdraw: 500000, summary: '전자금융', kind: '기타출금' } ],   // 6월 별도 출금
+  },
+);
+const rCarry2 = M.reconcilePurchase3Way('2026-06');
+const wade2 = rCarry2.rows.find(x => /와드/.test(x.name));
+eq(wade2 && wade2.prevOpen, 0, '이월: 전월에 이미 결제됐으면 미지급 0 (이월 안 됨)');
+ok(wade2 && wade2.status !== 'paid_prev', '이월: 전월 결제 완료분은 paid_prev 아님');
 
 console.log(`\n3-way 점검 테스트: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
