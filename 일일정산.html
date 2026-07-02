@@ -5353,7 +5353,7 @@ function reconcilePurchase3Way(month) {
     const rep = repList.find(r => r.rep.length >= 2 && (cn.includes(r.rep) || r.rep.includes(cn)));
     if (rep) { vendor = rep.vendor; bizNo = rep.bizNo; }
     else { const nm = nameList.find(n => n.length >= 2 && (cn.includes(n) || n.includes(cn) || _shareCore(cn, n, 4))); if (nm) { bizNo = canonBiz[nm]; vendor = bizName[bizNo] || desc; } }
-    return { date: b.date || '', vendor, bizNo, total: num(b.withdraw), desc, card: /체크카드|카드/.test(b.summary || '') };
+    return { date: b.date || '', vendor, bizNo, total: num(b.withdraw), desc, memo: (b.myMemo || b.memo || b.memo2 || '').trim(), summary: (b.summary || '').trim(), card: /체크카드|카드/.test(b.summary || '') };
   });
 
   // 4) 거래처 그룹핑 (bizNo 우선, 없으면 정규화 상호; 수동 별칭 적용)
@@ -5548,13 +5548,17 @@ function renderPurchase3Way(month) {
       : (x.status === 'missing_buy' ? `<span style="color:var(--text-3);font-size:10px;">${x.tax ? '세금계산서' : ''}${x.tax && x.bank ? '+' : ''}${x.bank ? '통장' : ''}</span>` : ''));
     // 통장>매입 차액: 거래처가 매입과 묶였어도 통장이 더 많으면 그만큼 매입 누락
     const gapNote = x.overBank ? `<span style="color:var(--red,#e5484d);font-size:10px;font-weight:600;">통장>매입 +${fmtN(x.overBank)}</span>` : '';
-    // 적요/내용: 세금계산서 품목명 + 통장 적요 (거래처만으론 뭔지 모를 때)
+    // 적요/내용: 세금계산서 품목명 + 통장 적요·표시내용메모 (거래처만으론 뭔지 모를 때 — 통장 파일 안 열어도 구분되게)
     const items = [...new Set((x.taxItems || []).map(t => t.item).filter(Boolean))];
-    const bdescs = [...new Set((x.bankItems || []).map(b => b.desc).filter(Boolean))];
+    // 통장: '적요(표시내용메모)' 형태. myMemo(사장님이 직접 단 표시내용)를 괄호로 덧붙임.
+    const bdescs = [...new Set((x.bankItems || []).map(b => {
+      const d = (b.desc || '').trim(); const mm = (b.memo || '').trim();
+      return (d && mm && mm !== d) ? `${d} (${mm})` : (mm || d);
+    }).filter(Boolean))];
     const dParts = [];
     if (items.length) dParts.push('계산서 ' + items.slice(0, 2).join(', '));
-    if (bdescs.length) dParts.push('통장 ' + bdescs.slice(0, 2).join(', '));
-    const descLine = dParts.length ? `<div style="font-size:10px;color:var(--text-3);margin-top:1px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(dParts.join('  '))}">${escapeHtml(dParts.join('  '))}</div>` : '';
+    if (bdescs.length) dParts.push('통장 ' + bdescs.slice(0, 3).join(' · '));
+    const descLine = dParts.length ? `<div style="font-size:10px;color:var(--text-3);margin-top:1px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(dParts.join('  '))}">${escapeHtml(dParts.join('  '))}</div>` : '';
     const enc = encodeURIComponent(x.name || '');
     const canMark = ['missing_buy', 'pending', 'no_tax', 'unpaid', 'card'].includes(x.status);
     const isMapped = x.status === 'fixed_matched' && x.mapped;
