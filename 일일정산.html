@@ -5620,6 +5620,8 @@ function reconcilePurchase3Way(month) {
   //   같은 패턴을 가진 사업자번호 거래처가 있으면 그쪽(안정 식별자)으로 대상을 돌리고
   //   패턴은 가변 적요(끝 월번호 제거) 기준으로 다시 잡아 매월 자동 매칭되게 한다. (in-memory only)
   aliasList.forEach(a => {
+    // 저장된 구버전 패턴의 앞 월 접두 self-heal ('05월전기료' → '전기료') — 다음달 적요도 매칭되게
+    a.pattern = String(a.pattern || '').replace(/^\d+월(?=.)/, '');
     if (a.target.indexOf('n:') === 0 && /\d$/.test(a.target)) {
       const bizHit = [...buys, ...taxes].find(x => x.bizNo && _canonVendor(x.vendor).includes(a.pattern));
       if (bizHit) { const p2 = a.target.slice(2).replace(/\d+$/, ''); a.target = 'b:' + bizHit.bizNo; if (p2) a.pattern = p2; }
@@ -6064,8 +6066,10 @@ function linkP3wVendor(month, srcBiz, srcEnc) {
   if (srcHasBiz && !tgtHasBiz) { anchorKey = 'b:' + srcBiz; anchorName = srcName; varName = matched.name; varBiz = matched.bizNo; }
   else if (tgtHasBiz && !srcHasBiz) { anchorKey = 'b:' + matched.bizNo; anchorName = matched.name; varName = srcName; varBiz = srcBiz; }
   else { anchorKey = matched.bizNo ? 'b:' + matched.bizNo : 'n:' + _canonVendor(matched.name); anchorName = matched.name; varName = srcName; varBiz = srcBiz; }
-  // 적요 끝 숫자(월 표기 05/06 등) 제거한 패턴으로 저장 → 다음달도 자동 매칭
-  const pattern = _canonVendor(varName).replace(/\d+$/, '');
+  // 적요의 월 표기 제거한 패턴으로 저장 → 다음달도 자동 매칭.
+  // 끝 숫자(KT통신요금05)뿐 아니라 앞 월 접두(05월전기료)도 제거 — 안 떼면 다음달 '06월전기료'가
+  // 패턴에 안 걸려 계산서·통장이 딴 그룹으로 갈라지고 양쪽 다 등록돼 이중계상됨 (6월 전기료 실사례).
+  const pattern = _canonVendor(varName).replace(/\d+$/, '').replace(/^\d+월(?=.)/, '');
   if (!pattern) { toast('연결 기준 텍스트가 숫자뿐이라 패턴을 못 만듭니다', 'warn'); return; }
   saveP3wMapEntry(varBiz, varName, { kind: 'alias', target: anchorKey, pattern, label: varName, targetLabel: anchorName });
   toast(`'${varName}' → '${anchorName}' 연결 (패턴 "${pattern}*" — 다음달도 자동)`, 'ok');
