@@ -1846,6 +1846,7 @@ body.tab-summary main { grid-template-columns: 1fr; }
           <button class="msub-btn" data-msub="check">매입점검</button>
           <button class="msub-btn" data-msub="bank">통장</button>
           <button class="msub-btn" data-msub="pg">PG정산</button>
+          <button class="msub-btn" data-msub="catch">캐치테이블</button>
           <button class="msub-btn" data-msub="proof">증빙</button>
           <button class="msub-btn" data-msub="settings">설정</button>
         </div>
@@ -1979,6 +1980,33 @@ body.tab-summary main { grid-template-columns: 1fr; }
             </div>
           </div>
           <div id="pgReconcileContent" style="margin-top:20px;"></div>
+        </div>
+
+        <!-- 캐치테이블 sub-panel: 캐치페이 거래확정·예약금 정산 업로드 + 매출 반영·입금 대사 (2026-07-21 추가) -->
+        <div class="msub-panel" id="msub-catch">
+          <div class="msub-section-head">
+            <div class="msub-section-title">캐치테이블 정산 (캐치페이·예약금)</div>
+            <div class="msub-section-note" id="catchCount">0건</div>
+          </div>
+          <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
+            캐치테이블 사장님 페이지에서 받은 <strong>거래확정내역</strong>·<strong>예약금 정산 내역</strong> 엑셀을 올리면(두 파일 한 번에 선택 가능) 캐치페이 매출이 월 손익 매출에 합산되고, 지급일별 정산예정액이 통장 "캐치테이블" 입금과 자동 대사됩니다. 캐치페이 결제는 POS 마감에 안 잡히는 별도 매출 채널입니다. 수수료·월정액·거치대 등 비용은 와드 세금계산서 → 매입행으로 반영되므로 여기서 중복 계상하지 않습니다.
+          </div>
+          <div class="upload-grid">
+            <div class="upload-zone" id="catchUpload">
+              <input type="file" id="catchFile" accept=".xlsx,.xls,.csv" style="display:none;" multiple>
+              <svg class="icon icon-lg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              <div class="upload-label">캐치테이블 엑셀 업로드</div>
+              <div class="upload-hint">거래확정내역 / 예약금 정산 자동 감지</div>
+            </div>
+            <div class="upload-zone" style="cursor:default;border-style:solid;">
+              <div style="font-size:11px;color:var(--text-3);">현재 월 적재</div>
+              <div style="font-size:18px;font-weight:600;margin:4px 0;" id="catchLoadedCount">0건</div>
+              <div style="display:flex;gap:6px;justify-content:center;">
+                <button class="btn btn-small" onclick="clearCatchCurrentMonth()" style="font-size:11px;">초기화</button>
+              </div>
+            </div>
+          </div>
+          <div id="catchReconcileContent" style="margin-top:20px;"></div>
         </div>
 
         <!-- 증빙 sub-panel: 홈택스 업로드 + 대사 결과 -->
@@ -2671,6 +2699,7 @@ function init() {
   // 홈택스 업로드 init
   setupHometaxUpload();
   setupKbBankUpload();
+  setupCatchUpload();
   setupPgUpload();
   setupPgVanUpload();
   updateHometaxStatus();
@@ -3022,6 +3051,28 @@ function clearHometaxData(month) {
   _queueSettingsCloudUpload();
 }
 
+/* 캐치테이블(운영사 와드) 정산 데이터 — 캐치페이 거래확정내역 + 예약금 정산내역.
+   캐치페이는 POS 마감에 안 잡히는 별도 매출 채널(고객이 앱에서 결제, 수수료 차감 후 일정산 입금).
+   수수료·월정액은 와드 세금계산서→매입행으로 비용 처리되므로 이 데이터는
+   ① 매출(gross) 월 손익 합산 ② 통장 입금 대사 에만 쓴다. */
+function getCatchKey(month) { return 'catchSettle_' + month; }
+function getCatchData(month) {
+  if (!month) return { txns: [], reserves: [] };
+  try {
+    const raw = localStorage.getItem(getCatchKey(month));
+    const o = raw ? JSON.parse(raw) : null;
+    return { txns: (o && Array.isArray(o.txns)) ? o.txns : [], reserves: (o && Array.isArray(o.reserves)) ? o.reserves : [] };
+  } catch { return { txns: [], reserves: [] }; }
+}
+function saveCatchData(month, obj) {
+  localStorage.setItem(getCatchKey(month), JSON.stringify({ txns: (obj && obj.txns) || [], reserves: (obj && obj.reserves) || [] }));
+  _queueSettingsCloudUpload();
+}
+function clearCatchData(month) {
+  localStorage.removeItem(getCatchKey(month));
+  _queueSettingsCloudUpload();
+}
+
 /**
  * 백업/복원에 포함될 글로벌 앱 설정 수집/적용.
  * - partners (정률 분배 비율)
@@ -3033,6 +3084,7 @@ function collectAppSettings() {
   const hometax = {};
   const pgSettle = {};
   const pgVan = {};
+  const catchSettle = {};
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);
     if (k && k.startsWith('hometax_')) {
@@ -3043,6 +3095,9 @@ function collectAppSettings() {
     }
     if (k && k.startsWith(PG_VAN_KEY_PREFIX)) {
       try { pgVan[k.slice(PG_VAN_KEY_PREFIX.length)] = JSON.parse(localStorage.getItem(k) || '[]'); } catch {}
+    }
+    if (k && k.startsWith('catchSettle_')) {
+      try { catchSettle[k.slice('catchSettle_'.length)] = JSON.parse(localStorage.getItem(k) || '{}'); } catch {}
     }
   }
   let partners = null, fixedExpenses = null, capital = null, pgDirectRates = null, kbBank = null, goals = null, goalCalc = null;
@@ -3063,6 +3118,7 @@ function collectAppSettings() {
     hometax,
     pgSettle,
     pgVan,
+    catchSettle,
     pgDirectRates,
     kbBank,
     goals,
@@ -3093,6 +3149,12 @@ function applyAppSettings(s) {
     Object.entries(s.pgVan).forEach(([month, arr]) => {
       if (Array.isArray(arr)) localStorage.setItem(PG_VAN_KEY_PREFIX + month, JSON.stringify(arr));
     });
+  }
+  if (s.catchSettle && typeof s.catchSettle === 'object') {
+    Object.entries(s.catchSettle).forEach(([month, obj]) => {
+      if (obj && typeof obj === 'object') localStorage.setItem('catchSettle_' + month, JSON.stringify(obj));
+    });
+    if (typeof updateCatchStatus === 'function') updateCatchStatus();
   }
   if (s.pgDirectRates && typeof s.pgDirectRates === 'object') {
     localStorage.setItem(PG_DIRECT_RATES_KEY, JSON.stringify(s.pgDirectRates));
@@ -4083,7 +4145,8 @@ function parseKbBankRows(file) {
 function inferBankKind(desc, summary, withdraw, deposit) {
   const d = (desc || '') + ' ' + (summary || '');
   if (deposit > 0) {
-    // 입금 — 카드사 정산 / 매장 자체 입금
+    // 입금 — 카드사 정산 / PG / 캐치테이블 / 매장 자체 입금
+    if (/캐치/.test(d)) return '캐치정산';   // 캐치페이 일정산·예약금 정산 (운영사 와드)
     if (/카드|BC|국민|삼성|신한|하나|롯데|우리|현대|NH|비씨|가맹/.test(d)) return '카드입금';
     if (/에비뉴|아스트라|매장/.test(d)) return '매장입금';
     return '기타입금';
@@ -5093,6 +5156,222 @@ function setupKbBankUpload() {
   });
 }
 
+/* ========================================================================
+   캐치테이블 정산 — 거래확정내역·예약금 파싱 + 통장 입금 대사 (msub-catch)
+   ======================================================================== */
+const CATCH_HEADER_KEYWORDS = ['거래일시', '판매/청구금액(A)', '수수료(B)', '정산(예정)금액(A-B)', '지급(예정)일자', '거래상태',
+  '신청상태', '총 잔여 결제액', '세금계산서발행액', '최종지급금액', '정산일시'];
+
+// 컬럼명 공백 차이를 무시하고 값 찾기 (완전일치 우선, 포함 폴백)
+function _catchPick(row, names) {
+  const keys = Object.keys(row);
+  for (const n of names) {
+    const nk = String(n).replace(/\s+/g, '');
+    let k = keys.find(kk => String(kk).replace(/\s+/g, '') === nk);
+    if (k === undefined) k = keys.find(kk => String(kk).replace(/\s+/g, '').includes(nk));
+    if (k !== undefined && row[k] !== '' && row[k] != null) return row[k];
+  }
+  return '';
+}
+function _catchDate(v) {
+  const s = String(v || '').trim().replace(/[./]/g, '-').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
+}
+
+async function handleCatchFile(file) {
+  const mm = document.getElementById('monthlyMonth');
+  if (!mm || !mm.value) { toast('월을 먼저 선택하세요 (월정산 탭 상단)', 'warn'); return; }
+  const month = mm.value;
+  try {
+    const rows = await parseExcelAutoHeader(file, CATCH_HEADER_KEYWORDS);
+    if (!rows.length) { toast('파일에서 데이터를 찾지 못했습니다: ' + file.name, 'danger'); return; }
+    const sample = rows[0];
+    const isReserve = _catchPick(sample, ['신청상태']) !== '' || _catchPick(sample, ['최종지급금액']) !== '';
+    const isTxn = !isReserve && (_catchPick(sample, ['거래일시']) !== '' || _catchPick(sample, ['판매/청구금액(A)', '판매/청구금액']) !== '');
+    const cur = getCatchData(month);
+    if (isTxn) {
+      const txns = rows.map(r => ({
+        date: _catchDate(_catchPick(r, ['거래일시'])),
+        status: String(_catchPick(r, ['거래상태']) || '').trim(),
+        amount: num(_catchPick(r, ['판매/청구금액(A)', '판매/청구금액'])),
+        fee: num(_catchPick(r, ['수수료(B)', '수수료'])),
+        net: num(_catchPick(r, ['정산(예정)금액(A-B)', '정산(예정)금액'])),
+        payDate: _catchDate(_catchPick(r, ['지급(예정)일자'])),
+        orderId: String(_catchPick(r, ['주문정보']) || '').trim()
+      })).filter(t => t.date && t.amount);
+      const monthTxns = txns.filter(t => t.date.startsWith(month));
+      const skipped = txns.length - monthTxns.length;
+      if (!monthTxns.length) { toast(`${month} 거래가 없습니다 (총 ${txns.length}건 중 ${skipped}건이 다른 월)`, 'warn'); return; }
+      const replaced = cur.txns.length;
+      saveCatchData(month, { txns: monthTxns, reserves: cur.reserves });
+      toast(`✓ ${month} 캐치페이 거래 ${monthTxns.length}건 적재${replaced ? ' (기존 교체)' : ''}${skipped ? ` · ${skipped}건 타월 제외` : ''}`, 'ok');
+    } else if (isReserve) {
+      // 예약금 파일은 연간 누적 — 이용기간 종료일(마지막 날짜) 기준으로 해당 월 귀속
+      const reserves = rows.map(r => ({
+        status: String(_catchPick(r, ['신청상태']) || '').trim(),
+        applyDate: _catchDate(_catchPick(r, ['정산신청일'])),
+        startDate: _catchDate(_catchPick(r, ['시작 날짜', '시작날짜'])),
+        endDate: _catchDate(_catchPick(r, ['마지막 날짜', '마지막날짜'])),
+        amount: num(_catchPick(r, ['총 잔여 결제액', '총잔여결제액'])),
+        fee: num(_catchPick(r, ['세금계산서발행액'])),
+        net: num(_catchPick(r, ['최종지급금액', '정산금액'])),
+        payDate: _catchDate(_catchPick(r, ['정산일시']))
+      })).filter(x => x.amount && x.endDate);
+      const monthRes = reserves.filter(x => x.endDate.startsWith(month));
+      const skipped = reserves.length - monthRes.length;
+      const replaced = cur.reserves.length;
+      saveCatchData(month, { txns: cur.txns, reserves: monthRes });
+      toast(`✓ ${month} 예약금 정산 ${monthRes.length}건 적재${replaced ? ' (기존 교체)' : ''}${skipped ? ` · ${skipped}건 타월` : ''}`, monthRes.length ? 'ok' : 'warn');
+    } else {
+      toast('캐치테이블 양식을 인식하지 못했습니다: ' + file.name + ' (거래확정내역/예약금 정산 엑셀인지 확인)', 'danger');
+      return;
+    }
+    updateCatchStatus();
+    refreshMonthlyDistribution();
+    renderCatchReconcile(month);
+  } catch (err) {
+    console.error(err);
+    toast('캐치테이블 파일 처리 실패: ' + (err.message || err), 'danger');
+  }
+}
+
+function setupCatchUpload() {
+  const zone = document.getElementById('catchUpload');
+  const input = document.getElementById('catchFile');
+  if (!zone || !input) return;
+  const handleAll = async (files) => { for (const f of files) await handleCatchFile(f); };
+  zone.addEventListener('click', () => input.click());
+  input.addEventListener('change', (e) => {
+    if (e.target.files.length) handleAll([...e.target.files]);
+    e.target.value = '';
+  });
+  zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) handleAll([...e.dataTransfer.files]);
+  });
+}
+
+function clearCatchCurrentMonth() {
+  const mm = document.getElementById('monthlyMonth');
+  if (!mm || !mm.value) { toast('월을 먼저 선택하세요', 'warn'); return; }
+  if (!confirm(`${mm.value}월 캐치테이블 데이터를 모두 지울까요?`)) return;
+  clearCatchData(mm.value);
+  updateCatchStatus();
+  refreshMonthlyDistribution();
+  renderCatchReconcile(mm.value);
+  toast(`${mm.value} 캐치테이블 데이터 초기화`, 'ok');
+}
+
+function updateCatchStatus() {
+  const mm = document.getElementById('monthlyMonth');
+  const d = getCatchData(mm ? mm.value : '');
+  const el1 = document.getElementById('catchCount');
+  if (el1) el1.textContent = (d.txns.length + d.reserves.length) + '건';
+  const el2 = document.getElementById('catchLoadedCount');
+  if (el2) el2.textContent = `거래 ${d.txns.length} · 예약금 ${d.reserves.length}`;
+}
+
+/** 캐치테이블 월 요약 + 통장 입금 대사 (순수 계산 — 테스트용 분리)
+ *  지급(예정)일별 정산예정액 합 ↔ 통장 '캐치테이블' 입금(desc에 캐치 포함, 예약_ 제외).
+ *  익월 지급 예정분은 통장에 없어도 정상(carry) — 익월 통장이 적재돼 있으면 그쪽에서 확인. */
+function _catchMonthlySummary(catchData, bankRowsThisMonth, bankRowsNextMonth) {
+  // 취소는 음수 금액의 별도 행으로 오므로(부분취소 포함) 상태 구분 없이 전량 합산 — 음수가 자동 상계.
+  const all = catchData.txns || [];
+  const okCount = all.filter(t => t.status === '승인').length;
+  const cancelled = all.length - okCount;
+  const sales = all.reduce((s, t) => s + num(t.amount), 0);
+  const fee = all.reduce((s, t) => s + num(t.fee), 0);
+  const net = all.reduce((s, t) => s + num(t.net), 0);
+  const byPayDate = {};
+  all.forEach(t => { const d = t.payDate || '?'; byPayDate[d] = (byPayDate[d] || 0) + num(t.net); });
+  const isCatchDeposit = (b) => num(b.deposit) > 0 && /캐치/.test(b.desc || '') && !/^예약/.test(String(b.desc || '').trim());
+  const depositByDate = {};
+  [...(bankRowsThisMonth || []), ...(bankRowsNextMonth || [])].filter(isCatchDeposit)
+    .forEach(b => { depositByDate[b.date] = (depositByDate[b.date] || 0) + num(b.deposit); });
+  const payRows = Object.keys(byPayDate).sort().map(d => {
+    const expected = Math.round(byPayDate[d]);
+    const got = Math.round(depositByDate[d] || 0);
+    return { payDate: d, expected, got, diff: got - expected };
+  });
+  const reserves = (catchData.reserves || []).map(r => {
+    const resDeposits = [...(bankRowsThisMonth || []), ...(bankRowsNextMonth || [])]
+      .filter(b => num(b.deposit) > 0 && /^예약/.test(String(b.desc || '').trim()) && b.date === r.payDate);
+    const got = resDeposits.reduce((s, b) => s + num(b.deposit), 0);
+    return { ...r, got: Math.round(got) };
+  });
+  const resSales = reserves.reduce((s, r) => s + num(r.amount), 0);
+  const resFee = reserves.reduce((s, r) => s + num(r.fee), 0);
+  return { okCount, cancelled, sales, fee, net, payRows, reserves, resSales, resFee };
+}
+
+function renderCatchReconcile(month) {
+  const el = document.getElementById('catchReconcileContent');
+  if (!el || !month) return;
+  const data = getCatchData(month);
+  if (!data.txns.length && !data.reserves.length) {
+    el.innerHTML = `<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">${month} 캐치테이블 데이터 없음 — 거래확정내역·예약금 엑셀을 업로드하세요.</div>`;
+    return;
+  }
+  const [y, m] = month.split('-').map(Number);
+  const nd = new Date(y, m, 1);
+  const nextMonth = nd.getFullYear() + '-' + String(nd.getMonth() + 1).padStart(2, '0');
+  const S = _catchMonthlySummary(data, getKbBankData(month), getKbBankData(nextMonth));
+  const nextBankLoaded = (getKbBankData(nextMonth) || []).length > 0;
+  const payHtml = S.payRows.map(r => {
+    const stat = r.got === 0
+      ? (r.payDate > (getKbBankData(month).slice(-1)[0] || {}).date && !nextBankLoaded
+          ? `<span style="color:var(--text-3);">입금 예정 (통장 미적재)</span>`
+          : `<span style="color:var(--orange);">미입금</span>`)
+      : Math.abs(r.diff) <= 10
+        ? `<span style="color:var(--green);">✓ 일치</span>`
+        : `<span style="color:var(--red);">차액 ${fmt(r.diff)}</span>`;
+    return `<tr>
+      <td>${r.payDate}</td>
+      <td style="text-align:right;">${fmt(r.expected)}</td>
+      <td style="text-align:right;">${r.got ? fmt(r.got) : '-'}</td>
+      <td>${stat}</td>
+    </tr>`;
+  }).join('');
+  const resHtml = S.reserves.map(r => `<tr>
+      <td>${r.startDate.slice(5)}~${r.endDate.slice(5)}</td>
+      <td>${escapeHtml(r.status)}</td>
+      <td style="text-align:right;">${fmt(Math.round(r.amount))}</td>
+      <td style="text-align:right;">${fmt(Math.round(r.fee))}</td>
+      <td style="text-align:right;">${fmt(Math.round(r.net))}</td>
+      <td>${r.payDate || '미정산'}</td>
+      <td>${r.got ? (Math.abs(r.got - r.net) <= 10 ? '<span style="color:var(--green);">✓ 입금</span>' : `<span style="color:var(--red);">차액 ${fmt(r.got - r.net)}</span>`) : '<span style="color:var(--text-3);">-</span>'}</td>
+    </tr>`).join('');
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px;">
+      <div class="m-card"><div class="m-card-label">캐치페이 판매 (승인 ${S.okCount}건${S.cancelled ? ` · 취소 ${S.cancelled}` : ''})</div>
+        <div class="m-card-value">${fmt(Math.round(S.sales))}</div><div class="m-card-sub">월 손익 매출에 합산됨</div></div>
+      <div class="m-card"><div class="m-card-label">수수료 (${S.sales > 0 ? (S.fee / S.sales * 100).toFixed(2) : 0}%)</div>
+        <div class="m-card-value">${fmt(Math.round(S.fee))}</div><div class="m-card-sub">와드 세금계산서 → 매입행으로 비용 반영</div></div>
+      <div class="m-card"><div class="m-card-label">정산액 (입금 기준)</div>
+        <div class="m-card-value">${fmt(Math.round(S.net))}</div><div class="m-card-sub">지급일별 통장 대사는 아래 표</div></div>
+      ${S.reserves.length ? `<div class="m-card"><div class="m-card-label">예약금 (기간종료 ${month} 귀속)</div>
+        <div class="m-card-value">${fmt(Math.round(S.resSales))}</div><div class="m-card-sub">수수료 ${fmt(Math.round(S.resFee))} · 매출 합산됨</div></div>` : ''}
+    </div>
+    <div style="font-weight:600;margin-bottom:8px;font-size:13px;">지급일별 정산 ↔ 통장 "캐치테이블" 입금</div>
+    <div class="table-wrap"><table class="data-table" style="font-size:12px;">
+      <thead><tr><th>지급(예정)일</th><th style="text-align:right;">정산예정액</th><th style="text-align:right;">통장 입금</th><th>상태</th></tr></thead>
+      <tbody>${payHtml}</tbody>
+    </table></div>
+    ${S.reserves.length ? `
+    <div style="font-weight:600;margin:16px 0 8px;font-size:13px;">예약금 정산</div>
+    <div class="table-wrap"><table class="data-table" style="font-size:12px;">
+      <thead><tr><th>이용기간</th><th>상태</th><th style="text-align:right;">예약금</th><th style="text-align:right;">수수료</th><th style="text-align:right;">지급액</th><th>정산일</th><th>통장</th></tr></thead>
+      <tbody>${resHtml}</tbody>
+    </table></div>` : ''}
+    <div style="font-size:11px;color:var(--text-3);margin-top:8px;">
+      ※ 매출은 판매금액(gross) 기준으로 손익에 합산 — 수수료·월정액 비용은 와드 세금계산서(매입행)로 잡히므로 여기서 중복 계상하지 않습니다.
+      말일 부근 거래는 익월 초 입금이라 통장 미적재 시 "입금 예정"으로 표시됩니다.
+    </div>`;
+}
+
 /**
  * 월 단위 홈택스 ↔ 입력 매입 대사
  * 매칭 우선순위:
@@ -5890,11 +6169,12 @@ function _levelColor(level) {
 /**
  * 1개 record 또는 record 배열에서 운영 KPI 계산
  * @param {object|object[]} recordsLike
- * @param {{extraLabor?: number}} opts - extraLabor: 고정비로 등록된 인건비 (월정산은 그 달 적용분, 분석 탭은 기간 안분값)
+ * @param {{extraLabor?: number, extraSalesSupply?: number}} opts - extraLabor: 고정비로 등록된 인건비 (월정산은 그 달 적용분, 분석 탭은 기간 안분값)
+ *   extraSalesSupply: record 밖 매출 공급가 (캐치테이블 등) — 원가율·인건비율 분모에 포함
  */
 function computeCostRatios(recordsLike, opts = {}) {
   const records = Array.isArray(recordsLike) ? recordsLike : [recordsLike];
-  let salesSupply = 0;
+  let salesSupply = num(opts.extraSalesSupply || 0);
   let foodSupply = 0, beverageSupply = 0, purchaseLabor = 0;
   let payrollTotal = 0;
   for (const rec of records) {
@@ -7169,6 +7449,38 @@ function computeMonthlyData(month) {
     bySupplyCategory[k] = (bySupplyCategory[k] || 0) + v;
     byCategory[k] = (byCategory[k] || 0) + v; // 부가세 포함 표시도 같은 금액으로 (간이 — 임대료는 면세)
   });
+
+  // 캐치테이블 매출 합산 — 캐치페이(승인 거래, 거래일 귀속) + 예약금(이용기간 종료월 귀속).
+  // POS 마감에 안 잡히는 별도 채널이라 gross(고객결제액)로 매출에 더하고 공급가/VAT는 1.1 분리(과세).
+  // 수수료는 와드 세금계산서→매입행으로 이미 비용 반영되므로 여기서 더하지 않음(이중계상 방지).
+  const catchData = (typeof getCatchData === 'function') ? getCatchData(month) : { txns: [], reserves: [] };
+  // 취소는 음수 별도 행(부분취소 포함) — 상태 구분 없이 전량 합산해 음수로 상계
+  const catchTxnRows = catchData.txns || [];
+  const catchByDay = {};
+  catchTxnRows.forEach(t => { catchByDay[t.date] = (catchByDay[t.date] || 0) + num(t.amount); });
+  const catchTxnSales = catchTxnRows.reduce((s, t) => s + num(t.amount), 0);
+  const catchResSales = (catchData.reserves || []).reduce((s, r) => s + num(r.amount), 0);
+  const catchSales = catchTxnSales + catchResSales;
+  const catchFee = catchTxnRows.reduce((s, t) => s + num(t.fee), 0) + (catchData.reserves || []).reduce((s, r) => s + num(r.fee), 0);
+  const catchSupply = Math.round(catchSales / 1.1);
+  const catchVat = catchSales - catchSupply;
+  sumSales += catchSales; sumSalesSupply += catchSupply; sumSalesVat += catchVat;
+  if (catchSales > 0) {
+    // 일자별 손익 표에도 반영 (예약금은 특정일 귀속이 없어 월 합산에만).
+    // 마감 record 없는 날의 캐치 거래는 별도 행으로 추가.
+    const seen = new Set(dailyRows.map(r => r.date));
+    dailyRows.forEach(r => {
+      const c = Math.round(catchByDay[r.date] || 0);
+      if (!c) return;
+      r.sales += c; r.catch = c; r.pl += Math.round(c / 1.1);
+    });
+    Object.keys(catchByDay).filter(d => !seen.has(d)).sort().forEach(d => {
+      const c = Math.round(catchByDay[d]);
+      dailyRows.push({ date: d, sales: c, catch: c, purchase: 0, payroll: 0, extraExp: 0, discounts: 0, pl: Math.round(c / 1.1), status: '캐치만' });
+    });
+    dailyRows.sort((a, b) => a.date < b.date ? -1 : 1);
+  }
+
   const monthPL = sumSalesSupply - (sumPSupply + sumExtra + sumPayroll + sumFixedApplied);
   const payableVat = sumSalesVat - sumPVat;
   const fixedLaborForMonth = num(fixedResolved.appliedByCategory['인건비']);
@@ -7178,11 +7490,12 @@ function computeMonthlyData(month) {
   const laborFactor = _proratedMonthFactor(month, dates.length ? dates[dates.length - 1] : '', _todayStr);
   const daysInMonth = new Date(+month.slice(0, 4), +month.slice(5, 7), 0).getDate();
   const coveredDays = Math.round(laborFactor * daysInMonth);
-  const costRatios = computeCostRatios(dates.map(d => all[d]), { extraLabor: Math.round(fixedLaborForMonth * laborFactor) });
+  const costRatios = computeCostRatios(dates.map(d => all[d]), { extraLabor: Math.round(fixedLaborForMonth * laborFactor), extraSalesSupply: catchSupply });
   return {
     month, dates, sumSales, sumSalesSupply, sumSalesVat,
     sumPTotal, sumPSupply, sumPVat, sumExtra, sumPayroll, sumDiscounts,
     sumFixedApplied,
+    catchSales, catchFee, catchSupply, catchVat, catchTxnSales, catchResSales,
     sumTaxableSupply, sumTaxableVat, sumTaxableTotal, sumExemptTotal,
     taxableSupplyByCategory, exemptByCategory,
     monthPL, payableVat, byCategory, bySupplyCategory, dailyRows,
@@ -7741,6 +8054,7 @@ function renderMonthlyReport(month) {
   if (distEl) distEl.innerHTML = renderMonthlyDistContent(data);
   if (proofEl) proofEl.innerHTML = renderHometaxReconciliation(month);
   if (typeof renderPgReconcile === 'function') renderPgReconcile(month);
+  if (typeof renderCatchReconcile === 'function') { updateCatchStatus(); renderCatchReconcile(month); }
 }
 
 /* ========================================================================
@@ -8080,7 +8394,7 @@ function renderMonthlyProfitContent(data) {
         <div class="m-card">
           <div class="m-card-label">매출 (부가세 포함)</div>
           <div class="m-card-value">${fmt(Math.round(sumSales))}</div>
-          <div class="m-card-sub">공급가 ${fmt(Math.round(sumSalesSupply))}</div>
+          <div class="m-card-sub">공급가 ${fmt(Math.round(sumSalesSupply))}${num(data.catchSales) > 0 ? `<br>POS ${fmt(Math.round(sumSales - data.catchSales))} + 캐치테이블 ${fmt(Math.round(data.catchSales))}` : ''}</div>
         </div>
         <div class="m-card">
           <div class="m-card-label">매입 + 고정비 (부가세 포함)</div>
@@ -8287,6 +8601,10 @@ function switchMonthlySubTab(name) {
     const mm = document.getElementById('monthlyMonth');
     if (mm && mm.value && typeof renderPurchase3Way === 'function') renderPurchase3Way(mm.value);
   }
+  if (name === 'catch') {
+    const mm = document.getElementById('monthlyMonth');
+    if (mm && mm.value) { updateCatchStatus(); renderCatchReconcile(mm.value); }
+  }
 }
 
 /**
@@ -8356,6 +8674,7 @@ function renderIncomeStatement(data) {
         </thead>
         <tbody>
           ${row('매출액 (공급가)', salesSupply, { bold: true, color: 'var(--text)' })}
+          ${num(data.catchSupply) > 0 ? row(`  └ POS ${fmt(salesSupply - Math.round(data.catchSupply))} + 캐치테이블 ${fmt(Math.round(data.catchSupply))}`, 0, { indent: true, color: 'var(--text-3)' }) : ''}
           ${row(`└ 부가세 별도`, salesVat, { indent: true })}
           ${row('(−) 매출원가', -cogsSupply, { color: 'var(--red)', pct: salesSupply > 0 ? cogsSupply/salesSupply*100 : 0 })}
           ${Object.entries(cogsByCategory).map(([k, v]) => row(`  ${k}`, -v, { indent: true, color: 'var(--text-2)', pct: salesSupply > 0 ? v/salesSupply*100 : 0 })).join('')}
