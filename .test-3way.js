@@ -29,6 +29,7 @@ const src = `
   ${grab(/function _shareCore[\s\S]*?\n\}/, '_shareCore')}
   ${grab(/function _fixedExpenseMatched[\s\S]*?\n\}/, '_fixedExpenseMatched')}
   ${fn3way}
+  ${grab(/function _bumpClosedAt[\s\S]*?\n\}/, '_bumpClosedAt')}
   ${grab(/function autoRegisterRecurring[\s\S]*?\n\}/, 'autoRegisterRecurring')}
   ${grab(/function _guessP3wCategory[\s\S]*?\n\}/, '_guessP3wCategory')}
   ${grab(/function _p3wDraftFromRow[\s\S]*?\n\}/, '_p3wDraftFromRow')}

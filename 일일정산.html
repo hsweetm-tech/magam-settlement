@@ -5662,6 +5662,13 @@ function _p3wDraftFromRow(x, month) {
   return { date, vendor: x.name, bizNo: x.bizNo, supply: Math.round(total / 1.1), vat: total - Math.round(total / 1.1), total, category: guessB || '기타', method: isCard ? '체크카드' : '계좌이체', docType: isCard ? '카드전표' : '구매영수증', item: (b && b.desc) || '', _src: isCard ? '통장출금(체크카드)' : '통장출금(증빙없음)' };
 }
 
+// 클라우드 병합(pullFromCloud)은 closedAt이 더 최신인 쪽이 이기므로, 과거 record에
+// 행을 추가·수정하고도 closedAt을 안 올리면 다른 기기/탭에 등록분이 전파되지 않는다.
+function _bumpClosedAt(all, dates) {
+  const now = new Date().toISOString();
+  dates.forEach(d => { if (all[d]) all[d].closedAt = now; });
+}
+
 function _registerP3wDrafts(drafts) {
   const all = getAllRecords();
   const dates = new Set();
@@ -5675,6 +5682,7 @@ function _registerP3wDrafts(drafts) {
     });
     dates.add(d.date);
   });
+  _bumpClosedAt(all, dates);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
   _queueCloudUpload();
   // 드라이브 폴더 연결 시 영향받은 날짜 JSON도 자동 갱신 (미연결/테스트 환경이면 건너뜀)
@@ -5845,6 +5853,7 @@ function autoRegisterRecurring(month) {
     created++;
   });
   if (created) {
+    _bumpClosedAt(all, dates);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
     _queueCloudUpload();
     // 드라이브 폴더 연결 시 새로 생성된 날짜 JSON도 자동 갱신 (미연결/테스트면 건너뜀)
