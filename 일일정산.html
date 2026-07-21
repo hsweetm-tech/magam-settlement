@@ -2960,7 +2960,10 @@ function detectHometaxDocType(rows, filename) {
   if (/세금계산서/.test(fn)) return '세금계산서';
   if (/계산서/.test(fn)) return '계산서';  // 면세 계산서 (세금계산서는 위에서 이미 처리) — 농·축·수산물 등 면세 매입
   const cols = Object.keys(rows[0] || {}).join('|');
-  if (/카드번호|승인번호|가맹점/.test(cols)) return '카드전표';
+  // '승인번호'는 카드전표·전자세금계산서 목록 양쪽에 다 있어 카드 단서로 못 씀
+  // (홈택스 '매입 전자세금계산서 목록조회'가 승인번호 컬럼 때문에 카드전표로 오분류되던 버그)
+  if (/전자세금계산서/.test(cols)) return '세금계산서';
+  if (/카드번호|가맹점/.test(cols)) return '카드전표';
   if (/용도|소득공제/.test(cols)) return '현금영수증';
   // 파일명 단서 없을 때: 세액 컬럼이 아예 없으면 면세 계산서로 추정 (세금계산서는 세액 컬럼 필수)
   if (!_matchHometaxCol(cols.split('|'), HOMETAX_COLUMNS.vat)) return '계산서';
@@ -5644,13 +5647,16 @@ function reconcilePurchase3Way(month) {
     for (const a of aliasList) { if (a.pattern && cn.includes(a.pattern)) return a.target; }
     return k;
   };
-  const G = (v, b) => {
-    const k = key(v, b);
+  const G = (v, b, skipAlias) => {
+    const k = skipAlias ? rawKey(v, b) : key(v, b);
     if (!groups[k]) groups[k] = { key: k, name: v, bizNo: (k.indexOf('b:') === 0 ? k.slice(2) : (b || '')), buy: 0, tax: 0, bank: 0, cardBuy: 0, fixed: false, cats: new Set(), taxItems: [], bankItems: [] };
     if (b && !groups[k].bizNo) groups[k].bizNo = b;
     return groups[k];
   };
-  buys.forEach(x => { const g = G(x.vendor, x.bizNo); g.buy += x.total; if (x.card) g.cardBuy += x.total; if (x.fixed) g.fixed = true; if (x.category) g.cats.add(x.category); });
+  // 고정비 설정 항목은 별칭 매핑 제외 — 별칭은 실거래(통장 적요·상호 변형) 연결용.
+  // 예: 별칭 '캐치테이블'→와드에 고정비 '캐치테이블(광고비)'까지 흡수되면 와드 계산서가
+  // fixed_matched로 가려져 매입 미입력 등록 유도가 사라짐.
+  buys.forEach(x => { const g = G(x.vendor, x.bizNo, x.fixed); g.buy += x.total; if (x.card) g.cardBuy += x.total; if (x.fixed) g.fixed = true; if (x.category) g.cats.add(x.category); });
   taxes.forEach(x => { const g = G(x.vendor, x.bizNo); g.tax += x.total; if (x.vendor) g.name = x.vendor; g.taxItems.push(x); });
   banks.forEach(x => { const g = G(x.vendor, x.bizNo); g.bank += x.total; g.bankItems.push(x); });
 
