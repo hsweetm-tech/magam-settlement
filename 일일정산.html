@@ -7395,6 +7395,19 @@ function _proratedMonthFactor(month, lastDateStr, todayStr) {
   return Math.min(1, (+lastDateStr.slice(8, 10)) / daysInMonth);
 }
 
+/** VAN 직승인 카드수수료 (순수 계산 — 테스트용 분리)
+ *  Σ VAN 매출(gross) − 통장의 카드사 직접입금(적요가 '카드사명+계좌숫자' 패턴) 합.
+ *  통장 미적재 or VAN 없음 → 0 (매출 전액을 수수료로 오인하는 과대계상 방지).
+ *  월경계(말일 거래의 익월 입금)로 약간의 오차 가능 — 추정치. */
+function _vanFeeForMonth(vanRows, bankRows) {
+  const vanGross = (vanRows || []).reduce((s, r) => s + num(r.gross), 0);
+  if (vanGross <= 0 || !(bankRows || []).length) return 0;
+  const vanDep = bankRows
+    .filter(b => num(b.deposit) > 0 && /^(하나|삼성|신한|현|국민|롯데|우리|NH|BC|비씨|KB)[0-9-]/.test(String(b.desc || '').trim()))
+    .reduce((s, b) => s + num(b.deposit), 0);
+  return Math.max(0, Math.round(vanGross - vanDep));
+}
+
 function computeMonthlyData(month) {
   if (!month) return null;
   const all = getAllRecords();
@@ -7491,7 +7504,18 @@ function computeMonthlyData(month) {
     dailyRows.sort((a, b) => a.date < b.date ? -1 : 1);
   }
 
-  const monthPL = sumSalesSupply - (sumPSupply + sumExtra + sumPayroll + sumFixedApplied);
+  // VAN 직승인 카드수수료 자동 반영 — 카드사가 수수료 떼고 직접 입금해 출금·계산서·매입행 어디에도 안 잡힘.
+  // ⚠ PG(이지피지) 수수료는 넣지 않음: 킹오더브라더스가 매달 세금계산서 발행 → 매입행 경로로 이미 반영
+  //   (5월 467,914·6월 1,001,219 모두 PG 정산 수수료와 1원 일치 확인) — 여기서 더하면 이중계상.
+  const vanFee = _vanFeeForMonth(
+    (typeof getPgVanData === 'function' ? getPgVanData(month) : []),
+    (typeof getKbBankData === 'function' ? getKbBankData(month) : []));
+  if (vanFee > 0) {
+    bySupplyCategory['카드수수료'] = (bySupplyCategory['카드수수료'] || 0) + vanFee;
+    byCategory['카드수수료'] = (byCategory['카드수수료'] || 0) + vanFee;
+  }
+
+  const monthPL = sumSalesSupply - (sumPSupply + sumExtra + sumPayroll + sumFixedApplied + vanFee);
   const payableVat = sumSalesVat - sumPVat;
   const fixedLaborForMonth = num(fixedResolved.appliedByCategory['인건비']);
   // 진행 중인 달: 고정 인건비(월 전액)를 매출 커버 일수로 안분 → 부분월 인건비율·PrimeCost 폭증 방지
@@ -7505,7 +7529,7 @@ function computeMonthlyData(month) {
     month, dates, sumSales, sumSalesSupply, sumSalesVat,
     sumPTotal, sumPSupply, sumPVat, sumExtra, sumPayroll, sumDiscounts,
     sumFixedApplied,
-    catchSales, catchFee, catchSupply, catchVat, catchTxnSales, catchResSales,
+    catchSales, catchFee, catchSupply, catchVat, catchTxnSales, catchResSales, vanFee,
     sumTaxableSupply, sumTaxableVat, sumTaxableTotal, sumExemptTotal,
     taxableSupplyByCategory, exemptByCategory,
     monthPL, payableVat, byCategory, bySupplyCategory, dailyRows,

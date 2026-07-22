@@ -9,7 +9,8 @@ const src = `
   ${grab(/function _catchPick[\s\S]*?\n\}/, '_catchPick')}
   ${grab(/function _catchDate[\s\S]*?\n\}/, '_catchDate')}
   ${grab(/function _catchMonthlySummary[\s\S]*?\n\}/, '_catchMonthlySummary')}
-  return { _catchPick, _catchDate, _catchMonthlySummary };
+  ${grab(/function _vanFeeForMonth[\s\S]*?\n\}/, '_vanFeeForMonth')}
+  return { _catchPick, _catchDate, _catchMonthlySummary, _vanFeeForMonth };
 `;
 const M = new Function(src)();
 let pass = 0, fail = 0;
@@ -70,6 +71,19 @@ eq(S.reserves[0].got, 432450, '예약금 1차 입금 매칭');
 eq(S.reserves[1].got, 0, '예약금 미정산 → 입금 없음');
 eq(S.resSales, 560000, '예약금 매출 합');
 eq(S.resFee, 21840, '예약금 수수료 합');
+
+// _vanFeeForMonth: VAN 직승인 수수료 = 매출 − 카드사 직접입금
+const vanRows = [{ issuer: '삼성', count: 3, gross: 166000 }, { issuer: '해외', count: 13, gross: 1109100 }];
+const vanBank = [
+  { date: '2026-06-09', desc: '삼성20428894', deposit: 160200, withdraw: 0 },
+  { date: '2026-06-10', desc: '하나92751350', deposit: 1050000, withdraw: 0 },
+  { date: '2026-06-24', desc: '에비뉴에이치', deposit: 999999, withdraw: 0 },   // PG 입금 — 제외돼야
+  { date: '2026-06-22', desc: '캐치테이블', deposit: 125093, withdraw: 0 },     // 캐치 — 제외돼야
+];
+eq(M._vanFeeForMonth(vanRows, vanBank), 166000 + 1109100 - 160200 - 1050000, 'VAN 수수료 = 매출 − 카드사입금 (PG·캐치 제외)');
+eq(M._vanFeeForMonth(vanRows, []), 0, '통장 미적재 → 0 (과대계상 방지)');
+eq(M._vanFeeForMonth([], vanBank), 0, 'VAN 없음 → 0');
+eq(M._vanFeeForMonth([{ gross: 100000 }], [{ desc: '하나92751350', deposit: 120000 }]), 0, '입금이 더 크면 0으로 클램프');
 
 console.log(`캐치테이블 정산 테스트: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
