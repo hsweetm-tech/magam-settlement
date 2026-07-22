@@ -7847,10 +7847,12 @@ function renderDashboard() {
   const capital = getCapitalSettings();
   let capitalHtml = '';
   if (capital && num(capital.amount) > 0) {
-    // 모든 마감 record의 monthPL 합 (월정산 기준) — 계산을 위해 모든 월 데이터 통합
+    // 마감 record의 monthPL 합 (월정산 기준) — 영업 시작월(2026-05)부터만 누적.
+    // 4월(오픈 전 준비기)은 사장님 방침으로 누적 손익·월평균에서 제외 (초도매입만 있고 매출 0이라 왜곡).
+    const PL_START_MONTH = '2026-05';
     const all = getAllRecords();
     const months = new Set();
-    Object.keys(all).forEach(d => { if (/^\d{4}-\d{2}/.test(d)) months.add(d.slice(0,7)); });
+    Object.keys(all).forEach(d => { if (/^\d{4}-\d{2}/.test(d) && d.slice(0,7) >= PL_START_MONTH) months.add(d.slice(0,7)); });
     let cumulativePL = 0;
     Array.from(months).forEach(m => {
       const md = computeMonthlyData(m);
