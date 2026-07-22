@@ -3776,6 +3776,31 @@ function renderPgReconcile(month) {
     </tr>`;
   }).join('') : `<tr><td colspan="6" style="text-align:center;color:var(--text-3);padding:14px;">해당 월 마감 카드매출/PG 거래 데이터 없음</td></tr>`;
 
+  // ②-요약: 일자별 '마감>PG' 차이 합계 ↔ VAN 직승인 월합계 자동 비교
+  // (VAN 파일은 카드사별 월합계뿐 날짜가 없어 일단위 대사 불가 → 합계로 검증.
+  //  심야승인 등 마감일↔카드사 거래일 하루 밀림이 있으면 잔차가 남을 수 있음)
+  const _vanRows = (typeof getPgVanData === 'function') ? getPgVanData(month) : [];
+  const _vanGrossTotal = _vanRows.reduce((s, r) => s + num(r.gross), 0);
+  const _overCloseSum = rc.rows.reduce((s, r) => s + Math.max(0, num(r.diff)), 0);
+  let vanCompareHtml = '';
+  if (_overCloseSum > 0 || _vanGrossTotal > 0) {
+    if (!_vanRows.length) {
+      vanCompareHtml = `<div style="margin-top:8px;font-size:12px;color:var(--orange);">
+        마감&gt;PG 차이 합계 <strong>${fmtN(_overCloseSum)}</strong>원 — VAN(직승인) 파일 미적재라 검증 불가.
+        상단 "VAN 직승인 매출" 섹션에 이지피지 <strong>매출내역</strong> 엑셀을 올리면 자동 비교됩니다.</div>`;
+    } else {
+      const _vanGap = _vanGrossTotal - _overCloseSum;
+      const _gapOk = Math.abs(_vanGap) <= Math.max(50000, _vanGrossTotal * 0.05);
+      vanCompareHtml = `<div style="margin-top:8px;font-size:12px;color:var(--text-2);">
+        마감&gt;PG 차이 합계 <strong>${fmtN(_overCloseSum)}</strong>원 vs VAN 직승인 월합계 <strong>${fmtN(_vanGrossTotal)}</strong>원
+        → 잔차 <strong style="color:${_vanGap === 0 ? 'var(--green)' : (_gapOk ? 'var(--orange)' : 'var(--red, #e5484d)')};">${fmtN(_vanGap)}</strong>원
+        ${_vanGap === 0 ? '<span style="color:var(--green);font-weight:600;">정확 일치 ✓</span>'
+          : (_gapOk ? '<span style="color:var(--text-3);">(VAN 파일에 날짜가 없어 심야승인 등 일자 경계 밀림이면 정상 범위 — 돈은 대사③ 통장입금 기준으로 확인)</span>'
+                    : '<span style="font-weight:600;">차이가 큼 — 마감 카드매출 입력 or VAN 파일 확인 필요</span>')}
+      </div>`;
+    }
+  }
+
   const cardSection = `
     <div style="display:flex;align-items:center;gap:8px;margin:22px 0 10px;">
       <div style="font-weight:600;font-size:14px;">② PG 카드매출 ↔ 일일 마감 카드매출 대사</div>
@@ -3790,7 +3815,8 @@ function renderPgReconcile(month) {
         <th style="text-align:right;">마감 카드매출</th><th style="text-align:right;">차이(마감-PG)</th><th>상태</th>
       </tr></thead>
       <tbody>${cardRowsHtml}</tbody>
-    </table></div>`;
+    </table></div>
+    ${vanCompareHtml}`;
 
   // ── 대사 ③: VAN 직승인 매출 ↔ 통장 카드사 직접입금 역산 ──
   const directSection = renderDirectCardSection(month, fmtN);

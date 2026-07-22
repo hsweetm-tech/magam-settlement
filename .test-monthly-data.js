@@ -19,6 +19,7 @@ const thresh = grab(/const COST_RATIO_THRESHOLDS = \{[\s\S]*?\};/, 'thresholds')
 const prorateFn = grab(/function _proratedMonthFactor[\s\S]*?\n\}/, '_proratedMonthFactor');
 const canonFn = grab(/function _canonVendor[\s\S]*?\n\}/, '_canonVendor');
 const fxMatchFn = grab(/function _fixedExpenseMatched[\s\S]*?\n\}/, '_fixedExpenseMatched');
+const vanFeeFn = grab(/function _vanFeeForMonth[\s\S]*?\n\}/, '_vanFeeForMonth');
 
 const src = `
   let _records = {};
@@ -36,6 +37,7 @@ const src = `
   ${numFn}
   ${canonFn}
   ${fxMatchFn}
+  ${vanFeeFn}
   ${ratLvl}
   ${ratFn}
   ${purchaseFn}
