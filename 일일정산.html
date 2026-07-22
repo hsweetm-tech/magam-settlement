@@ -12162,6 +12162,9 @@ async function handleBatchLoad(files) {
       const data = JSON.parse(text);
       if (data.date) {
         if (all[data.date]) replaced++; else added++;
+        // closedAt 보존: 파일에 없으면 기존 레코드 것을 승계 — 없이 덮으면 클라우드 pull 병합(closedAt 비교)에서
+        // 옛 클라우드본이 이겨 import 내용이 조용히 되돌아감 (2026-07-22 6/17 전기료 계산서행 유실 실사례)
+        if (!data.closedAt && all[data.date] && all[data.date].closedAt) data.closedAt = all[data.date].closedAt;
         all[data.date] = data;
         importedDates.push(data.date);
       } else {
