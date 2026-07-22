@@ -181,6 +181,7 @@ const monthDataFn = grab(/function computeMonthlyData[\s\S]*?\n\}/, 'computeMont
 const prorateFn2 = grab(/function _proratedMonthFactor[\s\S]*?\n\}/, '_proratedMonthFactor');
 const canonFn2 = grab(/function _canonVendor[\s\S]*?\n\}/, '_canonVendor');
 const fxMatchFn2 = grab(/function _fixedExpenseMatched[\s\S]*?\n\}/, '_fixedExpenseMatched');
+const vanFeeFn2 = grab(/function _vanFeeForMonth[\s\S]*?\n\}/, '_vanFeeForMonth');
 const totalsForFn = grab(/function computeTotalsFor[\s\S]*?\n\}/, 'computeTotalsFor');
 
 const src2 = `
@@ -212,6 +213,7 @@ const src2 = `
   ${purchaseFn}
   ${canonFn2}
   ${fxMatchFn2}
+  ${vanFeeFn2}
   ${resolveFx}
   ${prorateFn2}
   ${distFn}
