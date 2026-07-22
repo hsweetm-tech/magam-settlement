@@ -22,6 +22,7 @@ const cogs = grab(/const COGS_CATEGORIES = \[[\s\S]*?\];/, 'COGS_CATEGORIES');
 const expCats = grab(/const EXPENSE_CATEGORIES = \[[\s\S]*?\];/, 'EXPENSE_CATEGORIES');
 const canonFn = grab(/function _canonVendor[\s\S]*?\n\}/, '_canonVendor');
 const fxMatchFn = grab(/function _fixedExpenseMatched[\s\S]*?\n\}/, '_fixedExpenseMatched');
+const vanFeeFn = grab(/function _vanFeeForMonth[\s\S]*?\n\}/, '_vanFeeForMonth');
 
 const src = `
   let _records = {};
@@ -39,6 +40,7 @@ const src = `
   ${numFn}
   ${canonFn}
   ${fxMatchFn}
+  ${vanFeeFn}
   ${ratLvl}
   ${ratFn}
   ${purchaseFn}

@@ -6288,7 +6288,9 @@ function getFixedExpenses() {
       id: e.id || ('fx-' + Math.random().toString(36).slice(2, 8)),
       name: String(e.name || ''),
       amount: num(e.amount),
-      category: EXPENSE_CATEGORIES.includes(e.category) ? e.category : '임대료',
+      // 고정비 분류는 매입 분류 + 고정비 프리셋(관리비·보험료 등) 모두 허용 — 프리셋으로 고른 '관리비'가
+      // 읽기 시 '임대료'로 강제 변환돼 매입행 매칭이 깨지던 버그 수정 (2026-07-22, 신언호 건)
+      category: (EXPENSE_CATEGORIES.includes(e.category) || FIXED_EXPENSE_CATEGORY_PRESETS.includes(e.category)) ? e.category : '임대료',
       memo: String(e.memo || ''),
       skipMonths: String(e.skipMonths || ''),
       alwaysApply: !!e.alwaysApply
