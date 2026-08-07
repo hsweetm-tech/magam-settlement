@@ -1940,7 +1940,7 @@ body.tab-summary main { grid-template-columns: 1fr; }
             <div class="msub-section-note" id="pgCount">0건</div>
           </div>
           <div style="padding: 4px 0 12px; color: var(--text-3); font-size: 12px;">
-            이지피지에서 다운로드한 <strong>PG정산상세내역</strong> 엑셀(.xlsx)을 업로드하면 ① 지급일자별 실지급금액 합계 ↔ 통장 "에비뉴에이치" 입금, ② 거래일자별 카드매출 ↔ 일일 마감 카드매출입력 을 자동 대사합니다. (통장 대사를 보려면 <strong>통장</strong> 탭에서 KB 월 엑셀도 먼저 업로드하세요.) 월별 별도 저장(localStorage).
+            이지피지에서 다운로드한 <strong>PG정산상세내역</strong> 엑셀(.xlsx)을 업로드하면 ① 지급일자별 실지급금액 합계 ↔ 통장 "에비뉴에이치/아스트라" 입금, ② 거래일자별 카드매출 ↔ 일일 마감 카드매출입력 을 자동 대사합니다. (통장 대사를 보려면 <strong>통장</strong> 탭에서 KB 월 엑셀도 먼저 업로드하세요.) 월별 별도 저장(localStorage).
           </div>
           <div class="upload-grid">
             <div class="upload-zone" id="pgUpload">
@@ -3319,7 +3319,7 @@ function reconcilePgBank(month) {
     g.count++; g.gross += num(r.gross); g.fee += num(r.fee); g.feeVat += num(r.feeVat); g.net += num(r.net);
   });
   const deposits = bank
-    .filter(b => num(b.deposit) > 0 && /에비뉴/.test((b.desc || '') + (b.summary || '')))
+    .filter(b => num(b.deposit) > 0 && /에비뉴|아스트라/.test((b.desc || '') + (b.summary || '')))
     .map(b => ({ date: b.date, amount: num(b.deposit), desc: b.desc, used: false }));
   const _dd = (a, b) => Math.abs((new Date(a) - new Date(b)) / 86400000);
   const payouts = Object.values(byPay).sort((a, b) => a.date.localeCompare(b.date));
@@ -3497,7 +3497,8 @@ function _matchCardIssuer(text) {
 //  - null    : 그 외(진짜 카드매출 미매칭)
 function _classifyDepositChannel(text) {
   const t = String(text == null ? '' : text);
-  if (/에비뉴/.test(t)) return { channel: 'pg' };
+  // 2026-07-20부터 PG 입금 적요가 '에비뉴에이치'→'아스트라'로 변경됨(사업자명 변경)
+  if (/에비뉴|아스트라/.test(t)) return { channel: 'pg' };
   if (!/쿠팡|쿠페이/.test(t)) {
     const iss = _matchCardIssuer(t);
     if (iss) return { channel: 'direct', issuer: iss };
@@ -3505,7 +3506,7 @@ function _classifyDepositChannel(text) {
   return null;
 }
 // 통장 직접입금 후보에서 제외: 에비뉴(PG 대사①), 쿠팡/쿠페이(체크카드 취소환입), 계좌인증(1원)
-const DIRECT_CARD_EXCLUDE = /에비뉴|쿠팡|쿠페이/;
+const DIRECT_CARD_EXCLUDE = /에비뉴|아스트라|쿠팡|쿠페이/;
 // VAN 발급사(삼성/해외) → 통장 입금 적요 매칭. 해외는 하나·BC 등 매입사 적요로 들어옴.
 const DIRECT_CARD_ISSUERS = [
   { key: '삼성', bank: /삼성/ },
